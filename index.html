@@ -2,122 +2,241 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <title>upShareMP4</title>
+    <link rel="icon" type="image/svg+xml" href="/videos/icon.svg" onerror="this.href='data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA1MTIgNTEyIiB3aWR0aD0iNTEyIiBoZWlnaHQ9IjUxMiI+PHJlY3Qgd2lkdGg9IjUxMiIgaGVpZ2h0PSI1MTIiIHJ4PSIxMTIiIGZpbGw9IiMxMjEyMTIiLz48cGF0aCBkPSJNMjU2IDEyMCBWMzQwIE0xODAgMjY0IEwyNTYgMzQwIEwzMzIgMjY0IiBzdHJva2U9IiNmZjhjMDAiIHN0cm9rZS13aWR0aD0iNDAiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIgZmlsbD0ibm9uZSIvPjxyZWN0IHg9IjE0MCIgeT0iMzkwIiB3aWR0aD0iMjMyIiBoZWlnaHQ9IjQwIiByeD0iMjAiIGZpbGw9IiMwMEU2NzYiLz48L3N2Zz4='">
     <style>
-        body { background-color: #121212; color: #ffffff; font-family: 'Segoe UI', Tahoma, sans-serif; margin: 0; padding: 20px; }
+        /* Base & Mobile Fixes */
+        html, body { background-color: #121212; color: #ffffff; font-family: 'Segoe UI', Tahoma, sans-serif; margin: 0; padding: 0; width: 100%; overflow-x: hidden; box-sizing: border-box; }
+        *, *:before, *:after { box-sizing: inherit; }
+        
+        .container { padding: 20px; padding-top: max(20px, env(safe-area-inset-top)); padding-bottom: 80px; max-width: 1200px; margin: 0 auto; }
+        
         h1 { text-align: center; color: #ff8c00; font-size: 2.5rem; margin-bottom: 5px; }
         p.subtitle { text-align: center; color: #888; margin-bottom: 30px; }
         
-        .controls { max-width: 800px; margin: 0 auto 40px auto; background: #1e1e1e; padding: 20px; border-radius: 8px; border-top: 3px solid #ff8c00; }
-        .input-group { display: flex; gap: 10px; margin-bottom: 15px; }
-        input[type="text"], input[type="file"] { flex: 1; padding: 12px; border-radius: 4px; border: 1px solid #333; background: #2a2a2a; color: #fff; }
-        .btn-submit { background-color: #ff8c00; color: #fff; padding: 12px 24px; border: none; border-radius: 4px; font-weight: bold; cursor: pointer; }
+        /* Auth Screen */
+        #login-screen { display: none; max-width: 400px; margin: 100px auto; background: #1e1e1e; padding: 30px; border-radius: 8px; border-top: 3px solid #00E676; text-align: center; }
+        #login-screen input { width: 100%; padding: 12px; margin-bottom: 15px; border-radius: 4px; border: 1px solid #333; background: #2a2a2a; color: #fff; }
+        
+        /* Main Controls */
+        #app-screen { display: none; }
+        .controls { width: 100%; background: #1e1e1e; padding: 20px; border-radius: 8px; border-top: 3px solid #ff8c00; margin-bottom: 40px; }
+        .input-group { display: flex; flex-direction: column; gap: 10px; margin-bottom: 15px; }
+        @media (min-width: 600px) { .input-group { flex-direction: row; } }
+        
+        input[type="text"], input[type="file"] { flex: 1; padding: 12px; border-radius: 4px; border: 1px solid #333; background: #2a2a2a; color: #fff; width: 100%; }
+        .btn-submit { background-color: #ff8c00; color: #fff; padding: 12px 24px; border: none; border-radius: 4px; font-weight: bold; cursor: pointer; width: 100%; }
+        @media (min-width: 600px) { .btn-submit { width: auto; } }
         .btn-submit:hover { opacity: 0.8; }
         .divider { text-align: center; color: #555; margin: 15px 0; font-weight: bold; }
 
-        .video-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 20px; max-width: 1200px; margin: 0 auto; }
-        .card { position: relative; background-color: #1e1e1e; border-left: 5px solid #00E676; border-radius: 8px; padding: 20px; display: flex; flex-direction: column; justify-content: space-between; transition: border-left-color 0.1s ease-in-out; }
-        
-        /* Dynamic Card Border States */
+        /* Grid & Cards */
+        .video-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 20px; width: 100%; }
+        .card { position: relative; background-color: #1e1e1e; border-left: 5px solid #00E676; border-radius: 8px; padding: 20px; display: flex; flex-direction: column; justify-content: space-between; transition: border-left-color 0.2s ease-in-out; }
         .card.viewed { border-left-color: #555 !important; }
         .card.deleting { border-left-color: #ff3333 !important; }
 
-        .thumbnail { width: 100%; height: 180px; object-fit: cover; border-radius: 4px; margin-bottom: 15px; background: #2a2a2a; display: flex; align-items: center; justify-content: center; color: #555; }
-        .card-header { display: flex; align-items: flex-start; gap: 10px; margin-bottom: 15px; }
-        .favicon { width: 20px; height: 20px; border-radius: 50%; background: #fff; margin-top: 2px;}
+        .thumbnail { width: 100%; height: 180px; object-fit: cover; border-radius: 4px; margin-bottom: 10px; background: #2a2a2a; display: flex; align-items: center; justify-content: center; color: #555; }
+        .card-header { display: flex; align-items: flex-start; gap: 10px; margin-bottom: 10px; }
+        .favicon { width: 20px; height: 20px; border-radius: 50%; background: #fff; margin-top: 2px; flex-shrink: 0;}
         .video-title { font-size: 1.05rem; font-weight: bold; word-wrap: break-word; line-height: 1.3; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
 
-        .btn-group { display: flex; gap: 10px; }
-        .btn { flex: 1; padding: 10px; border: none; border-radius: 4px; font-weight: bold; cursor: pointer; text-align: center; transition: opacity 0.2s;}
+        /* Metadata Tags */
+        .meta-tags { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 15px; font-size: 0.8rem; color: #aaa; }
+        .meta-tag { background: #2a2a2a; padding: 4px 8px; border-radius: 4px; display: flex; align-items: center; gap: 4px; }
+
+        /* Buttons */
+        .btn-group { display: flex; gap: 8px; }
+        .btn { flex: 1; padding: 10px; border: none; border-radius: 4px; font-weight: bold; cursor: pointer; text-align: center; transition: all 0.2s; font-size: 0.9rem;}
         .btn:hover { opacity: 0.8; }
-        .btn-copy { background-color: #ff8c00; color: #fff; }
+        .btn-copy { background-color: transparent; border: 1px solid #ff8c00; color: #ff8c00; }
         .btn-view { background-color: #00E676; color: #121212; }
-        
-        /* New Inline Delete Button */
         .btn-delete { background-color: #ff3333; color: #fff; flex: 0 0 45px; display: flex; align-items: center; justify-content: center; font-size: 1.2rem; }
 
-        #toast { visibility: hidden; min-width: 250px; background-color: #00E676; color: #121212; text-align: center; border-radius: 4px; padding: 16px; position: fixed; z-index: 2000; left: 50%; bottom: 30px; font-weight: bold; transform: translateX(-50%); opacity: 0; transition: opacity 0.3s, bottom 0.3s; }
-        #toast.show { visibility: visible; opacity: 1; bottom: 50px; }
-
+        /* Stats Footer */
+        .stats-bar { position: fixed; bottom: 0; left: 0; width: 100%; background: #1e1e1e; border-top: 1px solid #333; padding: 12px; text-align: center; font-size: 0.9rem; color: #888; cursor: pointer; z-index: 100; padding-bottom: max(12px, env(safe-area-inset-bottom)); }
+        .stats-bar:hover { color: #fff; background: #252525; }
+        
+        /* Modals */
         .modal { display: none; position: fixed; z-index: 1000; left: 0; top: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.95); align-items: center; justify-content: center; }
         .modal-content { position: relative; width: 90%; max-width: 1000px; display: flex; flex-direction: column; }
         .modal-content video { width: 100%; max-height: 85vh; border-radius: 8px; outline: none; background: #000; }
         .close-modal { position: absolute; top: -40px; right: 0; color: white; font-size: 35px; font-weight: bold; cursor: pointer; transition: color 0.2s; }
         .close-modal:hover { color: #ff8c00; }
+        
+        .dialog-box { background: #1e1e1e; padding: 25px; border-radius: 8px; text-align: center; max-width: 400px; border-top: 3px solid #ff3333; }
+        .dialog-box h3 { margin-top: 0; color: #fff; }
+        .dialog-stats { border-top: 3px solid #00E676; text-align: left;}
+        .dialog-stats p { margin: 10px 0; color: #ccc;}
+        .dialog-stats strong { color: #fff; }
+
+        #toast { visibility: hidden; min-width: 250px; background-color: #00E676; color: #121212; text-align: center; border-radius: 4px; padding: 16px; position: fixed; z-index: 2000; left: 50%; bottom: 80px; font-weight: bold; transform: translateX(-50%); opacity: 0; transition: opacity 0.3s, bottom 0.3s; }
+        #toast.show { visibility: visible; opacity: 1; bottom: 100px; }
     </style>
 </head>
 <body>
 
-    <h1>upShareMP4</h1>
-    <p class="subtitle">Download, Convert, & Share .mp4s</p>
+    <div class="container">
+        <h1>upShareMP4</h1>
+        <p class="subtitle">Download, Convert, & Share .mp4s</p>
 
-    <div class="controls">
-        <form onsubmit="submitUrl(event)" class="input-group">
-            <input type="text" id="videoUrl" placeholder="Paste WorldStar or social link here..." required>
-            <button type="submit" class="btn-submit">Fetch Video</button>
-        </form>
-        <div class="divider">OR</div>
-        <form onsubmit="uploadFile(event)" class="input-group">
-            <input type="file" id="localFile" accept="video/*" required>
-            <button type="submit" class="btn-submit">Upload & Convert</button>
-        </form>
+        <!-- Auth Screen -->
+        <div id="login-screen">
+            <h3 style="margin-top:0;">Authentication Required</h3>
+            <form onsubmit="handleLogin(event)">
+                <input type="text" id="username" placeholder="Username" required>
+                <input type="password" id="password" placeholder="Password" required>
+                <button type="submit" class="btn-submit">Login</button>
+            </form>
+        </div>
+
+        <!-- Main Interface -->
+        <div id="app-screen">
+            <div class="controls">
+                <form onsubmit="submitUrl(event)" class="input-group">
+                    <input type="text" id="videoUrl" placeholder="Paste media link here..." required>
+                    <button type="submit" class="btn-submit">Fetch Video</button>
+                </form>
+                <div class="divider">OR</div>
+                <form onsubmit="uploadFile(event)" class="input-group">
+                    <input type="file" id="localFile" accept="video/*" required>
+                    <button type="submit" class="btn-submit">Upload & Convert</button>
+                </form>
+            </div>
+
+            <div class="video-grid" id="videoGrid"></div>
+        </div>
     </div>
 
-    <div class="video-grid" id="videoGrid"></div>
+    <!-- Stats Footer -->
+    <div class="stats-bar" id="statsBar" onclick="openStats()" style="display:none;">
+        📊 View Server Statistics
+    </div>
+
     <div id="toast">Copied to clipboard!</div>
 
-    <div id="videoModal" class="modal" onclick="closeModal(event)">
+    <!-- Video Player Modal -->
+    <div id="videoModal" class="modal" onclick="closeVideoModal(event)">
         <div class="modal-content">
-            <span class="close-modal" onclick="closeModal(event)">&times;</span>
+            <span class="close-modal" onclick="closeVideoModal(event)">&times;</span>
             <video id="modalVideo" controls playsinline></video>
         </div>
     </div>
 
+    <!-- Custom Delete Modal -->
+    <div id="deleteModal" class="modal">
+        <div class="dialog-box">
+            <h3>Confirm Deletion</h3>
+            <p style="color:#aaa; margin-bottom:20px;">Permanently delete this video from the server?</p>
+            <div class="btn-group">
+                <button class="btn" style="background:#333; color:#fff;" onclick="cancelDelete()">Cancel</button>
+                <button class="btn" style="background:#ff3333; color:#fff;" onclick="confirmDelete()">Delete</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Custom Stats Modal -->
+    <div id="statsModal" class="modal" onclick="closeStatsModal(event)">
+        <div class="dialog-box dialog-stats" id="statsContent">
+            <!-- Injected via JS -->
+        </div>
+    </div>
+
     <script>
-        async function fetchVideos() {
+        let pendingDeleteId = null;
+        let pendingDeleteCard = null;
+
+        function formatBytes(bytes, decimals = 2) {
+            if (bytes === 0) return '0 Bytes';
+            const k = 1024, dm = decimals < 0 ? 0 : decimals, sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
+        }
+
+        function formatDate(timestamp) {
+            return new Date(timestamp * 1000).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+        }
+
+        async function checkAuthAndLoad() {
             try {
                 const response = await fetch('/api/videos');
-                if (response.status === 401) return; 
-                const data = await response.json();
-                const grid = document.getElementById('videoGrid');
-                const existingCards = Array.from(grid.querySelectorAll('.card')).map(c => c.dataset.video);
-                let newItemsAdded = false;
-
-                [...data.videos].reverse().forEach(video => {
-                    if (!existingCards.includes(video.id)) {
-                        const videoUrl = window.location.origin + '/videos/' + video.filename;
-                        const faviconUrl = video.domain !== 'localhost' ? `https://www.google.com/s2/favicons?domain=${video.domain}&sz=32` : '';
-                        const thumbImg = video.thumbnail ? `<img src="/videos/${video.thumbnail}" class="thumbnail">` : `<div class="thumbnail">No Thumbnail</div>`;
-                        const faviconImg = faviconUrl ? `<img src="${faviconUrl}" class="favicon" onerror="this.style.display='none'">` : '';
-
-                        const card = document.createElement('div');
-                        card.className = 'card';
-                        card.dataset.video = video.id;
-                        card.innerHTML = `
-                            <div>
-                                ${thumbImg}
-                                <div class="card-header">
-                                    ${faviconImg}
-                                    <div class="video-title" title="${video.title}">${video.title}</div>
-                                </div>
-                            </div>
-                            <div class="btn-group">
-                                <button class="btn btn-copy" onclick="copyLink('${videoUrl}', this)">Copy</button>
-                                <button class="btn btn-view" onclick="openModal('${videoUrl}', this)">View</button>
-                                <button class="btn btn-delete" onclick="promptDelete('${video.id}', this)" title="Delete Video">✖</button>
-                            </div>
-                        `;
-                        grid.prepend(card);
-                        newItemsAdded = true;
-                    }
-                });
-
-                if (newItemsAdded) {
-                    const loadingState = document.getElementById('loadingState');
-                    if (loadingState) loadingState.remove();
+                if (response.status === 401) {
+                    document.getElementById('login-screen').style.display = 'block';
+                    document.getElementById('app-screen').style.display = 'none';
+                    document.getElementById('statsBar').style.display = 'none';
+                    return false;
                 }
+                
+                document.getElementById('login-screen').style.display = 'none';
+                document.getElementById('app-screen').style.display = 'block';
+                document.getElementById('statsBar').style.display = 'block';
+                
+                const data = await response.json();
+                renderVideos(data.videos);
+                return true;
             } catch (e) { console.error(e); }
+        }
+
+        async function handleLogin(e) {
+            e.preventDefault();
+            const formData = new FormData();
+            formData.append('username', document.getElementById('username').value);
+            formData.append('password', document.getElementById('password').value);
+            
+            const response = await fetch('/api/login', { method: 'POST', body: formData });
+            if (response.ok) {
+                document.getElementById('password').value = '';
+                checkAuthAndLoad();
+            } else {
+                alert("Invalid Credentials");
+            }
+        }
+
+        function renderVideos(videos) {
+            const grid = document.getElementById('videoGrid');
+            const existingCards = Array.from(grid.querySelectorAll('.card')).map(c => c.dataset.video);
+            let newItemsAdded = false;
+
+            [...videos].reverse().forEach(video => {
+                if (!existingCards.includes(video.id)) {
+                    const videoUrl = window.location.origin + '/videos/' + video.filename;
+                    const faviconUrl = video.domain !== 'localhost' ? `https://www.google.com/s2/favicons?domain=${video.domain}&sz=32` : '';
+                    const thumbImg = video.thumbnail ? `<img src="/videos/${video.thumbnail}" class="thumbnail">` : `<div class="thumbnail">No Thumbnail</div>`;
+                    const faviconImg = faviconUrl ? `<img src="${faviconUrl}" class="favicon" onerror="this.style.display='none'">` : '';
+
+                    const card = document.createElement('div');
+                    card.className = 'card';
+                    card.dataset.video = video.id;
+                    card.innerHTML = `
+                        <div>
+                            ${thumbImg}
+                            <div class="card-header">
+                                ${faviconImg}
+                                <div class="video-title" title="${video.title}">${video.title}</div>
+                            </div>
+                            <div class="meta-tags">
+                                <div class="meta-tag">📅 ${formatDate(video.date)}</div>
+                                <div class="meta-tag">⏱️ ${video.duration}</div>
+                                <div class="meta-tag">💾 ${formatBytes(video.size_bytes)}</div>
+                                <div class="meta-tag">👁️ ${video.views}</div>
+                            </div>
+                        </div>
+                        <div class="btn-group">
+                            <button class="btn btn-copy" onclick="copyLink('${videoUrl}', this)">Copy Link</button>
+                            <button class="btn btn-view" onclick="openVideoModal('${videoUrl}', '${video.id}', this)">View</button>
+                            <button class="btn btn-delete" onclick="triggerDelete('${video.id}', this)" title="Delete Video">✖</button>
+                        </div>
+                    `;
+                    grid.prepend(card);
+                    newItemsAdded = true;
+                }
+            });
+
+            if (newItemsAdded) {
+                const loadingState = document.getElementById('loadingState');
+                if (loadingState) loadingState.remove();
+            }
         }
 
         function showProcessingTile() {
@@ -156,37 +275,40 @@
             fileInput.value = '';
         }
 
-        // --- Forced Paint Delete Logic ---
-        function promptDelete(videoId, btnElement) {
+        /* --- Custom Delete Flow --- */
+        function triggerDelete(videoId, btnElement) {
             const card = btnElement.closest('.card');
             card.classList.remove('viewed');
             card.classList.add('deleting');
-            
-            // requestAnimationFrame twice guarantees the browser paints the red border BEFORE the confirm dialogue pauses JS execution
-            requestAnimationFrame(() => {
-                requestAnimationFrame(async () => {
-                    const isConfirmed = confirm("Permanently delete this video from the server?");
-                    if (isConfirmed) {
-                        try {
-                            const response = await fetch('/api/videos/' + videoId, { method: 'DELETE' });
-                            if (response.ok) {
-                                card.remove();
-                            } else {
-                                alert("Failed to delete video.");
-                                card.classList.remove('deleting');
-                                card.classList.add('viewed');
-                            }
-                        } catch (err) {
-                            alert("Error contacting server.");
-                            card.classList.remove('deleting');
-                            card.classList.add('viewed');
-                        }
-                    } else {
-                        card.classList.remove('deleting');
-                        card.classList.add('viewed');
-                    }
-                });
-            });
+            pendingDeleteId = videoId;
+            pendingDeleteCard = card;
+            document.getElementById('deleteModal').style.display = 'flex';
+        }
+
+        function cancelDelete() {
+            if (pendingDeleteCard) {
+                pendingDeleteCard.classList.remove('deleting');
+                pendingDeleteCard.classList.add('viewed');
+            }
+            document.getElementById('deleteModal').style.display = 'none';
+            pendingDeleteId = null;
+            pendingDeleteCard = null;
+        }
+
+        async function confirmDelete() {
+            if (!pendingDeleteId) return;
+            try {
+                const response = await fetch('/api/videos/' + pendingDeleteId, { method: 'DELETE' });
+                if (response.ok && pendingDeleteCard) {
+                    pendingDeleteCard.remove();
+                } else {
+                    alert("Failed to delete video.");
+                    cancelDelete();
+                }
+            } catch (err) {
+                cancelDelete();
+            }
+            document.getElementById('deleteModal').style.display = 'none';
         }
 
         function copyLink(url, btnElement) {
@@ -207,9 +329,7 @@
 
         function markViewed(element) {
             const card = element.closest('.card');
-            if (card && !card.classList.contains('deleting')) {
-                card.classList.add('viewed');
-            }
+            if (card && !card.classList.contains('deleting')) { card.classList.add('viewed'); }
         }
 
         function showToast() {
@@ -218,8 +338,13 @@
             setTimeout(() => { toast.className = toast.className.replace("show", ""); }, 3000);
         }
 
-        function openModal(url, btnElement) {
+        /* --- Player & Stats Flow --- */
+        function openVideoModal(url, videoId, btnElement) {
             markViewed(btnElement);
+            
+            // Track the view silently in the background
+            fetch('/api/track_view/' + videoId, { method: 'POST' });
+            
             const modal = document.getElementById('videoModal');
             const video = document.getElementById('modalVideo');
             video.src = url;
@@ -232,8 +357,8 @@
             }
         }
 
-        function closeModal(e) {
-            if (e.target.id === 'videoModal' || e.target.className === 'close-modal') {
+        function closeVideoModal(e) {
+            if (!e || e.target.id === 'videoModal' || e.target.className === 'close-modal') {
                 const modal = document.getElementById('videoModal');
                 const video = document.getElementById('modalVideo');
                 video.pause();
@@ -242,8 +367,45 @@
             }
         }
 
-        setInterval(fetchVideos, 3000);
-        window.onload = fetchVideos;
+        async function openStats() {
+            const response = await fetch('/api/stats');
+            if (response.ok) {
+                const stats = await response.json();
+                const content = document.getElementById('statsContent');
+                content.innerHTML = `
+                    <h3>Server Statistics</h3>
+                    <p>Total Videos: <strong>${stats.video_count}</strong></p>
+                    <p>Disk Usage: <strong>${formatBytes(stats.used_disk)}</strong></p>
+                    <p>Total Disk Space: <strong>${formatBytes(stats.total_disk)}</strong></p>
+                    <p>Estimated Bandwidth Served: <strong>${formatBytes(stats.bandwidth)}</strong></p>
+                `;
+                document.getElementById('statsModal').style.display = 'flex';
+            }
+        }
+
+        function closeStatsModal(e) {
+            if (e.target.id === 'statsModal') {
+                document.getElementById('statsModal').style.display = 'none';
+            }
+        }
+
+        // Handle ESC key to close modals
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') {
+                closeVideoModal();
+                if(document.getElementById('statsModal').style.display === 'flex') closeStatsModal({target: {id: 'statsModal'}});
+                if(document.getElementById('deleteModal').style.display === 'flex') cancelDelete();
+            }
+        });
+
+        // Initialize polling if logged in
+        setInterval(() => {
+            if (document.getElementById('app-screen').style.display === 'block') {
+                checkAuthAndLoad();
+            }
+        }, 3000);
+        
+        window.onload = checkAuthAndLoad;
     </script>
 </body>
 </html>

@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+    <!-- Dark Mode Background -->
+    <rect width="512" height="512" rx="112" fill="#121212"/>
+    
+    <!-- Vibrant Orange Down Arrow / Play Concept -->
+    <path d="M256 120 V340 M180 264 L256 340 L332 264" stroke="#ff8c00" stroke-width="40" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+    
+    <!-- Neon Green Drive/Save Accent -->
+    <rect x="140" y="390" width="232" height="40" rx="20" fill="#00E676"/>
+</svg>

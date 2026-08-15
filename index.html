@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>upShareMP4</title>
+    <style>
+        body { background-color: #121212; color: #ffffff; font-family: 'Segoe UI', Tahoma, sans-serif; margin: 0; padding: 20px; }
+        h1 { text-align: center; color: #ff8c00; font-size: 2.5rem; margin-bottom: 5px; }
+        p.subtitle { text-align: center; color: #888; margin-bottom: 30px; }
+        
+        .controls { max-width: 800px; margin: 0 auto 40px auto; background: #1e1e1e; padding: 20px; border-radius: 8px; border-top: 3px solid #ff8c00; }
+        .input-group { display: flex; gap: 10px; margin-bottom: 15px; }
+        input[type="text"], input[type="file"] { flex: 1; padding: 12px; border-radius: 4px; border: 1px solid #333; background: #2a2a2a; color: #fff; }
+        .btn-submit { background-color: #ff8c00; color: #fff; padding: 12px 24px; border: none; border-radius: 4px; font-weight: bold; cursor: pointer; }
+        .btn-submit:hover { opacity: 0.8; }
+        .divider { text-align: center; color: #555; margin: 15px 0; font-weight: bold; }
+
+        .video-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 20px; max-width: 1200px; margin: 0 auto; }
+        .card { position: relative; background-color: #1e1e1e; border-left: 5px solid #00E676; border-radius: 8px; padding: 20px; display: flex; flex-direction: column; justify-content: space-between; transition: border-left-color 0.1s ease-in-out; }
+        
+        /* Dynamic Card Border States */
+        .card.viewed { border-left-color: #555 !important; }
+        .card.deleting { border-left-color: #ff3333 !important; }
+
+        .thumbnail { width: 100%; height: 180px; object-fit: cover; border-radius: 4px; margin-bottom: 15px; background: #2a2a2a; display: flex; align-items: center; justify-content: center; color: #555; }
+        .card-header { display: flex; align-items: flex-start; gap: 10px; margin-bottom: 15px; }
+        .favicon { width: 20px; height: 20px; border-radius: 50%; background: #fff; margin-top: 2px;}
+        .video-title { font-size: 1.05rem; font-weight: bold; word-wrap: break-word; line-height: 1.3; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+
+        .btn-group { display: flex; gap: 10px; }
+        .btn { flex: 1; padding: 10px; border: none; border-radius: 4px; font-weight: bold; cursor: pointer; text-align: center; transition: opacity 0.2s;}
+        .btn:hover { opacity: 0.8; }
+        .btn-copy { background-color: #ff8c00; color: #fff; }
+        .btn-view { background-color: #00E676; color: #121212; }
+        
+        /* New Inline Delete Button */
+        .btn-delete { background-color: #ff3333; color: #fff; flex: 0 0 45px; display: flex; align-items: center; justify-content: center; font-size: 1.2rem; }
+
+        #toast { visibility: hidden; min-width: 250px; background-color: #00E676; color: #121212; text-align: center; border-radius: 4px; padding: 16px; position: fixed; z-index: 2000; left: 50%; bottom: 30px; font-weight: bold; transform: translateX(-50%); opacity: 0; transition: opacity 0.3s, bottom 0.3s; }
+        #toast.show { visibility: visible; opacity: 1; bottom: 50px; }
+
+        .modal { display: none; position: fixed; z-index: 1000; left: 0; top: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.95); align-items: center; justify-content: center; }
+        .modal-content { position: relative; width: 90%; max-width: 1000px; display: flex; flex-direction: column; }
+        .modal-content video { width: 100%; max-height: 85vh; border-radius: 8px; outline: none; background: #000; }
+        .close-modal { position: absolute; top: -40px; right: 0; color: white; font-size: 35px; font-weight: bold; cursor: pointer; transition: color 0.2s; }
+        .close-modal:hover { color: #ff8c00; }
+    </style>
+</head>
+<body>
+
+    <h1>upShareMP4</h1>
+    <p class="subtitle">Download, Convert, & Share .mp4s</p>
+
+    <div class="controls">
+        <form onsubmit="submitUrl(event)" class="input-group">
+            <input type="text" id="videoUrl" placeholder="Paste WorldStar or social link here..." required>
+            <button type="submit" class="btn-submit">Fetch Video</button>
+        </form>
+        <div class="divider">OR</div>
+        <form onsubmit="uploadFile(event)" class="input-group">
+            <input type="file" id="localFile" accept="video/*" required>
+            <button type="submit" class="btn-submit">Upload & Convert</button>
+        </form>
+    </div>
+
+    <div class="video-grid" id="videoGrid"></div>
+    <div id="toast">Copied to clipboard!</div>
+
+    <div id="videoModal" class="modal" onclick="closeModal(event)">
+        <div class="modal-content">
+            <span class="close-modal" onclick="closeModal(event)">&times;</span>
+            <video id="modalVideo" controls playsinline></video>
+        </div>
+    </div>
+
+    <script>
+        async function fetchVideos() {
+            try {
+                const response = await fetch('/api/videos');
+                if (response.status === 401) return; 
+                const data = await response.json();
+                const grid = document.getElementById('videoGrid');
+                const existingCards = Array.from(grid.querySelectorAll('.card')).map(c => c.dataset.video);
+                let newItemsAdded = false;
+
+                [...data.videos].reverse().forEach(video => {
+                    if (!existingCards.includes(video.id)) {
+                        const videoUrl = window.location.origin + '/videos/' + video.filename;
+                        const faviconUrl = video.domain !== 'localhost' ? `https://www.google.com/s2/favicons?domain=${video.domain}&sz=32` : '';
+                        const thumbImg = video.thumbnail ? `<img src="/videos/${video.thumbnail}" class="thumbnail">` : `<div class="thumbnail">No Thumbnail</div>`;
+                        const faviconImg = faviconUrl ? `<img src="${faviconUrl}" class="favicon" onerror="this.style.display='none'">` : '';
+
+                        const card = document.createElement('div');
+                        card.className = 'card';
+                        card.dataset.video = video.id;
+                        card.innerHTML = `
+                            <div>
+                                ${thumbImg}
+                                <div class="card-header">
+                                    ${faviconImg}
+                                    <div class="video-title" title="${video.title}">${video.title}</div>
+                                </div>
+                            </div>
+                            <div class="btn-group">
+                                <button class="btn btn-copy" onclick="copyLink('${videoUrl}', this)">Copy</button>
+                                <button class="btn btn-view" onclick="openModal('${videoUrl}', this)">View</button>
+                                <button class="btn btn-delete" onclick="promptDelete('${video.id}', this)" title="Delete Video">✖</button>
+                            </div>
+                        `;
+                        grid.prepend(card);
+                        newItemsAdded = true;
+                    }
+                });
+
+                if (newItemsAdded) {
+                    const loadingState = document.getElementById('loadingState');
+                    if (loadingState) loadingState.remove();
+                }
+            } catch (e) { console.error(e); }
+        }
+
+        function showProcessingTile() {
+            const grid = document.getElementById('videoGrid');
+            if (document.getElementById('loadingState')) return;
+            const tile = document.createElement('div');
+            tile.className = 'card';
+            tile.id = 'loadingState';
+            tile.style.borderLeftColor = '#ff8c00';
+            tile.innerHTML = `
+                <div class="thumbnail" style="border: 1px dashed #ff8c00; color: #ff8c00;">Downloading...</div>
+                <div class="card-header"><div class="video-title" style="color:#888;">Fetching metadata...</div></div>
+                <div class="btn-group"><button class="btn" disabled style="background:#555; color:#888;">Working on it...</button></div>
+            `;
+            grid.prepend(tile);
+        }
+
+        async function submitUrl(e) {
+            e.preventDefault();
+            const urlInput = document.getElementById('videoUrl');
+            const formData = new FormData();
+            formData.append('url', urlInput.value);
+            showProcessingTile();
+            await fetch('/api/download_form', { method: 'POST', body: formData });
+            urlInput.value = '';
+        }
+
+        async function uploadFile(e) {
+            e.preventDefault();
+            const fileInput = document.getElementById('localFile');
+            if (fileInput.files.length === 0) return;
+            const formData = new FormData();
+            formData.append('file', fileInput.files[0]);
+            showProcessingTile();
+            await fetch('/api/upload', { method: 'POST', body: formData });
+            fileInput.value = '';
+        }
+
+        // --- Forced Paint Delete Logic ---
+        function promptDelete(videoId, btnElement) {
+            const card = btnElement.closest('.card');
+            card.classList.remove('viewed');
+            card.classList.add('deleting');
+            
+            // requestAnimationFrame twice guarantees the browser paints the red border BEFORE the confirm dialogue pauses JS execution
+            requestAnimationFrame(() => {
+                requestAnimationFrame(async () => {
+                    const isConfirmed = confirm("Permanently delete this video from the server?");
+                    if (isConfirmed) {
+                        try {
+                            const response = await fetch('/api/videos/' + videoId, { method: 'DELETE' });
+                            if (response.ok) {
+                                card.remove();
+                            } else {
+                                alert("Failed to delete video.");
+                                card.classList.remove('deleting');
+                                card.classList.add('viewed');
+                            }
+                        } catch (err) {
+                            alert("Error contacting server.");
+                            card.classList.remove('deleting');
+                            card.classList.add('viewed');
+                        }
+                    } else {
+                        card.classList.remove('deleting');
+                        card.classList.add('viewed');
+                    }
+                });
+            });
+        }
+
+        function copyLink(url, btnElement) {
+            markViewed(btnElement);
+            if (navigator.clipboard && window.isSecureContext) {
+                navigator.clipboard.writeText(url).then(showToast).catch(fallbackCopyTextToClipboard.bind(null, url));
+            } else { fallbackCopyTextToClipboard(url); }
+        }
+
+        function fallbackCopyTextToClipboard(text) {
+            var textArea = document.createElement("textarea");
+            textArea.value = text;
+            textArea.style.position = "fixed"; document.body.appendChild(textArea);
+            textArea.focus(); textArea.select();
+            try { document.execCommand('copy'); showToast(); } catch (err) {}
+            document.body.removeChild(textArea);
+        }
+
+        function markViewed(element) {
+            const card = element.closest('.card');
+            if (card && !card.classList.contains('deleting')) {
+                card.classList.add('viewed');
+            }
+        }
+
+        function showToast() {
+            const toast = document.getElementById("toast");
+            toast.className = "show";
+            setTimeout(() => { toast.className = toast.className.replace("show", ""); }, 3000);
+        }
+
+        function openModal(url, btnElement) {
+            markViewed(btnElement);
+            const modal = document.getElementById('videoModal');
+            const video = document.getElementById('modalVideo');
+            video.src = url;
+            modal.style.display = 'flex';
+            video.play();
+
+            if (/Mobi|Android|iPhone|iPad/i.test(navigator.userAgent)) {
+                if (video.requestFullscreen) { video.requestFullscreen(); }
+                else if (video.webkitRequestFullscreen) { video.webkitRequestFullscreen(); }
+            }
+        }
+
+        function closeModal(e) {
+            if (e.target.id === 'videoModal' || e.target.className === 'close-modal') {
+                const modal = document.getElementById('videoModal');
+                const video = document.getElementById('modalVideo');
+                video.pause();
+                video.src = '';
+                modal.style.display = 'none';
+            }
+        }
+
+        setInterval(fetchVideos, 3000);
+        window.onload = fetchVideos;
+    </script>
+</body>
+</html>

@@ -14,9 +14,10 @@ app = FastAPI(title="upShareMP4")
 security = HTTPBasic()
 
 # --- ENVIRONMENT VARIABLES ---
-# It will look for these in Unraid, but default to damal/secretpassword if missing
-APP_USERNAME = os.getenv("APP_USERNAME", "damal")
-APP_PASSWORD = os.getenv("APP_PASSWORD", "secretpassword")
+# Generic defaults for public repository safety
+APP_USERNAME = os.getenv("APP_USERNAME", "admin")
+APP_PASSWORD = os.getenv("APP_PASSWORD", "adminpassword")
+DOWNLOAD_DIR = os.getenv("DOWNLOAD_DIR", "/downloads")
 
 def verify_credentials(credentials: HTTPBasicCredentials = Depends(security)):
     correct_username = secrets.compare_digest(credentials.username, APP_USERNAME)
@@ -29,7 +30,6 @@ def verify_credentials(credentials: HTTPBasicCredentials = Depends(security)):
         )
     return credentials.username
 
-DOWNLOAD_DIR = "downloads"
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 app.mount("/videos", StaticFiles(directory=DOWNLOAD_DIR), name="videos")
 

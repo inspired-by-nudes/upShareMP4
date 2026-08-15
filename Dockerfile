@@ -7,10 +7,11 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
-# Default environment variables
-ENV APP_USERNAME=damal
-ENV APP_PASSWORD=secretpassword
+# Generic environment variables for public distribution
+ENV APP_USERNAME=admin
+ENV APP_PASSWORD=adminpassword
 ENV PORT=29738
+ENV DOWNLOAD_DIR=/downloads
 
 EXPOSE $PORT
 

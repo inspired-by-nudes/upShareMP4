@@ -1,4 +1,4 @@
-from fastapi import FastAPI, BackgroundTasks, UploadFile, File, Form, Depends, HTTPException, status, Request, Response
+from fastapi import FastAPI, BackgroundTasks, UploadFile, File, Form, Depends, HTTPException, Request, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
@@ -10,7 +10,7 @@ import secrets
 import json
 import base64
 import hashlib
-import shutil
+import threading
 
 app = FastAPI(title="upShareMP4")
 
@@ -18,21 +18,21 @@ app = FastAPI(title="upShareMP4")
 APP_USERNAME = os.getenv("APP_USERNAME", "admin")
 APP_PASSWORD = os.getenv("APP_PASSWORD", "adminpassword")
 DOWNLOAD_DIR = os.getenv("DOWNLOAD_DIR", "/downloads")
-SESSION_DAYS = int(os.getenv("SESSION_DAYS", "30")) # Adjustable logout timer
+CONFIG_DIR = os.getenv("CONFIG_DIR", "/config")
+SESSION_DAYS = int(os.getenv("SESSION_DAYS", "30"))
+MAX_DOWNLOAD_MB = float(os.getenv("MAX_DOWNLOAD_MB", "150"))
 
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
-DB_FILE = os.path.join(DOWNLOAD_DIR, "stats_db.json")
+os.makedirs(CONFIG_DIR, exist_ok=True)
+DB_FILE = os.path.join(CONFIG_DIR, "stats_db.json")
+db_lock = threading.Lock()
 
 def get_auth_token():
-    # Creates a stateless, secure hash based on credentials for cookie verification
     return hashlib.sha256(f"{APP_USERNAME}:{APP_PASSWORD}".encode()).hexdigest()
 
 def verify_auth(request: Request):
-    # 1. Check for WebUI Cookie Session
     if request.cookies.get("upshare_session") == get_auth_token():
         return APP_USERNAME
-        
-    # 2. Fallback to Basic Auth (Used purely by your iOS Shortcut)
     auth_header = request.headers.get("Authorization")
     if auth_header and auth_header.startswith("Basic "):
         try:
@@ -43,23 +43,64 @@ def verify_auth(request: Request):
                 return APP_USERNAME
         except Exception:
             pass
-            
     raise HTTPException(status_code=401, detail="Unauthorized")
 
 def load_db():
     if os.path.exists(DB_FILE):
         with open(DB_FILE, "r") as f:
             return json.load(f)
-    return {"bandwidth_bytes": 0, "views": {}}
+    return {"bandwidth_bytes": 0, "views": {}, "deleted_count": 0}
 
 def save_db(data):
     with open(DB_FILE, "w") as f:
         json.dump(data, f)
 
+# Middleware: True view tracking (intercepts all video loads, even external)
+@app.middleware("http")
+async def track_video_views(request: Request, call_next):
+    path = request.url.path
+    range_header = request.headers.get("range", "")
+    
+    # Only count as a "view" if it's the start of the video (no range, or starts at 0)
+    is_new_view = path.startswith("/videos/") and path.endswith(".mp4") and (not range_header or "bytes=0-" in range_header)
+    
+    response = await call_next(request)
+    
+    if is_new_view and response.status_code in (200, 206):
+        try:
+            filename = path.split("/")[-1]
+            video_id = filename.split(".")[0]
+            with db_lock:
+                db = load_db()
+                db["views"][video_id] = db.get("views", {}).get(video_id, 0) + 1
+                file_path = os.path.join(DOWNLOAD_DIR, filename)
+                if os.path.exists(file_path):
+                    db["bandwidth_bytes"] = db.get("bandwidth_bytes", 0) + os.path.getsize(file_path)
+                save_db(db)
+        except Exception:
+            pass
+    return response
+
 app.mount("/videos", StaticFiles(directory=DOWNLOAD_DIR), name="videos")
 
 class VideoRequest(BaseModel):
     url: str
+
+def extract_true_duration(video_id: str):
+    mp4_path = os.path.join(DOWNLOAD_DIR, f"{video_id}.mp4")
+    json_path = os.path.join(DOWNLOAD_DIR, f"{video_id}.info.json")
+    try:
+        # Fallback ffprobe check to fix missing durations (e.g. WorldStarHipHop)
+        result = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", mp4_path], capture_output=True, text=True)
+        duration = float(result.stdout.strip())
+        if os.path.exists(json_path):
+            with open(json_path, 'r') as f:
+                info = json.load(f)
+            info['duration'] = duration
+            with open(json_path, 'w') as f:
+                json.dump(info, f)
+    except Exception:
+        pass
 
 def process_video(url: str, video_id: str):
     ydl_opts = {
@@ -72,13 +113,16 @@ def process_video(url: str, video_id: str):
     }
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         ydl.download([url])
+    
+    extract_true_duration(video_id)
 
-def convert_local_file(input_path: str, output_path: str):
+def convert_local_file(input_path: str, output_path: str, video_id: str):
     subprocess.run(["ffmpeg", "-i", input_path, "-c:v", "libx264", "-preset", "fast", "-c:a", "aac", output_path, "-y"])
-    os.remove(input_path) 
+    os.remove(input_path)
+    extract_true_duration(video_id)
 
 def create_dummy_info(video_id: str, original_filename: str):
-    info = {"title": original_filename, "webpage_url_domain": "localhost", "duration": 0}
+    info = {"title": original_filename, "webpage_url_domain": "localhost", "duration": 0, "webpage_url": "#"}
     with open(f"{DOWNLOAD_DIR}/{video_id}.info.json", "w") as f:
         json.dump(info, f)
 
@@ -90,40 +134,42 @@ def login(response: Response, username: str = Form(...), password: str = Form(..
         return {"status": "success"}
     raise HTTPException(status_code=401, detail="Invalid credentials")
 
-@app.post("/api/track_view/{video_id}")
-def track_view(video_id: str, user: str = Depends(verify_auth)):
-    db = load_db()
-    if video_id not in db["views"]:
-        db["views"][video_id] = 0
-    db["views"][video_id] += 1
-    
-    file_path = os.path.join(DOWNLOAD_DIR, f"{video_id}.mp4")
-    if os.path.exists(file_path):
-        db["bandwidth_bytes"] += os.path.getsize(file_path)
-        
-    save_db(db)
-    return {"status": "ok"}
+@app.post("/api/logout")
+def logout(response: Response):
+    response.delete_cookie("upshare_session")
+    return {"status": "logged_out"}
 
 @app.get("/api/stats")
 def get_stats(user: str = Depends(verify_auth)):
-    db = load_db()
-    total, used, free = shutil.disk_usage(DOWNLOAD_DIR)
+    with db_lock:
+        db = load_db()
     videos = [f for f in os.listdir(DOWNLOAD_DIR) if f.endswith('.mp4') and not f.startswith('temp_')]
+    
+    # Calculate exact disk usage of only the videos
+    used_videos_bytes = sum(os.path.getsize(os.path.join(DOWNLOAD_DIR, f)) for f in videos)
+    
     return {
-        "total_disk": total,
-        "used_disk": used,
+        "used_disk": used_videos_bytes,
         "bandwidth": db.get("bandwidth_bytes", 0),
-        "video_count": len(videos)
+        "video_count": len(videos),
+        "deleted_count": db.get("deleted_count", 0),
+        "limit_mb": MAX_DOWNLOAD_MB
     }
 
-@app.post("/api/download")
-async def trigger_download(req: VideoRequest, background_tasks: BackgroundTasks, user: str = Depends(verify_auth)):
-    video_id = f"vid_{str(uuid.uuid4())[:8]}"
-    background_tasks.add_task(process_video, req.url, video_id)
-    return {"status": "processing", "url": f"/videos/{video_id}.mp4"}
-
 @app.post("/api/download_form")
-async def form_download(background_tasks: BackgroundTasks, url: str = Form(...), user: str = Depends(verify_auth)):
+async def form_download(background_tasks: BackgroundTasks, url: str = Form(...), override_password: str = Form(None), user: str = Depends(verify_auth)):
+    # Check limit unless override password is valid
+    if override_password != APP_PASSWORD:
+        try:
+            with yt_dlp.YoutubeDL({'noplaylist': True}) as ydl:
+                info = ydl.extract_info(url, download=False)
+                size_bytes = info.get("filesize") or info.get("filesize_approx") or 0
+                size_mb = size_bytes / (1024 * 1024)
+                if size_mb > MAX_DOWNLOAD_MB:
+                    return {"status": "needs_override", "size_mb": round(size_mb, 1)}
+        except Exception:
+            pass # Failsafe: if yt-dlp can't guess size, proceed normally
+            
     video_id = f"vid_{str(uuid.uuid4())[:8]}"
     background_tasks.add_task(process_video, url, video_id)
     return {"status": "processing"}
@@ -138,7 +184,7 @@ async def upload_video(background_tasks: BackgroundTasks, file: UploadFile = Fil
         buffer.write(await file.read())
         
     create_dummy_info(video_id, file.filename)
-    background_tasks.add_task(convert_local_file, temp_path, final_path)
+    background_tasks.add_task(convert_local_file, temp_path, final_path, video_id)
     return {"status": "processing"}
 
 @app.delete("/api/videos/{video_id}")
@@ -153,17 +199,19 @@ def delete_video(video_id: str, user: str = Depends(verify_auth)):
             deleted = True
             
     if deleted:
-        # Clean up database entry
-        db = load_db()
-        if safe_id in db.get("views", {}):
-            del db["views"][safe_id]
+        with db_lock:
+            db = load_db()
+            db["deleted_count"] = db.get("deleted_count", 0) + 1
+            if safe_id in db.get("views", {}):
+                del db["views"][safe_id]
             save_db(db)
         return {"status": "deleted"}
     raise HTTPException(status_code=404, detail="Video not found")
 
 @app.get("/api/videos")
 def list_videos(user: str = Depends(verify_auth)):
-    db = load_db()
+    with db_lock:
+        db = load_db()
     videos_data = []
     for file in os.listdir(DOWNLOAD_DIR):
         if file.endswith('.mp4') and not file.startswith('temp_'):
@@ -175,6 +223,7 @@ def list_videos(user: str = Depends(verify_auth)):
             domain = "unknown"
             thumbnail = None
             duration_str = "--:--"
+            original_url = "#"
             size = os.path.getsize(mp4_file)
             date_ts = os.path.getmtime(mp4_file)
             views = db.get("views", {}).get(base_name, 0)
@@ -184,6 +233,7 @@ def list_videos(user: str = Depends(verify_auth)):
                     info = json.load(f)
                     title = info.get('title', file)
                     domain = info.get('webpage_url_domain', 'localhost')
+                    original_url = info.get('webpage_url', '#')
                     duration = info.get('duration', 0)
                     if duration:
                         mins, secs = divmod(int(duration), 60)
@@ -203,7 +253,8 @@ def list_videos(user: str = Depends(verify_auth)):
                 "duration": duration_str,
                 "size_bytes": size,
                 "date": date_ts,
-                "views": views
+                "views": views,
+                "original_url": original_url
             })
             
     videos_data.sort(key=lambda x: x['date'], reverse=True)

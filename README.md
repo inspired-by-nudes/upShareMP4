@@ -23,3 +23,4 @@ A self-hosted video conversion console focused on ease of use UX, featuring auto
 | `CONFIG_DIR` | Internal container path for persistent database storage | `/config` |
 | `SESSION_DAYS` | Number of days before browser session expires | `30` |
 | `MAX_DOWNLOAD_MB` | File size limit before prompting for password override | `150` |
+| `YTDLP_COOKIES` | Raw Netscape cookie string for authenticating restricted sites | `""` |

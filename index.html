@@ -4,63 +4,61 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <title>upShareMP4</title>
+    <!-- Mapped directly to the vector file for browser title bar -->
     <link rel="icon" type="image/svg+xml" href="icon.svg">
     <style>
         html, body { background-color: #121212; color: #ffffff; font-family: 'Segoe UI', Tahoma, sans-serif; margin: 0; padding: 0; width: 100%; overflow-x: hidden; box-sizing: border-box; }
         *, *:before, *:after { box-sizing: inherit; }
         
-        .container { padding: 20px; padding-top: max(20px, env(safe-area-inset-top)); padding-bottom: 80px; max-width: 1200px; margin: 0 auto; }
-        h1 { text-align: center; color: #ff8c00; font-size: 2.5rem; margin-bottom: 5px; }
+        .container { padding: 20px; padding-top: max(20px, env(safe-area-inset-top)); padding-bottom: 60px; max-width: 1200px; margin: 0 auto; }
+        h1 { text-align: center; color: #ff8c00; font-size: 2.5rem; margin-bottom: 5px; cursor: pointer; transition: opacity 0.2s; }
+        h1:hover { opacity: 0.8; }
         p.subtitle { text-align: center; color: #888; margin-bottom: 30px; }
         
         #login-screen { display: none; max-width: 400px; margin: 100px auto; background: #1e1e1e; padding: 30px; border-radius: 8px; border-top: 3px solid #00E676; text-align: center; }
-        /* Font-size 16px prevents iOS Safari from zooming in on focus */
-        input[type="text"], input[type="password"], input[type="file"] { width: 100%; padding: 12px; margin-bottom: 15px; border-radius: 4px; border: 1px solid #333; background: #2a2a2a; color: #fff; font-size: 16px; }
+        input[type="text"], input[type="password"], input[type="file"] { width: 100%; padding: 0 15px; margin-bottom: 0; border-radius: 4px; border: 1px solid #333; background: #2a2a2a; color: #fff; font-size: 16px; height: 48px; box-sizing: border-box; }
         
         #app-screen { display: none; }
         .controls { width: 100%; background: #1e1e1e; padding: 20px; border-radius: 8px; border-top: 3px solid #ff8c00; margin-bottom: 40px; }
         .input-group { display: flex; flex-direction: column; gap: 10px; margin-bottom: 15px; }
-        @media (min-width: 600px) { .input-group { flex-direction: row; } }
+        @media (min-width: 600px) { .input-group { flex-direction: row; align-items: stretch; } }
         
-        .btn-submit { background-color: #ff8c00; color: #fff; padding: 12px 24px; border: none; border-radius: 4px; font-weight: bold; cursor: pointer; width: 100%; font-size: 16px; }
+        .btn-submit { background-color: #ff8c00; color: #fff; padding: 0 24px; border: none; border-radius: 4px; font-weight: bold; cursor: pointer; width: 100%; font-size: 16px; height: 48px; display: flex; align-items: center; justify-content: center; box-sizing: border-box; margin: 0; }
         @media (min-width: 600px) { .btn-submit { width: auto; } }
         .btn-submit:hover { opacity: 0.8; }
         .divider { text-align: center; color: #555; margin: 15px 0; font-weight: bold; }
 
         .video-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 20px; width: 100%; }
-        .card { position: relative; background-color: #1e1e1e; border-left: 5px solid #00E676; border-radius: 8px; padding: 20px; display: flex; flex-direction: column; justify-content: space-between; transition: border-left-color 0.2s ease-in-out; }
+        .card { position: relative; background-color: #1e1e1e; border-left: 5px solid #00E676; border-radius: 8px; padding: 20px; display: flex; flex-direction: column; transition: border-left-color 0.2s ease-in-out; }
         .card.viewed { border-left-color: #555 !important; }
         .card.hover-delete { border-left-color: #ff3333 !important; }
         .card.deleting { border-left-color: #ff3333 !important; }
 
+        .card-content { flex-grow: 1; display: flex; flex-direction: column; }
         .thumbnail-wrapper { position: relative; width: 100%; height: 180px; margin-bottom: 10px; border-radius: 4px; overflow: hidden; background: #2a2a2a; }
         .thumbnail { width: 100%; height: 100%; object-fit: cover; display: flex; align-items: center; justify-content: center; color: #555; }
         .date-badge { position: absolute; bottom: 8px; right: 8px; background: rgba(0,0,0,0.8); color: #fff; padding: 4px 8px; font-size: 0.75rem; border-radius: 4px; }
 
-        .card-header { display: flex; align-items: flex-start; gap: 10px; margin-bottom: 10px; }
+        .card-header { display: flex; align-items: flex-start; gap: 10px; margin-bottom: 15px; }
         .favicon { width: 20px; height: 20px; border-radius: 50%; background: #fff; margin-top: 2px; flex-shrink: 0; transition: transform 0.2s;}
         .favicon:hover { transform: scale(1.2); }
         .video-title { font-size: 1.05rem; font-weight: bold; word-wrap: break-word; line-height: 1.3; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; cursor: pointer; transition: color 0.2s; }
         .video-title:hover { color: #ff8c00; }
 
-        /* Inline, non-wrapping meta tags */
-        .meta-tags { display: flex; flex-wrap: nowrap; overflow-x: auto; gap: 8px; margin-bottom: 15px; font-size: 0.8rem; color: #aaa; scrollbar-width: none; }
+        /* Anchors the stats and buttons to the bottom regardless of title height */
+        .card-bottom { margin-top: auto; }
+
+        .meta-tags { display: flex; flex-wrap: nowrap; overflow-x: auto; gap: 8px; margin-bottom: 12px; font-size: 0.8rem; color: #aaa; scrollbar-width: none; }
         .meta-tags::-webkit-scrollbar { display: none; }
         .meta-tag { background: #2a2a2a; padding: 4px 8px; border-radius: 4px; display: flex; align-items: center; gap: 4px; white-space: nowrap; }
 
-        .btn-group { display: flex; flex-wrap: wrap; gap: 8px; }
-        .btn { flex: 1; padding: 10px; border: none; border-radius: 4px; font-weight: bold; cursor: pointer; text-align: center; transition: all 0.2s; font-size: 0.9rem; text-decoration: none; display: flex; align-items: center; justify-content: center; }
+        .btn-group { display: flex; flex-wrap: nowrap; gap: 8px; }
+        .btn { flex: 1; padding: 10px 5px; border: none; border-radius: 4px; font-weight: bold; cursor: pointer; text-align: center; transition: all 0.2s; font-size: 0.9rem; text-decoration: none; display: flex; align-items: center; justify-content: center; min-width: 0; }
         .btn:hover { opacity: 0.8; }
-        .btn-copy { background-color: transparent; border: 1px solid #ff8c00; color: #ff8c00; min-width: 80px; }
-        .btn-view { background-color: #00E676; color: #121212; min-width: 80px; }
-        .btn-download { background-color: #333; color: #fff; min-width: 80px; }
+        .btn-copy { background-color: transparent; border: 1px solid #ff8c00; color: #ff8c00; }
+        .btn-view { background-color: #00E676; color: #121212; }
+        .btn-download { background-color: #333; color: #fff; font-size: 1.1rem; flex: 0 0 50px; }
         .btn-delete { background-color: #ff3333; color: #fff; flex: 0 0 45px; font-size: 1.2rem; }
-
-        .stats-bar { display: flex; justify-content: space-between; position: fixed; bottom: 0; left: 0; width: 100%; background: #1e1e1e; border-top: 1px solid #333; font-size: 0.9rem; color: #888; z-index: 100; padding-bottom: env(safe-area-inset-bottom); }
-        .stats-left { padding: 15px; flex: 1; text-align: center; cursor: pointer; transition: background 0.2s; }
-        .stats-right { padding: 15px; width: 100px; text-align: center; cursor: pointer; border-left: 1px solid #333; transition: background 0.2s; color: #ff3333; font-weight: bold; }
-        .stats-left:hover { color: #fff; background: #252525; }
-        .stats-right:hover { background: #ff3333; color: #fff; }
 
         .modal { display: none; position: fixed; z-index: 1000; left: 0; top: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.95); align-items: center; justify-content: center; }
         .modal-content { position: relative; width: 90%; max-width: 1000px; display: flex; flex-direction: column; }
@@ -68,19 +66,23 @@
         .close-modal { position: absolute; top: -40px; right: 0; color: white; font-size: 35px; font-weight: bold; cursor: pointer; transition: color 0.2s; }
         .close-modal:hover { color: #ff8c00; }
         
-        .dialog-box { background: #1e1e1e; padding: 25px; border-radius: 8px; text-align: center; max-width: 400px; border-top: 3px solid #ff3333; }
+        .dialog-box { background: #1e1e1e; padding: 25px; border-radius: 8px; text-align: center; max-width: 400px; width: 100%; border-top: 3px solid #ff3333; }
         .dialog-box h3 { margin-top: 0; color: #fff; }
         .dialog-stats { border-top: 3px solid #00E676; text-align: left;}
         .dialog-stats p { margin: 10px 0; color: #ccc;}
         .dialog-stats strong { color: #fff; }
 
         #toast { visibility: hidden; min-width: 250px; background-color: #00E676; color: #121212; text-align: center; border-radius: 4px; padding: 16px; position: fixed; z-index: 2000; left: 50%; bottom: 80px; font-weight: bold; transform: translateX(-50%); opacity: 0; transition: opacity 0.3s, bottom 0.3s; }
-        #toast.show { visibility: visible; opacity: 1; bottom: 100px; }
+        #toast.show { visibility: visible; opacity: 1; bottom: 40px; }
+
+        #backToTop { display: none; position: fixed; bottom: 20px; right: 20px; z-index: 99; background: #ff8c00; color: #fff; border: none; border-radius: 50%; width: 50px; height: 50px; font-size: 24px; font-weight: bold; cursor: pointer; box-shadow: 0 4px 6px rgba(0,0,0,0.3); transition: opacity 0.2s; }
+        #backToTop:hover { opacity: 0.8; }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>upShareMP4</h1>
+        <!-- Clicking the Title now opens the statistics modal -->
+        <h1 onclick="openStats()" title="View Server Statistics">upShareMP4</h1>
         <p class="subtitle">Download, Convert, & Share .mp4s</p>
 
         <div id="login-screen">
@@ -108,10 +110,9 @@
         </div>
     </div>
 
-    <div class="stats-bar" id="statsBar" style="display:none;">
-        <div class="stats-left" onclick="openStats()">📊 View Server Statistics</div>
-        <div class="stats-right" onclick="logoutApp()">Logout</div>
-    </div>
+    <!-- Floating Back to Top Button -->
+    <button id="backToTop" onclick="window.scrollTo({top: 0, behavior: 'smooth'})">↑</button>
+
     <div id="toast">Copied to clipboard!</div>
 
     <div id="videoModal" class="modal" onclick="closeVideoModal(event)">
@@ -133,7 +134,11 @@
     </div>
 
     <div id="statsModal" class="modal" onclick="closeStatsModal(event)">
-        <div class="dialog-box dialog-stats" id="statsContent"></div>
+        <div class="dialog-box dialog-stats">
+            <div id="statsContent"></div>
+            <!-- Logout appended directly into the stats menu -->
+            <button class="btn" style="background:#ff3333; color:#fff; width:100%; margin-top:20px;" onclick="logoutApp()">Logout</button>
+        </div>
     </div>
 
     <script>
@@ -152,18 +157,22 @@
             return new Date(timestamp * 1000).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
         }
 
+        window.addEventListener('scroll', () => {
+            const btn = document.getElementById('backToTop');
+            if(window.scrollY > 400) btn.style.display = 'block';
+            else btn.style.display = 'none';
+        });
+
         async function checkAuthAndLoad() {
             try {
                 const response = await fetch('/api/videos');
                 if (response.status === 401) {
                     document.getElementById('login-screen').style.display = 'block';
                     document.getElementById('app-screen').style.display = 'none';
-                    document.getElementById('statsBar').style.display = 'none';
                     return false;
                 }
                 document.getElementById('login-screen').style.display = 'none';
                 document.getElementById('app-screen').style.display = 'block';
-                document.getElementById('statsBar').style.display = 'flex';
                 
                 const data = await response.json();
                 renderVideos(data.videos);
@@ -219,7 +228,7 @@
             [...videos].reverse().forEach(video => {
                 if (!existingCards.includes(video.id)) {
                     const videoUrl = window.location.origin + '/videos/' + video.filename;
-                    const thumbImg = video.thumbnail ? `<img src="/videos/${video.thumbnail}" class="thumbnail">` : `<div class="thumbnail">No Thumbnail</div>`;
+                    const thumbImg = video.thumbnail ? `<img src="/videos/${video.thumbnail}" class="thumbnail">` : `<div class="thumbnail">Processing...</div>`;
                     
                     let faviconImg = '';
                     if (video.domain === 'localhost') {
@@ -234,29 +243,31 @@
                     card.className = 'card';
                     card.dataset.video = video.id;
                     card.innerHTML = `
-                        <div>
+                        <div class="card-content">
                             <div class="thumbnail-wrapper">
                                 ${thumbImg}
                                 <div class="date-badge">${formatDate(video.date)}</div>
                             </div>
                             <div class="card-header">
                                 ${faviconImg}
-                                <div class="video-title" title="${video.title}" onclick="editTitle('${video.id}', '${video.title.replace(/'/g, "\\'")}')">${video.title}</div>
+                                <div class="video-title" title="Double click to edit" ondblclick="editTitle('${video.id}', '${video.title.replace(/'/g, "\\'")}')">${video.title}</div>
                             </div>
+                        </div>
+                        <div class="card-bottom">
                             <div class="meta-tags">
                                 <div class="meta-tag">⏱️ ${video.duration}</div>
                                 <div class="meta-tag">💾 ${formatBytes(video.size_bytes)}</div>
                                 <div class="meta-tag">👁️ ${video.views}</div>
                             </div>
-                        </div>
-                        <div class="btn-group">
-                            <button class="btn btn-copy" onclick="copyLink('${videoUrl}', this)">Copy</button>
-                            <button class="btn btn-view" onclick="openVideoModal('${videoUrl}', this)">View</button>
-                            <a href="${videoUrl}" download="${video.filename}" class="btn btn-download" onclick="markViewed(this)">Save</a>
-                            <button class="btn btn-delete" 
-                                onmouseover="this.closest('.card').classList.add('hover-delete')" 
-                                onmouseout="this.closest('.card').classList.remove('hover-delete')" 
-                                onclick="triggerDelete('${video.id}', this)" title="Delete Video">✖</button>
+                            <div class="btn-group">
+                                <button class="btn btn-copy" onclick="copyLink('${videoUrl}', this)">Copy</button>
+                                <button class="btn btn-view" onclick="openVideoModal('${videoUrl}', this)">View</button>
+                                <a href="${videoUrl}" download="${video.filename}" class="btn btn-download" title="Download to Device" onclick="markViewed(this)">📥</a>
+                                <button class="btn btn-delete" 
+                                    onmouseover="this.closest('.card').classList.add('hover-delete')" 
+                                    onmouseout="this.closest('.card').classList.remove('hover-delete')" 
+                                    onclick="triggerDelete('${video.id}', this)" title="Delete Video">✖</button>
+                            </div>
                         </div>
                     `;
                     grid.prepend(card);
@@ -278,9 +289,13 @@
             tile.id = 'loadingState';
             tile.style.borderLeftColor = '#ff8c00';
             tile.innerHTML = `
-                <div class="thumbnail-wrapper" style="border: 1px dashed #ff8c00; color: #ff8c00;"><div class="thumbnail">Downloading...</div></div>
-                <div class="card-header"><div class="video-title" style="color:#888;">Fetching metadata...</div></div>
-                <div class="btn-group"><button class="btn" disabled style="background:#555; color:#888;">Working on it...</button></div>
+                <div class="card-content">
+                    <div class="thumbnail-wrapper" style="border: 1px dashed #ff8c00; color: #ff8c00;"><div class="thumbnail">Downloading...</div></div>
+                    <div class="card-header"><div class="video-title" style="color:#888;">Fetching metadata...</div></div>
+                </div>
+                <div class="card-bottom">
+                    <div class="btn-group"><button class="btn" disabled style="background:#555; color:#888;">Working on it...</button></div>
+                </div>
             `;
             grid.prepend(tile);
         }

@@ -127,11 +127,22 @@ def process_video(url: str, video_id: str):
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         ydl.download([url])
     
+    # TikTok / Social Thumbnail Fallback
+    thumb_exists = False
+    for ext in ['.jpg', '.webp', '.png']:
+        if os.path.exists(os.path.join(DOWNLOAD_DIR, f"{video_id}{ext}")):
+            thumb_exists = True
+            break
+            
+    if not thumb_exists:
+        mp4_path = os.path.join(DOWNLOAD_DIR, f"{video_id}.mp4")
+        if os.path.exists(mp4_path):
+            subprocess.run(["ffmpeg", "-y", "-i", mp4_path, "-ss", "00:00:01.000", "-vframes", "1", "-q:v", "2", f"{DOWNLOAD_DIR}/{video_id}.jpg"])
+
     extract_true_duration(video_id)
 
 def convert_local_file(input_path: str, output_path: str, video_id: str):
     subprocess.run(["ffmpeg", "-i", input_path, "-c:v", "libx264", "-preset", "fast", "-c:a", "aac", output_path, "-y"])
-    # Adjusted to 0.1 seconds to guarantee extraction even on very short uploads
     subprocess.run(["ffmpeg", "-y", "-i", output_path, "-ss", "00:00:00.100", "-vframes", "1", "-q:v", "2", f"{DOWNLOAD_DIR}/{video_id}.jpg"])
     os.remove(input_path)
     extract_true_duration(video_id)

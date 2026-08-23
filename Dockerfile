@@ -7,7 +7,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
-# Generic environment variables for public distribution
+# Environment Variables
 ENV APP_USERNAME=admin
 ENV APP_PASSWORD=adminpassword
 ENV PORT=29738

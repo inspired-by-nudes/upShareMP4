@@ -2,6 +2,7 @@ from fastapi import FastAPI, BackgroundTasks, UploadFile, File, Form, Depends, H
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
+from urllib.parse import urlparse
 import yt_dlp
 import uuid
 import os
@@ -21,11 +22,17 @@ DOWNLOAD_DIR = os.getenv("DOWNLOAD_DIR", "/downloads")
 CONFIG_DIR = os.getenv("CONFIG_DIR", "/config")
 SESSION_DAYS = int(os.getenv("SESSION_DAYS", "30"))
 MAX_DOWNLOAD_MB = float(os.getenv("MAX_DOWNLOAD_MB", "150"))
+YTDLP_COOKIES = os.getenv("YTDLP_COOKIES", "")
 
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 os.makedirs(CONFIG_DIR, exist_ok=True)
 DB_FILE = os.path.join(CONFIG_DIR, "stats_db.json")
+COOKIE_FILE = os.path.join(CONFIG_DIR, "cookies.txt")
 db_lock = threading.Lock()
+
+if YTDLP_COOKIES:
+    with open(COOKIE_FILE, "w") as f:
+        f.write(YTDLP_COOKIES.replace("\\n", "\n"))
 
 def get_auth_token():
     return hashlib.sha256(f"{APP_USERNAME}:{APP_PASSWORD}".encode()).hexdigest()
@@ -55,13 +62,10 @@ def save_db(data):
     with open(DB_FILE, "w") as f:
         json.dump(data, f)
 
-# Middleware: True view tracking (intercepts all video loads, even external)
 @app.middleware("http")
 async def track_video_views(request: Request, call_next):
     path = request.url.path
     range_header = request.headers.get("range", "")
-    
-    # Only count as a "view" if it's the start of the video (no range, or starts at 0)
     is_new_view = path.startswith("/videos/") and path.endswith(".mp4") and (not range_header or "bytes=0-" in range_header)
     
     response = await call_next(request)
@@ -86,11 +90,16 @@ app.mount("/videos", StaticFiles(directory=DOWNLOAD_DIR), name="videos")
 class VideoRequest(BaseModel):
     url: str
 
+class UrlUpdate(BaseModel):
+    url: str
+
+class TitleUpdate(BaseModel):
+    title: str
+
 def extract_true_duration(video_id: str):
     mp4_path = os.path.join(DOWNLOAD_DIR, f"{video_id}.mp4")
     json_path = os.path.join(DOWNLOAD_DIR, f"{video_id}.info.json")
     try:
-        # Fallback ffprobe check to fix missing durations (e.g. WorldStarHipHop)
         result = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", mp4_path], capture_output=True, text=True)
         duration = float(result.stdout.strip())
         if os.path.exists(json_path):
@@ -105,12 +114,16 @@ def extract_true_duration(video_id: str):
 def process_video(url: str, video_id: str):
     ydl_opts = {
         'outtmpl': f'{DOWNLOAD_DIR}/{video_id}.%(ext)s',
-        'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+        'format': 'bestvideo[ext=mp4][vcodec^=avc]+bestaudio[ext=m4a]/best[ext=mp4]/best',
         'merge_output_format': 'mp4',
         'noplaylist': True,
         'writeinfojson': True,
         'writethumbnail': True,
+        'postprocessors': [{'key': 'FFmpegVideoConvertor', 'preferedformat': 'mp4'}],
     }
+    if os.path.exists(COOKIE_FILE):
+        ydl_opts['cookiefile'] = COOKIE_FILE
+
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         ydl.download([url])
     
@@ -118,6 +131,8 @@ def process_video(url: str, video_id: str):
 
 def convert_local_file(input_path: str, output_path: str, video_id: str):
     subprocess.run(["ffmpeg", "-i", input_path, "-c:v", "libx264", "-preset", "fast", "-c:a", "aac", output_path, "-y"])
+    # Adjusted to 0.1 seconds to guarantee extraction even on very short uploads
+    subprocess.run(["ffmpeg", "-y", "-i", output_path, "-ss", "00:00:00.100", "-vframes", "1", "-q:v", "2", f"{DOWNLOAD_DIR}/{video_id}.jpg"])
     os.remove(input_path)
     extract_true_duration(video_id)
 
@@ -144,10 +159,7 @@ def get_stats(user: str = Depends(verify_auth)):
     with db_lock:
         db = load_db()
     videos = [f for f in os.listdir(DOWNLOAD_DIR) if f.endswith('.mp4') and not f.startswith('temp_')]
-    
-    # Calculate exact disk usage of only the videos
     used_videos_bytes = sum(os.path.getsize(os.path.join(DOWNLOAD_DIR, f)) for f in videos)
-    
     return {
         "used_disk": used_videos_bytes,
         "bandwidth": db.get("bandwidth_bytes", 0),
@@ -158,17 +170,20 @@ def get_stats(user: str = Depends(verify_auth)):
 
 @app.post("/api/download_form")
 async def form_download(background_tasks: BackgroundTasks, url: str = Form(...), override_password: str = Form(None), user: str = Depends(verify_auth)):
-    # Check limit unless override password is valid
     if override_password != APP_PASSWORD:
         try:
-            with yt_dlp.YoutubeDL({'noplaylist': True}) as ydl:
+            ydl_opts = {'noplaylist': True}
+            if os.path.exists(COOKIE_FILE):
+                ydl_opts['cookiefile'] = COOKIE_FILE
+                
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=False)
                 size_bytes = info.get("filesize") or info.get("filesize_approx") or 0
                 size_mb = size_bytes / (1024 * 1024)
                 if size_mb > MAX_DOWNLOAD_MB:
                     return {"status": "needs_override", "size_mb": round(size_mb, 1)}
         except Exception:
-            pass # Failsafe: if yt-dlp can't guess size, proceed normally
+            pass 
             
     video_id = f"vid_{str(uuid.uuid4())[:8]}"
     background_tasks.add_task(process_video, url, video_id)
@@ -187,17 +202,45 @@ async def upload_video(background_tasks: BackgroundTasks, file: UploadFile = Fil
     background_tasks.add_task(convert_local_file, temp_path, final_path, video_id)
     return {"status": "processing"}
 
+@app.post("/api/videos/{video_id}/url")
+def update_video_url(video_id: str, req: UrlUpdate, user: str = Depends(verify_auth)):
+    safe_id = os.path.basename(video_id)
+    info_file = os.path.join(DOWNLOAD_DIR, f"{safe_id}.info.json")
+    if os.path.exists(info_file):
+        with db_lock:
+            with open(info_file, 'r') as f:
+                info = json.load(f)
+            info['webpage_url'] = req.url
+            domain = urlparse(req.url).netloc.replace('www.', '')
+            info['webpage_url_domain'] = domain if domain else "unknown"
+            with open(info_file, 'w') as f:
+                json.dump(info, f)
+        return {"status": "updated"}
+    raise HTTPException(status_code=404, detail="Video not found")
+
+@app.post("/api/videos/{video_id}/title")
+def update_video_title(video_id: str, req: TitleUpdate, user: str = Depends(verify_auth)):
+    safe_id = os.path.basename(video_id)
+    info_file = os.path.join(DOWNLOAD_DIR, f"{safe_id}.info.json")
+    if os.path.exists(info_file):
+        with db_lock:
+            with open(info_file, 'r') as f:
+                info = json.load(f)
+            info['title'] = req.title
+            with open(info_file, 'w') as f:
+                json.dump(info, f)
+        return {"status": "updated"}
+    raise HTTPException(status_code=404, detail="Video not found")
+
 @app.delete("/api/videos/{video_id}")
 def delete_video(video_id: str, user: str = Depends(verify_auth)):
     safe_id = os.path.basename(video_id)
     deleted = False
-    
     for ext in ['.mp4', '.info.json', '.jpg', '.webp', '.png']:
         file_path = os.path.join(DOWNLOAD_DIR, f"{safe_id}{ext}")
         if os.path.exists(file_path):
             os.remove(file_path)
             deleted = True
-            
     if deleted:
         with db_lock:
             db = load_db()

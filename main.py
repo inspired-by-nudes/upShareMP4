@@ -1,10 +1,9 @@
 from fastapi import FastAPI, BackgroundTasks, UploadFile, File, Form, Depends, HTTPException, Request, Response
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, FileResponse
 from pydantic import BaseModel
 from urllib.parse import urlparse
 import yt_dlp
-import uuid
 import os
 import subprocess
 import secrets
@@ -33,6 +32,10 @@ db_lock = threading.Lock()
 if YTDLP_COOKIES:
     with open(COOKIE_FILE, "w") as f:
         f.write(YTDLP_COOKIES.replace("\\n", "\n"))
+
+def generate_secure_id():
+    # Creates a 16-character, case-sensitive, URL-safe random string
+    return f"vid_{secrets.token_urlsafe(12)}"
 
 def get_auth_token():
     return hashlib.sha256(f"{APP_USERNAME}:{APP_PASSWORD}".encode()).hexdigest()
@@ -127,7 +130,6 @@ def process_video(url: str, video_id: str):
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         ydl.download([url])
     
-    # TikTok / Social Thumbnail Fallback
     thumb_exists = False
     for ext in ['.jpg', '.webp', '.png']:
         if os.path.exists(os.path.join(DOWNLOAD_DIR, f"{video_id}{ext}")):
@@ -196,13 +198,13 @@ async def form_download(background_tasks: BackgroundTasks, url: str = Form(...),
         except Exception:
             pass 
             
-    video_id = f"vid_{str(uuid.uuid4())[:8]}"
+    video_id = generate_secure_id()
     background_tasks.add_task(process_video, url, video_id)
     return {"status": "processing"}
 
 @app.post("/api/upload")
 async def upload_video(background_tasks: BackgroundTasks, file: UploadFile = File(...), user: str = Depends(verify_auth)):
-    video_id = f"vid_{str(uuid.uuid4())[:8]}"
+    video_id = generate_secure_id()
     temp_path = os.path.join(DOWNLOAD_DIR, f"temp_{video_id}_{file.filename}")
     final_path = os.path.join(DOWNLOAD_DIR, f"{video_id}.mp4")
     
@@ -313,6 +315,10 @@ def list_videos(user: str = Depends(verify_auth)):
             
     videos_data.sort(key=lambda x: x['date'], reverse=True)
     return {"videos": videos_data}
+
+@app.get("/icon.svg")
+def get_favicon():
+    return FileResponse("icon.svg")
 
 @app.get("/", response_class=HTMLResponse)
 def read_root():

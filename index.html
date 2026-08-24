@@ -4,8 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <title>upShareMP4</title>
-    <!-- Mapped directly to the vector file for browser title bar -->
-    <link rel="icon" type="image/svg+xml" href="icon.svg">
+    <!-- Explicitly routed to the new backend endpoint to guarantee rendering -->
+    <link rel="icon" type="image/svg+xml" href="/icon.svg">
     <style>
         html, body { background-color: #121212; color: #ffffff; font-family: 'Segoe UI', Tahoma, sans-serif; margin: 0; padding: 0; width: 100%; overflow-x: hidden; box-sizing: border-box; }
         *, *:before, *:after { box-sizing: inherit; }
@@ -45,7 +45,6 @@
         .video-title { font-size: 1.05rem; font-weight: bold; word-wrap: break-word; line-height: 1.3; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; cursor: pointer; transition: color 0.2s; }
         .video-title:hover { color: #ff8c00; }
 
-        /* Anchors the stats and buttons to the bottom regardless of title height */
         .card-bottom { margin-top: auto; }
 
         .meta-tags { display: flex; flex-wrap: nowrap; overflow-x: auto; gap: 8px; margin-bottom: 12px; font-size: 0.8rem; color: #aaa; scrollbar-width: none; }
@@ -81,7 +80,6 @@
 </head>
 <body>
     <div class="container">
-        <!-- Clicking the Title now opens the statistics modal -->
         <h1 onclick="openStats()" title="View Server Statistics">upShareMP4</h1>
         <p class="subtitle">Download, Convert, & Share .mp4s</p>
 
@@ -110,7 +108,6 @@
         </div>
     </div>
 
-    <!-- Floating Back to Top Button -->
     <button id="backToTop" onclick="window.scrollTo({top: 0, behavior: 'smooth'})">↑</button>
 
     <div id="toast">Copied to clipboard!</div>
@@ -136,7 +133,6 @@
     <div id="statsModal" class="modal" onclick="closeStatsModal(event)">
         <div class="dialog-box dialog-stats">
             <div id="statsContent"></div>
-            <!-- Logout appended directly into the stats menu -->
             <button class="btn" style="background:#ff3333; color:#fff; width:100%; margin-top:20px;" onclick="logoutApp()">Logout</button>
         </div>
     </div>
@@ -255,9 +251,9 @@
                         </div>
                         <div class="card-bottom">
                             <div class="meta-tags">
+                                <div class="meta-tag">👁️ ${video.views}</div>
                                 <div class="meta-tag">⏱️ ${video.duration}</div>
                                 <div class="meta-tag">💾 ${formatBytes(video.size_bytes)}</div>
-                                <div class="meta-tag">👁️ ${video.views}</div>
                             </div>
                             <div class="btn-group">
                                 <button class="btn btn-copy" onclick="copyLink('${videoUrl}', this)">Copy</button>
@@ -400,6 +396,7 @@
 
         function openVideoModal(url, btnElement) {
             markViewed(btnElement);
+            document.body.style.overflow = 'hidden'; // Lock background scrolling
             const modal = document.getElementById('videoModal');
             const video = document.getElementById('modalVideo');
             video.src = url;
@@ -413,6 +410,7 @@
 
         function closeVideoModal(e) {
             if (!e || e.target.id === 'videoModal' || e.target.className === 'close-modal') {
+                document.body.style.overflow = ''; // Restore background scrolling
                 const modal = document.getElementById('videoModal');
                 const video = document.getElementById('modalVideo');
                 video.pause();

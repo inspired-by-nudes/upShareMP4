@@ -66,7 +66,6 @@ def save_db(data):
     with open(DB_FILE, "w") as f:
         json.dump(data, f)
 
-# GLOBAL EXCEPTION HANDLER: Redirect 404s (Invalid Links) back to root
 @app.exception_handler(StarletteHTTPException)
 async def custom_http_exception_handler(request: Request, exc: StarletteHTTPException):
     if exc.status_code == 404:
@@ -206,7 +205,7 @@ async def form_download(background_tasks: BackgroundTasks, url: str = Form(...),
             
     video_id = generate_secure_id()
     background_tasks.add_task(process_video, url, video_id)
-    return {"status": "processing"}
+    return {"status": "processing", "url": f"/videos/{video_id}.mp4"}
 
 @app.post("/api/upload")
 async def upload_video(background_tasks: BackgroundTasks, file: UploadFile = File(...), user: str = Depends(verify_auth)):
@@ -219,7 +218,7 @@ async def upload_video(background_tasks: BackgroundTasks, file: UploadFile = Fil
         
     create_dummy_info(video_id, file.filename)
     background_tasks.add_task(convert_local_file, temp_path, final_path, video_id)
-    return {"status": "processing"}
+    return {"status": "processing", "url": f"/videos/{video_id}.mp4"}
 
 @app.post("/api/videos/{video_id}/url")
 def update_video_url(video_id: str, req: UrlUpdate, user: str = Depends(verify_auth)):

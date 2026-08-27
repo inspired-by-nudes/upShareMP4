@@ -4,7 +4,6 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <title>upShareMP4</title>
-    <!-- Explicitly routed to the new backend endpoint to guarantee rendering -->
     <link rel="icon" type="image/svg+xml" href="/icon.svg">
     <style>
         html, body { background-color: #121212; color: #ffffff; font-family: 'Segoe UI', Tahoma, sans-serif; margin: 0; padding: 0; width: 100%; overflow-x: hidden; box-sizing: border-box; }
@@ -396,7 +395,10 @@
 
         function openVideoModal(url, btnElement) {
             markViewed(btnElement);
-            document.body.style.overflow = 'hidden'; // Lock background scrolling
+            // Strict dual-lock to force mobile Safari/Chrome adherence
+            document.body.style.overflow = 'hidden'; 
+            document.documentElement.style.overflow = 'hidden';
+            
             const modal = document.getElementById('videoModal');
             const video = document.getElementById('modalVideo');
             video.src = url;
@@ -410,7 +412,10 @@
 
         function closeVideoModal(e) {
             if (!e || e.target.id === 'videoModal' || e.target.className === 'close-modal') {
-                document.body.style.overflow = ''; // Restore background scrolling
+                // Restore dual-lock
+                document.body.style.overflow = '';
+                document.documentElement.style.overflow = '';
+                
                 const modal = document.getElementById('videoModal');
                 const video = document.getElementById('modalVideo');
                 video.pause();

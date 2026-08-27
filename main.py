@@ -1,6 +1,7 @@
-from fastapi import FastAPI, BackgroundTasks, UploadFile, File, Form, Depends, HTTPException, Request, Response
+from fastapi import FastAPI, BackgroundTasks, UploadFile, File, Form, Depends, Request, Response
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import HTMLResponse, FileResponse
+from fastapi.responses import HTMLResponse, FileResponse, RedirectResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from pydantic import BaseModel
 from urllib.parse import urlparse
 import yt_dlp
@@ -34,7 +35,6 @@ if YTDLP_COOKIES:
         f.write(YTDLP_COOKIES.replace("\\n", "\n"))
 
 def generate_secure_id():
-    # Creates a 16-character, case-sensitive, URL-safe random string
     return f"vid_{secrets.token_urlsafe(12)}"
 
 def get_auth_token():
@@ -53,6 +53,7 @@ def verify_auth(request: Request):
                 return APP_USERNAME
         except Exception:
             pass
+    from fastapi import HTTPException
     raise HTTPException(status_code=401, detail="Unauthorized")
 
 def load_db():
@@ -64,6 +65,13 @@ def load_db():
 def save_db(data):
     with open(DB_FILE, "w") as f:
         json.dump(data, f)
+
+# GLOBAL EXCEPTION HANDLER: Redirect 404s (Invalid Links) back to root
+@app.exception_handler(StarletteHTTPException)
+async def custom_http_exception_handler(request: Request, exc: StarletteHTTPException):
+    if exc.status_code == 404:
+        return RedirectResponse(url="/")
+    return HTMLResponse(str(exc.detail), status_code=exc.status_code)
 
 @app.middleware("http")
 async def track_video_views(request: Request, call_next):
@@ -89,9 +97,6 @@ async def track_video_views(request: Request, call_next):
     return response
 
 app.mount("/videos", StaticFiles(directory=DOWNLOAD_DIR), name="videos")
-
-class VideoRequest(BaseModel):
-    url: str
 
 class UrlUpdate(BaseModel):
     url: str
@@ -160,6 +165,7 @@ def login(response: Response, username: str = Form(...), password: str = Form(..
         max_age = SESSION_DAYS * 86400
         response.set_cookie(key="upshare_session", value=get_auth_token(), max_age=max_age, httponly=True)
         return {"status": "success"}
+    from fastapi import HTTPException
     raise HTTPException(status_code=401, detail="Invalid credentials")
 
 @app.post("/api/logout")
@@ -229,6 +235,7 @@ def update_video_url(video_id: str, req: UrlUpdate, user: str = Depends(verify_a
             with open(info_file, 'w') as f:
                 json.dump(info, f)
         return {"status": "updated"}
+    from fastapi import HTTPException
     raise HTTPException(status_code=404, detail="Video not found")
 
 @app.post("/api/videos/{video_id}/title")
@@ -243,6 +250,7 @@ def update_video_title(video_id: str, req: TitleUpdate, user: str = Depends(veri
             with open(info_file, 'w') as f:
                 json.dump(info, f)
         return {"status": "updated"}
+    from fastapi import HTTPException
     raise HTTPException(status_code=404, detail="Video not found")
 
 @app.delete("/api/videos/{video_id}")
@@ -262,6 +270,7 @@ def delete_video(video_id: str, user: str = Depends(verify_auth)):
                 del db["views"][safe_id]
             save_db(db)
         return {"status": "deleted"}
+    from fastapi import HTTPException
     raise HTTPException(status_code=404, detail="Video not found")
 
 @app.get("/api/videos")

@@ -15,75 +15,75 @@
         p.subtitle { text-align: center; color: #888; margin-bottom: 30px; }
         
         #login-screen { display: none; max-width: 400px; margin: 100px auto; background: #1e1e1e; padding: 30px; border-radius: 8px; border-top: 3px solid #00E676; text-align: center; }
-        input[type="text"], input[type="password"], input[type="file"] { width: 100%; padding: 0 15px; margin-bottom: 0; border-radius: 4px; border: 1px solid #333; background: #2a2a2a; color: #fff; font-size: 16px; height: 48px; box-sizing: border-box; }
+        #login-screen form { display: flex; flex-direction: column; align-items: center; gap: 15px; }
+        input[type="text"], input[type="password"], input[type="file"] { width: 100%; padding: 0 15px; margin: 0; border-radius: 4px; border: 1px solid #333; background: #2a2a2a; color: #fff; font-size: 16px; height: 48px; box-sizing: border-box; }
         
         #app-screen { display: none; }
-        .controls { width: 100%; background: #1e1e1e; padding: 20px; border-radius: 8px; border-top: 3px solid #ff8c00; margin-bottom: 40px; }
+        .controls { width: 100%; background: #1e1e1e; padding: 20px; border-radius: 8px; border-top: 3px solid #ff8c00; margin-bottom: 40px; border: 2px dashed transparent; transition: border 0.3s; }
+        .controls.dragover { border: 2px dashed #00E676; background: #232323; }
         .input-group { display: flex; flex-direction: column; gap: 10px; margin-bottom: 15px; }
         @media (min-width: 600px) { .input-group { flex-direction: row; align-items: stretch; } }
         
-        .btn-submit { background-color: #ff8c00; color: #fff; padding: 0 24px; border: none; border-radius: 4px; font-weight: bold; cursor: pointer; width: 100%; font-size: 16px; height: 48px; display: flex; align-items: center; justify-content: center; box-sizing: border-box; margin: 0; }
-        @media (min-width: 600px) { .btn-submit { width: auto; } }
+        .btn-submit { background-color: #ff8c00; color: #fff; padding: 0 24px; border: none; border-radius: 4px; font-weight: bold; cursor: pointer; width: auto; min-width: 120px; font-size: 16px; height: 48px; display: flex; align-items: center; justify-content: center; margin: 0 auto; }
+        @media (min-width: 600px) { .controls .btn-submit { margin: 0; width: auto; } }
         .btn-submit:hover { opacity: 0.8; }
         .divider { text-align: center; color: #555; margin: 15px 0; font-weight: bold; }
 
         .video-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 20px; width: 100%; }
-        .card { position: relative; background-color: #1e1e1e; border-left: 5px solid #00E676; border-radius: 8px; padding: 20px; display: flex; flex-direction: column; transition: border-left-color 0.2s ease-in-out; }
+        .card { position: relative; background-color: #1e1e1e; border-left: 5px solid #00E676; border-radius: 8px; padding: 20px; display: flex; flex-direction: column; transition: border-left-color 0.2s; }
         .card.viewed { border-left-color: #555 !important; }
-        .card.hover-delete { border-left-color: #ff3333 !important; }
         .card.deleting { border-left-color: #ff3333 !important; }
 
         .card-content { flex-grow: 1; display: flex; flex-direction: column; }
         .thumbnail-wrapper { position: relative; width: 100%; height: 180px; margin-bottom: 10px; border-radius: 4px; overflow: hidden; background: #2a2a2a; }
-        .thumbnail { width: 100%; height: 100%; object-fit: cover; display: flex; align-items: center; justify-content: center; color: #555; }
+        .thumbnail { width: 100%; height: 100%; object-fit: cover; display: flex; align-items: center; justify-content: center; color: #555; text-align: center; padding: 10px;}
         .date-badge { position: absolute; bottom: 8px; right: 8px; background: rgba(0,0,0,0.8); color: #fff; padding: 4px 8px; font-size: 0.75rem; border-radius: 4px; }
 
         .card-header { display: flex; align-items: flex-start; gap: 10px; margin-bottom: 15px; }
-        .favicon { width: 20px; height: 20px; border-radius: 50%; background: #fff; margin-top: 2px; flex-shrink: 0; transition: transform 0.2s;}
-        .favicon:hover { transform: scale(1.2); }
-        .video-title { font-size: 1.05rem; font-weight: bold; word-wrap: break-word; line-height: 1.3; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; cursor: pointer; transition: color 0.2s; }
-        .video-title:hover { color: #ff8c00; }
+        .favicon { width: 20px; height: 20px; border-radius: 50%; background: #fff; margin-top: 2px; flex-shrink: 0;}
+        .video-title { font-size: 1.05rem; font-weight: bold; word-wrap: break-word; line-height: 1.3; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
 
         .card-bottom { margin-top: auto; }
-
         .meta-tags { display: flex; flex-wrap: nowrap; overflow-x: auto; gap: 8px; margin-bottom: 12px; font-size: 0.8rem; color: #aaa; scrollbar-width: none; }
         .meta-tags::-webkit-scrollbar { display: none; }
-        .meta-tag { background: #2a2a2a; padding: 4px 8px; border-radius: 4px; display: flex; align-items: center; gap: 4px; white-space: nowrap; }
+        .meta-tag { background: #2a2a2a; padding: 4px 8px; border-radius: 4px; white-space: nowrap; }
 
         .btn-group { display: flex; flex-wrap: nowrap; gap: 8px; }
-        .btn { flex: 1; padding: 10px 5px; border: none; border-radius: 4px; font-weight: bold; cursor: pointer; text-align: center; transition: all 0.2s; font-size: 0.9rem; text-decoration: none; display: flex; align-items: center; justify-content: center; min-width: 0; }
+        .btn { flex: 1; padding: 10px 5px; border: none; border-radius: 4px; font-weight: bold; cursor: pointer; text-align: center; transition: all 0.2s; font-size: 0.9rem; text-decoration: none; display: flex; align-items: center; justify-content: center; }
         .btn:hover { opacity: 0.8; }
         .btn-copy { background-color: transparent; border: 1px solid #ff8c00; color: #ff8c00; }
         .btn-view { background-color: #00E676; color: #121212; }
         .btn-download { background-color: #333; color: #fff; font-size: 1.1rem; flex: 0 0 50px; }
         .btn-delete { background-color: #ff3333; color: #fff; flex: 0 0 45px; font-size: 1.2rem; }
 
-        .modal { display: none; position: fixed; z-index: 1000; left: 0; top: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.95); align-items: center; justify-content: center; }
-        .modal-content { position: relative; width: 90%; max-width: 1000px; display: flex; flex-direction: column; }
-        .modal-content video { width: 100%; max-height: 85vh; border-radius: 8px; outline: none; background: #000; pointer-events: auto; }
-        .close-modal { position: absolute; top: -40px; right: 0; color: white; font-size: 35px; font-weight: bold; cursor: pointer; transition: color 0.2s; }
-        .close-modal:hover { color: #ff8c00; }
+        /* Full Black Modal for Video */
+        .modal { display: none; position: fixed; z-index: 1000; left: 0; top: 0; width: 100%; height: 100%; background-color: #000000; align-items: center; justify-content: center; }
+        .modal-content { position: relative; width: 100%; max-width: 1000px; display: flex; flex-direction: column; }
+        .modal-content video { width: 100%; max-height: 85vh; outline: none; background: #000; pointer-events: auto; }
+        .close-modal { position: absolute; top: -40px; right: 10px; color: white; font-size: 35px; font-weight: bold; cursor: pointer; }
         
-        .dialog-box { background: #1e1e1e; padding: 25px; border-radius: 8px; text-align: center; max-width: 400px; width: 100%; border-top: 3px solid #ff3333; }
-        .dialog-box h3 { margin-top: 0; color: #fff; }
+        .dialog-bg { background-color: rgba(0,0,0,0.95); } /* Settings dialogs keep transparency */
+        .dialog-box { background: #1e1e1e; padding: 25px; border-radius: 8px; text-align: center; max-width: 400px; width: 90%; border-top: 3px solid #ff3333; margin: 0 auto;}
         .dialog-stats { border-top: 3px solid #00E676; text-align: left;}
         .dialog-stats p { margin: 10px 0; color: #ccc;}
         .dialog-stats strong { color: #fff; }
-
-        #toast { visibility: hidden; min-width: 250px; background-color: #00E676; color: #121212; text-align: center; border-radius: 4px; padding: 16px; position: fixed; z-index: 2000; left: 50%; bottom: 80px; font-weight: bold; transform: translateX(-50%); opacity: 0; transition: opacity 0.3s, bottom 0.3s; }
-        #toast.show { visibility: visible; opacity: 1; bottom: 40px; }
-
-        #backToTop { display: none; position: fixed; bottom: 20px; right: 20px; z-index: 99; background: #ff8c00; color: #fff; border: none; border-radius: 50%; width: 50px; height: 50px; font-size: 24px; font-weight: bold; cursor: pointer; box-shadow: 0 4px 6px rgba(0,0,0,0.3); transition: opacity 0.2s; }
-        #backToTop:hover { opacity: 0.8; }
+        .tabs { display: flex; gap: 10px; margin-bottom: 15px; border-bottom: 1px solid #333; padding-bottom: 10px; }
+        .tab { cursor: pointer; color: #888; font-weight: bold; }
+        .tab.active { color: #00E676; }
+        
+        #toast { visibility: hidden; min-width: 250px; background-color: #00E676; color: #121212; text-align: center; border-radius: 4px; padding: 16px; position: fixed; z-index: 2000; left: 50%; bottom: 80px; font-weight: bold; transform: translateX(-50%); opacity: 0; transition: opacity 0.3s; }
+        #toast.show { visibility: visible; opacity: 1; }
+        
+        #active-tasks { margin-bottom: 20px; }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1 onclick="openStats()" title="View Server Statistics">upShareMP4</h1>
+        <h1 id="app-title" onclick="openStats()">upShareMP4</h1>
         <p class="subtitle">Download, Convert, & Share .mp4s</p>
 
         <div id="login-screen">
-            <h3 style="margin-top:0;">Authentication Required</h3>
+            <h3 style="margin-top:0;">Authentication</h3>
             <form onsubmit="handleLogin(event)">
                 <input type="text" id="username" placeholder="Username" required>
                 <input type="password" id="password" placeholder="Password" required>
@@ -92,23 +92,24 @@
         </div>
 
         <div id="app-screen">
-            <div class="controls">
+            <div class="controls" id="drop-zone">
                 <form onsubmit="submitUrl(event)" class="input-group">
                     <input type="text" id="videoUrl" placeholder="Paste media link here..." required>
-                    <button type="submit" class="btn-submit">Fetch Video</button>
+                    <button type="submit" class="btn-submit">Fetch</button>
                 </form>
-                <div class="divider">OR</div>
+                <div class="divider">OR DRAG & DROP / BROWSE</div>
                 <form onsubmit="uploadFile(event)" class="input-group">
                     <input type="file" id="localFile" accept="video/*" required>
-                    <button type="submit" class="btn-submit">Upload & Convert</button>
+                    <button type="submit" class="btn-submit">Upload</button>
                 </form>
             </div>
+            
+            <div class="video-grid" id="active-tasks"></div>
             <div class="video-grid" id="videoGrid"></div>
         </div>
     </div>
 
-    <button id="backToTop" onclick="window.scrollTo({top: 0, behavior: 'smooth'})">↑</button>
-    <div id="toast">Copied to clipboard!</div>
+    <div id="toast">Copied!</div>
 
     <div id="videoModal" class="modal" onclick="closeVideoModal(event)">
         <div class="modal-content">
@@ -117,61 +118,67 @@
         </div>
     </div>
 
-    <div id="deleteModal" class="modal">
-        <div class="dialog-box">
-            <h3>Confirm Deletion</h3>
-            <p style="color:#aaa; margin-bottom:20px;">Permanently delete this video from the server?</p>
-            <div class="btn-group">
-                <button class="btn" style="background:#333; color:#fff;" onclick="cancelDelete()">Cancel</button>
-                <button class="btn" style="background:#ff3333; color:#fff;" onclick="confirmDelete()">Delete</button>
+    <div id="statsModal" class="modal dialog-bg" onclick="closeStatsModal(event)">
+        <div class="dialog-box dialog-stats">
+            <div class="tabs">
+                <div class="tab active" onclick="switchTab('stats')">Statistics</div>
+                <div class="tab" onclick="switchTab('settings')">Settings</div>
+            </div>
+            
+            <div id="tab-stats">
+                <div id="statsContent">Loading...</div>
+                <button class="btn" style="background:#ff3333; color:#fff; width:100%; margin-top:20px;" onclick="logoutApp()">Logout</button>
+            </div>
+            
+            <div id="tab-settings" style="display:none;">
+                <h4 style="margin:0 0 10px 0;">Account Settings</h4>
+                <input type="password" id="newPass" placeholder="New Password" style="margin-bottom:10px;">
+                <button class="btn" style="background:#ff8c00; color:#fff; width:100%;" onclick="changePass()">Update Password</button>
+                <div id="admin-settings" style="display:none; margin-top:20px; border-top:1px solid #333; padding-top:10px;">
+                    <h4 style="margin:0 0 10px 0; color:#ff8c00;">Admin Panel</h4>
+                    <p style="font-size:0.8rem; color:#aaa;">Manage users via CLI: <br><code>docker exec upShareMP4 python -c "import main; main.reset_password('user', 'pass')"</code></p>
+                </div>
             </div>
         </div>
     </div>
 
-    <div id="statsModal" class="modal" onclick="closeStatsModal(event)">
-        <div class="dialog-box dialog-stats">
-            <div id="statsContent"></div>
-            <button class="btn" style="background:#ff3333; color:#fff; width:100%; margin-top:20px;" onclick="logoutApp()">Logout</button>
-        </div>
-    </div>
-
     <script>
-        let pendingDeleteId = null;
-        let pendingDeleteCard = null;
-        window.pendingOverridePassword = null;
+        let currentUser = null;
+        let loginContactMsg = "";
 
-        function formatBytes(bytes, decimals = 2) {
-            if (bytes === 0) return '0 Bytes';
-            const k = 1024, dm = decimals < 0 ? 0 : decimals, sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
-            const i = Math.floor(Math.log(bytes) / Math.log(k));
-            return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
-        }
+        // Fetch Env on load for login contact message
+        fetch('/api/env').then(r => r.json()).then(d => { loginContactMsg = d.login_msg; });
 
-        function formatDate(timestamp) {
-            return new Date(timestamp * 1000).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-        }
-
-        window.addEventListener('scroll', () => {
-            const btn = document.getElementById('backToTop');
-            if(window.scrollY > 400) btn.style.display = 'block';
-            else btn.style.display = 'none';
+        document.getElementById('app-title').addEventListener('click', () => {
+            if (document.getElementById('login-screen').style.display === 'block' && loginContactMsg) {
+                alert(loginContactMsg);
+            } else if (currentUser) {
+                openStats();
+            }
         });
 
+        function formatBytes(bytes) {
+            if (bytes === 0) return '0 B';
+            const k = 1024, sizes = ['B', 'KB', 'MB', 'GB', 'TB'], i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+        }
+
+        // --- AUTH ---
         async function checkAuthAndLoad() {
             try {
-                const response = await fetch('/api/videos');
-                if (response.status === 401) {
+                const res = await fetch('/api/videos');
+                if (res.status === 401) {
                     document.getElementById('login-screen').style.display = 'block';
                     document.getElementById('app-screen').style.display = 'none';
                     return false;
                 }
                 document.getElementById('login-screen').style.display = 'none';
                 document.getElementById('app-screen').style.display = 'block';
-                
-                const data = await response.json();
+                const data = await res.json();
                 renderVideos(data.videos);
+                setupSSE();
                 return true;
-            } catch (e) { console.error(e); }
+            } catch (e) {}
         }
 
         async function handleLogin(e) {
@@ -182,11 +189,10 @@
             
             const response = await fetch('/api/login', { method: 'POST', body: formData });
             if (response.ok) {
+                currentUser = document.getElementById('username').value;
                 document.getElementById('password').value = '';
                 checkAuthAndLoad();
-            } else {
-                alert("Invalid Credentials");
-            }
+            } else { alert("Invalid Credentials"); }
         }
 
         async function logoutApp() {
@@ -194,57 +200,89 @@
             window.location.reload();
         }
 
-        async function promptSourceUrl(videoId) {
-            const url = prompt("Enter the original source link for this video:");
-            if (url) {
-                await fetch(`/api/videos/${videoId}/url`, {
-                    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url: url })
+        // --- DRAG & DROP ---
+        const dropZone = document.getElementById('drop-zone');
+        dropZone.addEventListener('dragover', (e) => { e.preventDefault(); dropZone.classList.add('dragover'); });
+        dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
+        dropZone.addEventListener('drop', (e) => {
+            e.preventDefault(); dropZone.classList.remove('dragover');
+            if(e.dataTransfer.files.length) {
+                document.getElementById('localFile').files = e.dataTransfer.files;
+                uploadFile(new Event('submit'));
+            }
+        });
+
+        // --- DATA INGESTION ---
+        async function submitUrl(e, force = false) {
+            if(e) e.preventDefault();
+            const urlInput = document.getElementById('videoUrl');
+            const formData = new FormData();
+            formData.append('url', urlInput.value);
+            if (force) formData.append('confirm_override', 'true');
+            
+            const res = await fetch('/api/download_form', { method: 'POST', body: formData });
+            const result = await res.json();
+            
+            if (result.status === "needs_confirmation") {
+                if(confirm(`File is large (${result.size_mb}MB). Proceed with download?`)) { submitUrl(null, true); }
+            } else { urlInput.value = ''; }
+        }
+
+        async function uploadFile(e) {
+            e.preventDefault();
+            const fileInput = document.getElementById('localFile');
+            if (!fileInput.files.length) return;
+            const formData = new FormData();
+            formData.append('file', fileInput.files[0]);
+            await fetch('/api/upload', { method: 'POST', body: formData });
+            fileInput.value = '';
+        }
+
+        function triggerDelete(videoId, btnElement) {
+            if(confirm("Permanently delete this video?")) {
+                fetch('/api/videos/' + videoId, { method: 'DELETE' }).then(() => {
+                    btnElement.closest('.card').remove();
                 });
-                checkAuthAndLoad();
             }
         }
 
-        async function editTitle(videoId, currentTitle) {
-            const newTitle = prompt("Edit video title:", currentTitle);
-            if (newTitle && newTitle !== currentTitle) {
-                await fetch(`/api/videos/${videoId}/title`, {
-                    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title: newTitle })
-                });
-                checkAuthAndLoad();
-            }
+        // --- SSE & UI UPDATES ---
+        function setupSSE() {
+            const evtSource = new EventSource("/api/sse");
+            evtSource.onmessage = function(event) {
+                const tasks = JSON.parse(event.data);
+                const container = document.getElementById('active-tasks');
+                container.innerHTML = '';
+                for (const [id, msg] of Object.entries(tasks)) {
+                    container.innerHTML += `
+                        <div class="card" style="border-left-color: #ff8c00;">
+                            <div class="card-content">
+                                <div class="thumbnail-wrapper" style="border: 1px dashed #ff8c00;"><div class="thumbnail">${msg}</div></div>
+                                <div class="card-header"><div class="video-title" style="color:#888;">Working...</div></div>
+                            </div>
+                        </div>`;
+                }
+            };
         }
 
         function renderVideos(videos) {
             const grid = document.getElementById('videoGrid');
-            const existingCards = Array.from(grid.querySelectorAll('.card')).map(c => c.dataset.video);
-            let newItemsAdded = false;
+            grid.innerHTML = ''; // Full refresh for simplicity
+            videos.forEach(video => {
+                const videoUrl = window.location.origin + '/videos/' + video.filename;
+                const thumbImg = video.thumbnail ? `<img src="/videos/${video.thumbnail}" class="thumbnail">` : `<div class="thumbnail">No Thumb</div>`;
+                const faviconUrl = video.domain !== 'unknown' ? `https://www.google.com/s2/favicons?domain=${video.domain}&sz=32` : '';
+                const faviconImg = faviconUrl ? `<img src="${faviconUrl}" class="favicon" onerror="this.style.display='none'">` : '';
 
-            [...videos].reverse().forEach(video => {
-                if (!existingCards.includes(video.id)) {
-                    const videoUrl = window.location.origin + '/videos/' + video.filename;
-                    const thumbImg = video.thumbnail ? `<img src="/videos/${video.thumbnail}" class="thumbnail">` : `<div class="thumbnail">Processing...</div>`;
-                    
-                    let faviconImg = '';
-                    if (video.domain === 'localhost') {
-                        faviconImg = `<div class="favicon" style="display:flex; align-items:center; justify-content:center; background:#ff8c00; color:#121212; cursor:pointer; font-size:12px; font-weight:bold; text-decoration:none;" onclick="promptSourceUrl('${video.id}')" title="Add Source Link">🔗</div>`;
-                    } else {
-                        const faviconUrl = video.domain !== 'unknown' ? `https://www.google.com/s2/favicons?domain=${video.domain}&sz=32` : '';
-                        const originalUrl = video.original_url || '#';
-                        faviconImg = faviconUrl ? `<a href="${originalUrl}" target="_blank" title="Go to source"><img src="${faviconUrl}" class="favicon" onerror="this.style.display='none'"></a>` : '';
-                    }
-
-                    const card = document.createElement('div');
-                    card.className = 'card';
-                    card.dataset.video = video.id;
-                    card.innerHTML = `
+                grid.innerHTML += `
+                    <div class="card">
                         <div class="card-content">
                             <div class="thumbnail-wrapper">
                                 ${thumbImg}
-                                <div class="date-badge">${formatDate(video.date)}</div>
                             </div>
                             <div class="card-header">
                                 ${faviconImg}
-                                <div class="video-title" title="Double click to edit" ondblclick="editTitle('${video.id}', '${video.title.replace(/'/g, "\\'")}')">${video.title}</div>
+                                <div class="video-title">${video.title}</div>
                             </div>
                         </div>
                         <div class="card-bottom">
@@ -254,260 +292,76 @@
                                 <div class="meta-tag">💾 ${formatBytes(video.size_bytes)}</div>
                             </div>
                             <div class="btn-group">
-                                <button class="btn btn-copy" onclick="copyLink('${videoUrl}', this)">Copy</button>
-                                <button class="btn btn-view" onclick="openVideoModal('${videoUrl}', this)">View</button>
-                                <a href="${videoUrl}" download="${video.filename}" class="btn btn-download" title="Download to Device" onclick="markViewed(this)">📥</a>
-                                <button class="btn btn-delete" 
-                                    onmouseover="this.closest('.card').classList.add('hover-delete')" 
-                                    onmouseout="this.closest('.card').classList.remove('hover-delete')" 
-                                    onclick="triggerDelete('${video.id}', this)" title="Delete Video">✖</button>
+                                <button class="btn btn-copy" onclick="copyLink('${videoUrl}')">Copy</button>
+                                <button class="btn btn-view" onclick="openVideoModal('${videoUrl}')">View</button>
+                                <a href="${videoUrl}" download="${video.filename}" class="btn btn-download">📥</a>
+                                <button class="btn btn-delete" onclick="triggerDelete('${video.id}', this)">✖</button>
                             </div>
                         </div>
-                    `;
-                    grid.prepend(card);
-                    newItemsAdded = true;
-                }
+                    </div>
+                `;
             });
+        }
 
-            if (newItemsAdded) {
-                const loadingState = document.getElementById('loadingState');
-                if (loadingState) loadingState.remove();
+        // --- SETTINGS & MODALS ---
+        async function openStats() {
+            const res = await fetch('/api/stats');
+            if (res.ok) {
+                const s = await res.json();
+                currentUserRole = s.role;
+                document.getElementById('statsContent').innerHTML = `
+                    <h3 style="margin-top:0;">${s.role === 'admin' ? 'Server Statistics' : 'Your Statistics'}</h3>
+                    <p>Live Videos: <strong>${s.video_count}</strong></p>
+                    <p>Used Disk Space: <strong>${formatBytes(s.used_disk)}</strong></p>
+                    ${s.role === 'admin' ? `<p>Bandwidth Served: <strong>${formatBytes(s.bandwidth)}</strong></p>` : ''}
+                `;
+                document.getElementById('admin-settings').style.display = s.role === 'admin' ? 'block' : 'none';
+                document.getElementById('statsModal').style.display = 'flex';
+                switchTab('stats');
             }
         }
-
-        function showProcessingTile() {
-            const grid = document.getElementById('videoGrid');
-            if (document.getElementById('loadingState')) return;
-            const tile = document.createElement('div');
-            tile.className = 'card';
-            tile.id = 'loadingState';
-            tile.style.borderLeftColor = '#ff8c00';
-            tile.innerHTML = `
-                <div class="card-content">
-                    <div class="thumbnail-wrapper" style="border: 1px dashed #ff8c00; color: #ff8c00;"><div class="thumbnail">Downloading...</div></div>
-                    <div class="card-header"><div class="video-title" style="color:#888;">Fetching metadata...</div></div>
-                </div>
-                <div class="card-bottom">
-                    <div class="btn-group"><button class="btn" disabled style="background:#555; color:#888;">Working on it...</button></div>
-                </div>
-            `;
-            grid.prepend(tile);
+        
+        function switchTab(tab) {
+            document.getElementById('tab-stats').style.display = tab === 'stats' ? 'block' : 'none';
+            document.getElementById('tab-settings').style.display = tab === 'settings' ? 'block' : 'none';
+            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+            event.target.classList.add('active');
         }
 
-        async function submitUrl(e) {
-            e.preventDefault();
-            const urlInput = document.getElementById('videoUrl');
-            const formData = new FormData();
-            formData.append('url', urlInput.value);
-            
-            if (window.pendingOverridePassword) {
-                formData.append('override_password', window.pendingOverridePassword);
-                window.pendingOverridePassword = null;
-            }
-            
-            showProcessingTile();
-            const response = await fetch('/api/download_form', { method: 'POST', body: formData });
-            const result = await response.json();
-            
-            if (result.status === "needs_override") {
-                document.getElementById('loadingState').remove();
-                const pwd = prompt(`Warning: Video is ${result.size_mb}MB (Limit: ${window.MAX_DOWNLOAD_MB || 150}MB).\nEnter admin password to override:`);
-                if (pwd) {
-                    window.pendingOverridePassword = pwd;
-                    submitUrl(e); 
-                }
-                return;
-            }
-            urlInput.value = '';
+        async function changePass() {
+            const np = document.getElementById('newPass').value;
+            if(!np) return alert("Password cannot be empty.");
+            const fd = new FormData(); fd.append("password", np);
+            const res = await fetch(`/api/users/${currentUser}/password`, {method: 'POST', body: fd});
+            if(res.ok) { alert("Password updated."); document.getElementById('newPass').value = ''; }
         }
 
-        async function uploadFile(e) {
-            e.preventDefault();
-            const fileInput = document.getElementById('localFile');
-            if (fileInput.files.length === 0) return;
-            const formData = new FormData();
-            formData.append('file', fileInput.files[0]);
-            showProcessingTile();
-            await fetch('/api/upload', { method: 'POST', body: formData });
-            fileInput.value = '';
-        }
-
-        function triggerDelete(videoId, btnElement) {
-            const card = btnElement.closest('.card');
-            card.classList.remove('viewed');
-            card.classList.add('deleting');
-            pendingDeleteId = videoId;
-            pendingDeleteCard = card;
-            document.getElementById('deleteModal').style.display = 'flex';
-        }
-
-        function cancelDelete() {
-            if (pendingDeleteCard) {
-                pendingDeleteCard.classList.remove('deleting');
-                pendingDeleteCard.classList.remove('hover-delete');
-                pendingDeleteCard.classList.add('viewed');
-            }
-            document.getElementById('deleteModal').style.display = 'none';
-            pendingDeleteId = null;
-            pendingDeleteCard = null;
-        }
-
-        async function confirmDelete() {
-            if (!pendingDeleteId) return;
-            try {
-                const response = await fetch('/api/videos/' + pendingDeleteId, { method: 'DELETE' });
-                if (response.ok && pendingDeleteCard) {
-                    pendingDeleteCard.remove();
-                } else {
-                    cancelDelete();
-                }
-            } catch (err) { cancelDelete(); }
-            document.getElementById('deleteModal').style.display = 'none';
-        }
-
-        function copyLink(url, btnElement) {
-            markViewed(btnElement);
-            if (navigator.clipboard && window.isSecureContext) {
-                navigator.clipboard.writeText(url).then(showToast).catch(fallbackCopyTextToClipboard.bind(null, url));
-            } else { fallbackCopyTextToClipboard(url); }
-        }
-
-        function fallbackCopyTextToClipboard(text) {
-            var textArea = document.createElement("textarea");
-            textArea.value = text;
-            textArea.style.position = "fixed"; document.body.appendChild(textArea);
-            textArea.focus(); textArea.select();
-            try { document.execCommand('copy'); showToast(); } catch (err) {}
-            document.body.removeChild(textArea);
-        }
-
-        function markViewed(element) {
-            const card = element.closest('.card');
-            if (card && !card.classList.contains('deleting')) { card.classList.add('viewed'); }
-        }
-
-        function showToast() {
-            const toast = document.getElementById("toast");
-            toast.className = "show";
-            setTimeout(() => { toast.className = toast.className.replace("show", ""); }, 3000);
-        }
-
-        function openVideoModal(url, btnElement) {
-            markViewed(btnElement);
+        function closeStatsModal(e) { if(e.target.id === 'statsModal') e.target.style.display = 'none'; }
+        
+        function openVideoModal(url) {
             document.body.style.overflow = 'hidden'; 
-            document.documentElement.style.overflow = 'hidden';
-            
-            const modal = document.getElementById('videoModal');
-            const video = document.getElementById('modalVideo');
-            video.src = url;
-            modal.style.display = 'flex';
-            video.play();
-            if (/Mobi|Android|iPhone|iPad/i.test(navigator.userAgent)) {
-                if (video.requestFullscreen) { video.requestFullscreen(); }
-                else if (video.webkitRequestFullscreen) { video.webkitRequestFullscreen(); }
-            }
+            const m = document.getElementById('videoModal');
+            const v = document.getElementById('modalVideo');
+            v.src = url; m.style.display = 'flex'; v.play();
         }
 
         function closeVideoModal(e = null) {
             if (!e || e.target.id === 'videoModal' || e.target.className === 'close-modal') {
                 document.body.style.overflow = '';
-                document.documentElement.style.overflow = '';
-                
-                const modal = document.getElementById('videoModal');
-                const video = document.getElementById('modalVideo');
-                const modalContent = document.querySelector('.modal-content');
-                
-                video.pause();
-                video.src = '';
-                modal.style.display = 'none';
-                
-                // Reset styling in case it was closed via swipe
-                modalContent.style.transform = 'translateY(0)';
-                modal.style.backgroundColor = 'rgba(0,0,0,0.95)';
+                const m = document.getElementById('videoModal');
+                const v = document.getElementById('modalVideo');
+                v.pause(); v.src = ''; m.style.display = 'none';
             }
         }
 
-        async function openStats() {
-            const response = await fetch('/api/stats');
-            if (response.ok) {
-                const stats = await response.json();
-                window.MAX_DOWNLOAD_MB = stats.limit_mb;
-                const content = document.getElementById('statsContent');
-                content.innerHTML = `
-                    <h3>Server Statistics</h3>
-                    <p>Live Videos: <strong>${stats.video_count}</strong></p>
-                    <p>Deleted Videos: <strong>${stats.deleted_count}</strong></p>
-                    <p>Used Disk Space: <strong>${formatBytes(stats.used_disk)}</strong></p>
-                    <p>Estimated Bandwidth Served: <strong>${formatBytes(stats.bandwidth)}</strong></p>
-                `;
-                document.getElementById('statsModal').style.display = 'flex';
-            }
+        function copyLink(text) {
+            navigator.clipboard.writeText(text).then(() => {
+                const t = document.getElementById("toast"); t.className = "show";
+                setTimeout(() => { t.className = t.className.replace("show", ""); }, 3000);
+            });
         }
 
-        function closeStatsModal(e) {
-            if (e.target.id === 'statsModal') {
-                document.getElementById('statsModal').style.display = 'none';
-            }
-        }
-
-        document.addEventListener('keydown', (e) => {
-            if (e.key === 'Escape') {
-                closeVideoModal();
-                if(document.getElementById('statsModal').style.display === 'flex') closeStatsModal({target: {id: 'statsModal'}});
-                if(document.getElementById('deleteModal').style.display === 'flex') cancelDelete();
-            }
-        });
-
-        // --- SWIPE TO CLOSE LOGIC ---
-        let touchStartY = 0;
-        let touchCurrentY = 0;
-        const modalBg = document.getElementById('videoModal');
-        const modalContent = document.querySelector('.modal-content');
-
-        modalBg.addEventListener('touchstart', (e) => {
-            // Only track if touching the modal background or container, not the native video controls
-            touchStartY = e.touches[0].clientY;
-            touchCurrentY = touchStartY;
-            modalContent.style.transition = 'none';
-            modalBg.style.transition = 'none';
-        }, { passive: true });
-
-        modalBg.addEventListener('touchmove', (e) => {
-            if (modalBg.style.display !== 'flex') return;
-            touchCurrentY = e.touches[0].clientY;
-            const diff = touchCurrentY - touchStartY;
-            
-            // Only allow swiping downwards
-            if (diff > 0) {
-                modalContent.style.transform = `translateY(${diff}px)`;
-                // Fade out background slightly as user drags down
-                const opacity = Math.max(0.4, 0.95 - (diff / window.innerHeight));
-                modalBg.style.backgroundColor = `rgba(0,0,0,${opacity})`;
-            }
-        }, { passive: true });
-
-        modalBg.addEventListener('touchend', (e) => {
-            if (modalBg.style.display !== 'flex') return;
-            const diff = touchCurrentY - touchStartY;
-            
-            // Re-enable CSS transitions for smooth snap/close
-            modalContent.style.transition = 'transform 0.3s ease-out';
-            modalBg.style.transition = 'background-color 0.3s ease-out';
-            
-            if (diff > 150) { // Threshold reached: Close the modal
-                closeVideoModal(null);
-            } else { // Threshold not reached: Snap back to center
-                modalContent.style.transform = 'translateY(0)';
-                modalBg.style.backgroundColor = 'rgba(0,0,0,0.95)';
-            }
-        });
-
-        setInterval(() => {
-            if (document.getElementById('app-screen').style.display === 'block') {
-                checkAuthAndLoad();
-            }
-        }, 3000);
-        
+        setInterval(() => { if (document.getElementById('app-screen').style.display === 'block') checkAuthAndLoad(); }, 5000);
         window.onload = checkAuthAndLoad;
     </script>
 </body>

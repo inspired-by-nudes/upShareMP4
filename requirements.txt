@@ -3,3 +3,4 @@ uvicorn[standard]
 yt-dlp
 pydantic
 sse-starlette
+python-multipart

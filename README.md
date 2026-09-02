@@ -11,7 +11,7 @@ A self-hosted video conversion console focused on ease of use UX, featuring auto
 - **Local File Conversion:** Upload any local video & auto-convert via FFmpeg.
 - **Stat Tracking:** Real-time view counts, bandwidth monitoring, & disk space tracking.
 - **Mobile-Friendly UI:** Designed for seamless mobile use w/ dual-session authentication.
-- **Unraid Ready:** Easily deployable via custom Docker container & template.
+- **Multi User Support:** Easily create & manage additional users from the admin dashboard.
 
 ## Environment Variables
 | Variable | Description | Default |

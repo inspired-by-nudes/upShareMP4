@@ -4,8 +4,6 @@
   <img src="./screenshot.png" alt="upShareMP4 UI" width="800"/>
 </div>
 
-A self-hosted video conversion console focused on ease of use UX, featuring automated downloads, mobile support & rapid sharability.
-
 ## Features
 - **Instant Video Fetching:** Powered by `yt-dlp` to pull media & auto-merge into clean `.mp4` formats.
 - **Local File Conversion:** Upload any local video & auto-convert via FFmpeg.

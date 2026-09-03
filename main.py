@@ -2,7 +2,7 @@ import os, secrets, json, hashlib, subprocess, threading, logging, time, asyncio
 from urllib.parse import urlparse
 from fastapi import FastAPI, BackgroundTasks, UploadFile, File, Form, Depends, Request, Response
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import HTMLResponse, FileResponse
+from fastapi.responses import HTMLResponse, FileResponse, RedirectResponse
 from sse_starlette.sse import EventSourceResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 import yt_dlp
@@ -15,6 +15,11 @@ ch.setFormatter(logging.Formatter('%(asctime)s - %(message)s', "%Y-%m-%d %H:%M:%
 logger.addHandler(ch)
 
 app = FastAPI(title="upShareMP4")
+
+# --- SECURITY: Global 404 Redirect ---
+@app.exception_handler(404)
+async def custom_404_handler(request: Request, exc):
+    return RedirectResponse(url="/")
 
 PORT = int(os.getenv("PORT", "29738"))
 DOWNLOAD_DIR = os.getenv("DOWNLOAD_DIR", "/downloads")
@@ -114,39 +119,31 @@ async def track_video_views(request: Request, call_next):
 
 app.mount("/videos", StaticFiles(directory=DOWNLOAD_DIR), name="videos")
 
-def extract_true_duration(video_id: str, user_id: str, url: str = "#"):
+def generate_secure_id(): return f"vid_{secrets.token_urlsafe(8)}"
+
+def extract_true_duration(video_id: str, user_id: str, url: str = "#", custom_title: str = None):
     mp4_path = os.path.join(DOWNLOAD_DIR, f"{video_id}.mp4")
     try:
         res = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", mp4_path], capture_output=True, text=True)
         duration = float(res.stdout.strip())
-        with db_lock:
-            db = load_db()
-            db["videos"][video_id] = {
-                "owner": user_id,
-                "duration": duration,
-                "url": url,
-                "domain": urlparse(url).netloc.replace('www.', '') if url != "#" else "localhost",
-                "views": 0,
-                "added": time.time(),
-                "title": f"{video_id}.mp4"
-            }
-            save_db(db)
-    except Exception:
-        pass
-
-def sync_new_files(user_id: str, url: str):
-    missing_ids = []
+    except:
+        duration = 0.0
+        
+    title = custom_title if custom_title else f"{video_id}.mp4"
+    title = title[:100]
+    
     with db_lock:
         db = load_db()
-        for f in os.listdir(DOWNLOAD_DIR):
-            if f.endswith('.mp4') and not f.startswith('temp_'):
-                vid_id = f.rsplit('.', 1)[0]
-                if vid_id not in db["videos"]: missing_ids.append(vid_id)
-    # Process outside lock
-    for vid_id in missing_ids:
-        extract_true_duration(vid_id, user_id, url)
-
-def generate_secure_id(): return f"vid_{secrets.token_urlsafe(8)}"
+        db["videos"][video_id] = {
+            "owner": user_id,
+            "duration": duration,
+            "url": url,
+            "domain": urlparse(url).netloc.replace('www.', '') if url != "#" else "localhost",
+            "views": 0,
+            "added": time.time(),
+            "title": title
+        }
+        save_db(db)
 
 def my_hook(d, task_id, user_id):
     if d['status'] == 'downloading':
@@ -158,7 +155,7 @@ def my_hook(d, task_id, user_id):
 
 def process_yt_dlp(url: str, user_id: str, task_id: str):
     ydl_opts = {
-        'outtmpl': f'{DOWNLOAD_DIR}/%(id)s_%(autonumber)s.%(ext)s',
+        'outtmpl': f'{DOWNLOAD_DIR}/temp_yt_{task_id}_%(id)s.%(ext)s',
         'format': 'bestvideo[ext=mp4][vcodec^=avc]+bestaudio[ext=m4a]/best[ext=mp4]/best',
         'merge_output_format': 'mp4',
         'writeinfojson': True,
@@ -171,17 +168,49 @@ def process_yt_dlp(url: str, user_id: str, task_id: str):
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl: ydl.extract_info(url, download=True)
-    except Exception as e: logger.error(f"Download failed: {e}")
+    except Exception as e: 
+        logger.error(f"Download failed: {e}")
     finally:
         if task_id in active_downloads: del active_downloads[task_id]
-        sync_new_files(user_id, url)
+        
+        # Secure renaming and title extraction
+        for f in os.listdir(DOWNLOAD_DIR):
+            if f.startswith(f"temp_yt_{task_id}_") and f.endswith(".mp4"):
+                base = f[:-4]
+                info_file = os.path.join(DOWNLOAD_DIR, f"{base}.info.json")
+                
+                new_id = generate_secure_id()
+                new_mp4 = os.path.join(DOWNLOAD_DIR, f"{new_id}.mp4")
+                os.rename(os.path.join(DOWNLOAD_DIR, f), new_mp4)
+                
+                extracted_title = None
+                if os.path.exists(info_file):
+                    try:
+                        with open(info_file, 'r', encoding='utf-8') as inf_f:
+                            info_data = json.load(inf_f)
+                            extracted_title = info_data.get('title') or info_data.get('fulltitle')
+                    except: pass
+                    os.remove(info_file)
+                    
+                for ext in ['.jpg', '.webp', '.png']:
+                    old_thumb = os.path.join(DOWNLOAD_DIR, f"{base}{ext}")
+                    if os.path.exists(old_thumb):
+                        os.rename(old_thumb, os.path.join(DOWNLOAD_DIR, f"{new_id}{ext}"))
+                        
+                extract_true_duration(new_id, user_id, url, extracted_title)
+                
+        # Clean up any leftover temp artifacts from failures
+        for f in os.listdir(DOWNLOAD_DIR):
+            if f.startswith(f"temp_yt_{task_id}_"):
+                try: os.remove(os.path.join(DOWNLOAD_DIR, f))
+                except: pass
 
-def convert_local_file(input_path: str, final_path: str, video_id: str, user_id: str, task_id: str):
+def convert_local_file(input_path: str, final_path: str, video_id: str, user_id: str, task_id: str, original_filename: str):
     active_downloads[task_id] = "Converting..."
     subprocess.run(["ffmpeg", "-i", input_path, "-c:v", "libx264", "-preset", "fast", "-c:a", "aac", final_path, "-y"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     subprocess.run(["ffmpeg", "-y", "-i", final_path, "-ss", "00:00:00.100", "-vframes", "1", "-q:v", "2", f"{DOWNLOAD_DIR}/{video_id}.jpg"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     os.remove(input_path)
-    extract_true_duration(video_id, user_id)
+    extract_true_duration(video_id, user_id, custom_title=original_filename)
     if task_id in active_downloads: del active_downloads[task_id]
 
 @app.get("/api/env")
@@ -252,7 +281,7 @@ async def upload_video(background_tasks: BackgroundTasks, file: UploadFile = Fil
     
     active_downloads[task_id] = "Uploading..."
     with open(temp_path, "wb") as buffer: buffer.write(await file.read())
-    background_tasks.add_task(convert_local_file, temp_path, final_path, video_id, user["username"], task_id)
+    background_tasks.add_task(convert_local_file, temp_path, final_path, video_id, user["username"], task_id, file.filename)
     return {"status": "processing"}
 
 @app.get("/api/videos")
@@ -287,6 +316,8 @@ def list_videos(user: dict = Depends(verify_auth)):
 @app.put("/api/videos/{video_id}/title")
 def rename_video(video_id: str, new_title: str = Form(...), user: dict = Depends(verify_auth)):
     safe_id = os.path.basename(video_id)
+    new_title = new_title.strip()[:100] 
+    
     with db_lock:
         db = load_db()
         owner = db["videos"].get(safe_id, {}).get("owner", "")

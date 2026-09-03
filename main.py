@@ -16,7 +16,6 @@ logger.addHandler(ch)
 
 app = FastAPI(title="upShareMP4")
 
-# --- SECURITY: Global 404 Redirect ---
 @app.exception_handler(404)
 async def custom_404_handler(request: Request, exc):
     return RedirectResponse(url="/")
@@ -93,28 +92,32 @@ def verify_admin(user: dict = Depends(verify_auth)):
     if user["role"] != "admin": raise StarletteHTTPException(status_code=403, detail="Admin access required")
     return user
 
+def increment_view_counter(video_id: str, file_path: str):
+    try:
+        with db_lock:
+            db = load_db()
+            if video_id in db["videos"]:
+                db["videos"][video_id]["views"] = db["videos"][video_id].get("views", 0) + 1
+                if os.path.exists(file_path):
+                    db["server_bandwidth"] = db.get("server_bandwidth", 0) + os.path.getsize(file_path)
+                save_db(db)
+    except Exception:
+        pass
+
 @app.middleware("http")
 async def track_video_views(request: Request, call_next):
-    path = request.url.path
-    range_header = request.headers.get("range", "")
-    is_new_view = path.startswith("/videos/") and path.endswith(".mp4") and (not range_header or "bytes=0-" in range_header)
-    
     response = await call_next(request)
     
-    if is_new_view and response.status_code in (200, 206):
-        try:
+    if request.method == "GET" and response.status_code in (200, 206):
+        path = request.url.path
+        range_header = request.headers.get("range", "")
+        if path.startswith("/videos/") and path.endswith(".mp4") and (not range_header or "bytes=0-" in range_header):
             filename = path.split("/")[-1]
             video_id = filename.split(".")[0]
-            with db_lock:
-                db = load_db()
-                if video_id in db["videos"]:
-                    db["videos"][video_id]["views"] = db["videos"][video_id].get("views", 0) + 1
-                    file_path = os.path.join(DOWNLOAD_DIR, filename)
-                    if os.path.exists(file_path):
-                        db["server_bandwidth"] = db.get("server_bandwidth", 0) + os.path.getsize(file_path)
-                    save_db(db)
-        except Exception:
-            pass
+            file_path = os.path.join(DOWNLOAD_DIR, filename)
+            # Offload tracking to unblock iMessage and other crawlers instantly
+            asyncio.create_task(asyncio.to_thread(increment_view_counter, video_id, file_path))
+            
     return response
 
 app.mount("/videos", StaticFiles(directory=DOWNLOAD_DIR), name="videos")
@@ -173,7 +176,6 @@ def process_yt_dlp(url: str, user_id: str, task_id: str):
     finally:
         if task_id in active_downloads: del active_downloads[task_id]
         
-        # Secure renaming and title extraction
         for f in os.listdir(DOWNLOAD_DIR):
             if f.startswith(f"temp_yt_{task_id}_") and f.endswith(".mp4"):
                 base = f[:-4]
@@ -199,7 +201,6 @@ def process_yt_dlp(url: str, user_id: str, task_id: str):
                         
                 extract_true_duration(new_id, user_id, url, extracted_title)
                 
-        # Clean up any leftover temp artifacts from failures
         for f in os.listdir(DOWNLOAD_DIR):
             if f.startswith(f"temp_yt_{task_id}_"):
                 try: os.remove(os.path.join(DOWNLOAD_DIR, f))
@@ -283,6 +284,21 @@ async def upload_video(background_tasks: BackgroundTasks, file: UploadFile = Fil
     with open(temp_path, "wb") as buffer: buffer.write(await file.read())
     background_tasks.add_task(convert_local_file, temp_path, final_path, video_id, user["username"], task_id, file.filename)
     return {"status": "processing"}
+
+@app.get("/api/download/{video_id}")
+def force_download(video_id: str):
+    safe_id = os.path.basename(video_id)
+    with db_lock:
+        db = load_db()
+        vid_info = db["videos"].get(safe_id, {})
+    
+    mp4_file = os.path.join(DOWNLOAD_DIR, f"{safe_id}.mp4")
+    if not os.path.exists(mp4_file): raise StarletteHTTPException(status_code=404, detail="File not found")
+    
+    filename = f"{vid_info.get('title', safe_id)}.mp4"
+    # Provide safe filename encoding
+    filename = filename.replace('"', '').replace(',', '')
+    return FileResponse(mp4_file, media_type="video/mp4", headers={"Content-Disposition": f'attachment; filename="{filename}"'})
 
 @app.get("/api/videos")
 def list_videos(user: dict = Depends(verify_auth)):
@@ -379,7 +395,6 @@ def create_user(new_username: str = Form(...), new_password: str = Form(...), us
 def update_login_msg(login_msg: str = Form(""), user: dict = Depends(verify_admin)):
     with db_lock:
         db = load_db()
-        if "settings" not in db: db["settings"] = {}
         db["settings"]["login_msg"] = login_msg
         save_db(db)
     return {"status": "success"}

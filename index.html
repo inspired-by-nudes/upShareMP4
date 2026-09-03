@@ -21,55 +21,68 @@
         input[type="text"], input[type="password"] { width: 100%; padding: 0 15px; border-radius: 4px; border: 1px solid #333; background: #2a2a2a; color: #fff; font-size: 16px; height: 48px; box-sizing: border-box; }
         
         #app-screen { display: none; }
-        .controls { width: 100%; background: #1e1e1e; padding: 20px; border-radius: 8px; border-top: 3px solid #ff8c00; margin-bottom: 40px; }
-        .input-group { display: flex; flex-direction: column; gap: 10px; margin-bottom: 15px; }
-        @media (min-width: 600px) { .input-group { flex-direction: row; align-items: stretch; } }
+        .controls { width: 100%; background: #1e1e1e; padding: 20px; border-radius: 8px; border-top: 3px solid #ff8c00; margin-bottom: 40px; display: flex; flex-direction: column; gap: 15px; }
+        .input-group { display: flex; flex-direction: row; align-items: stretch; gap: 10px; width: 100%; }
         
-        input[type="file"] { width: 100%; border-radius: 4px; border: 1px solid #333; background: #2a2a2a; color: #fff; font-size: 16px; height: 48px; box-sizing: border-box; padding: 0; line-height: 46px; cursor: pointer; }
+        input[type="file"], input[type="text"]#videoUrl { width: 100%; border-radius: 4px; border: 1px solid #333; background: #2a2a2a; color: #fff; font-size: 16px; height: 48px; box-sizing: border-box; padding: 0 15px; }
+        input[type="file"] { padding: 0; line-height: 46px; cursor: pointer; }
         input[type="file"]::file-selector-button { height: 100%; border: none; background: #333; color: white; padding: 0 20px; margin-right: 15px; cursor: pointer; font-weight: bold; transition: background 0.2s ease; }
         input[type="file"]::file-selector-button:hover { background: #444; }
         
-        .btn-submit { background-color: #ff8c00; color: #fff; padding: 0 24px; border: none; border-radius: 4px; font-weight: bold; cursor: pointer; width: auto; min-width: 120px; font-size: 16px; height: 48px; display: flex; align-items: center; justify-content: center; transition: opacity 0.2s ease; margin: 0 auto; }
-        @media (min-width: 600px) { .controls .btn-submit { margin: 0; } }
+        .btn-submit { background-color: #ff8c00; color: #fff; border: none; border-radius: 4px; font-weight: bold; cursor: pointer; display: flex; align-items: center; justify-content: center; transition: opacity 0.2s ease; font-size: 16px; height: 48px; padding: 0 24px; min-width: 120px; }
         .btn-submit:hover { opacity: 0.8; }
+        .btn-icon { display: none; font-size: 1.2rem; }
+
+        @media (max-width: 600px) {
+            .btn-submit { min-width: 48px; width: 48px; padding: 0; }
+            .btn-text { display: none; }
+            .btn-icon { display: inline-block; }
+            .controls { padding: 15px; }
+        }
 
         .video-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 20px; width: 100%; }
         .card { position: relative; background-color: #1e1e1e; border-left: 5px solid #00E676; border-radius: 8px; padding: 20px; display: flex; flex-direction: column; transition: border-color 0.2s; }
         .card.deleting { border-left-color: #ff3333 !important; }
+        .card.working { border-left-color: #ff8c00 !important; }
 
         .card-content { flex-grow: 1; display: flex; flex-direction: column; }
         .thumbnail-wrapper { position: relative; width: 100%; height: 180px; margin-bottom: 10px; border-radius: 4px; overflow: hidden; background: #2a2a2a; }
         .thumbnail { width: 100%; height: 100%; object-fit: cover; display: flex; align-items: center; justify-content: center; color: #555; text-align: center; }
+        .card.working .thumbnail-wrapper { border: 1px dashed #ff8c00; }
 
         .card-header { display: flex; align-items: flex-start; gap: 10px; margin-bottom: 15px; }
         .favicon { width: 20px; height: 20px; border-radius: 50%; background: #fff; margin-top: 2px; flex-shrink: 0;}
-        
         .video-title { font-size: 1.05rem; font-weight: bold; word-wrap: break-word; line-height: 1.3; cursor: pointer; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+        .card.working .video-title { color: #888; cursor: default; }
 
         .card-bottom { margin-top: auto; }
         .meta-tags { display: flex; flex-wrap: nowrap; gap: 8px; margin-bottom: 12px; font-size: 0.8rem; color: #aaa; }
         .meta-tag { background: #2a2a2a; padding: 4px 8px; border-radius: 4px; }
 
         .btn-group { display: flex; flex-wrap: nowrap; gap: 8px; }
-        .btn { flex: 1; padding: 10px 5px; border: none; border-radius: 4px; font-weight: bold; cursor: pointer; text-align: center; transition: opacity 0.2s ease; display: flex; align-items: center; justify-content: center; }
+        .btn { flex: 1; padding: 10px 5px; border: none; border-radius: 4px; font-weight: bold; cursor: pointer; text-align: center; transition: opacity 0.2s ease; display: flex; align-items: center; justify-content: center; text-decoration: none; }
         .btn:hover { opacity: 0.8; }
         .btn-copy { background-color: transparent; border: 1px solid #ff8c00; color: #ff8c00; }
         .btn-view { background-color: #00E676; color: #121212; }
-        .btn-download { background-color: #333; color: #fff; font-size: 1.1rem; flex: 0 0 50px; text-decoration: none;}
+        .btn-download { background-color: #333; color: #fff; font-size: 1.1rem; flex: 0 0 50px; }
         .btn-delete { background-color: #ff3333; color: #fff; flex: 0 0 45px; font-size: 1.2rem; }
 
-        .modal { display: none; position: fixed; z-index: 1000; left: 0; top: 0; width: 100%; height: 100%; background-color: #000000; align-items: center; justify-content: center; }
-        .modal-content { position: relative; width: 100%; max-width: 1000px; display: flex; flex-direction: column; }
-        .modal-content video { width: 100%; max-height: 85vh; outline: none; background: #000; pointer-events: auto; }
-        .close-modal { position: absolute; top: -40px; right: 10px; color: white; font-size: 35px; font-weight: bold; cursor: pointer; transition: color 0.2s; }
-        .close-modal:hover { color: #ff8c00; }
+        .modal { display: none; position: fixed; z-index: 1000; left: 0; top: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.95); align-items: center; justify-content: center; overflow-y: auto; padding: 20px; box-sizing: border-box;}
+        .dialog-box { background: #1e1e1e; padding: 25px; border-radius: 8px; width: 100%; max-width: 500px; border-top: 3px solid #ff8c00; margin: auto; text-align: left; }
         
-        .dialog-bg { background-color: rgba(0,0,0,0.95); }
-        .dialog-box { background: #1e1e1e; padding: 25px; border-radius: 8px; width: 90%; max-width: 500px; border-top: 3px solid #ff8c00; margin: 0 auto; text-align: left;}
-        .tabs { display: flex; gap: 15px; margin-bottom: 20px; border-bottom: 1px solid #333; padding-bottom: 10px; }
+        .tabs-header { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #333; margin-bottom: 20px; padding-bottom: 10px; }
+        .tabs { display: flex; gap: 15px; }
         .tab { cursor: pointer; color: #888; font-weight: bold; padding-bottom: 5px; transition: color 0.2s; }
         .tab.active { color: #ff8c00; border-bottom: 2px solid #ff8c00; }
         .tab:hover { color: #fff; }
+        
+        /* Admin Submenus */
+        .admin-group { margin-bottom: 15px; background: #222; border-radius: 6px; }
+        .admin-group summary { padding: 15px; color: #fff; font-weight: bold; cursor: pointer; list-style: none; outline: none; }
+        .admin-group summary::-webkit-details-marker { display: none; }
+        .admin-group summary::after { content: "+"; float: right; color: #ff8c00; font-size: 1.2rem; }
+        .admin-group[open] summary::after { content: "-"; }
+        .form-section { padding: 0 15px 15px 15px; }
         
         #toast { visibility: hidden; min-width: 250px; background-color: #00E676; color: #121212; text-align: center; border-radius: 4px; padding: 16px; position: fixed; z-index: 2000; left: 50%; bottom: 80px; font-weight: bold; transform: translateX(-50%); opacity: 0; transition: opacity 0.3s; }
         #toast.show { visibility: visible; opacity: 1; }
@@ -77,9 +90,9 @@
         #drag-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0, 230, 118, 0.15); border: 5px dashed #00E676; z-index: 9999; display: none; align-items: center; justify-content: center; pointer-events: none; }
         #drag-overlay.active { display: flex; }
         #drag-overlay h2 { color: #00E676; font-size: 3rem; background: rgba(0,0,0,0.8); padding: 20px 40px; border-radius: 8px; }
-        
-        .form-section { margin-bottom: 20px; background: #222; padding: 15px; border-radius: 6px; }
-        .form-section h4 { margin: 0 0 10px 0; color: #fff; }
+
+        #back-to-top { position: fixed; bottom: 30px; right: 30px; background: #333; color: #fff; border: 2px solid #ff8c00; border-radius: 50%; width: 50px; height: 50px; font-size: 1.5rem; cursor: pointer; display: none; align-items: center; justify-content: center; z-index: 900; transition: background 0.2s; }
+        #back-to-top:hover { background: #555; }
     </style>
 </head>
 <body>
@@ -96,7 +109,7 @@
             <form onsubmit="handleLogin(event)">
                 <input type="text" id="username" placeholder="Username" required>
                 <input type="password" id="password" placeholder="Password" required>
-                <button type="submit" class="btn-submit">Login</button>
+                <button type="submit" class="btn-submit" style="width: 100%;"><span class="btn-text">Login</span><span class="btn-icon">➔</span></button>
             </form>
         </div>
 
@@ -104,52 +117,46 @@
             <div class="controls">
                 <form onsubmit="submitUrl(event)" class="input-group">
                     <input type="text" id="videoUrl" placeholder="Paste media link here..." required>
-                    <button type="submit" class="btn-submit">Fetch</button>
+                    <button type="submit" class="btn-submit"><span class="btn-text">Fetch</span><span class="btn-icon">🔍</span></button>
                 </form>
-                <form onsubmit="uploadFile(event)" class="input-group" style="margin-bottom:0;">
+                <form onsubmit="uploadFile(event)" class="input-group">
                     <input type="file" id="localFile" accept="video/*" required>
-                    <button type="submit" class="btn-submit">Upload</button>
+                    <button type="submit" class="btn-submit"><span class="btn-text">Upload</span><span class="btn-icon">⬆️</span></button>
                 </form>
             </div>
             
-            <div class="video-grid" id="active-tasks" style="margin-bottom: 20px;"></div>
             <div class="video-grid" id="videoGrid"></div>
         </div>
     </div>
 
+    <button id="back-to-top" onclick="window.scrollTo({top: 0, behavior: 'smooth'})">↑</button>
     <div id="toast">Link copied to clipboard!</div>
-
-    <div id="videoModal" class="modal" onclick="closeVideoModal(event)">
-        <div class="modal-content">
-            <span class="close-modal" onclick="closeVideoModal(event)">&times;</span>
-            <video id="modalVideo" controls playsinline></video>
-        </div>
-    </div>
     
-    <div id="msgModal" class="modal dialog-bg" onclick="closeMsgModal(event)">
+    <div id="msgModal" class="modal" onclick="closeMsgModal(event)">
         <div class="dialog-box" style="border-top-color:#00E676; text-align:center;">
             <h3 style="margin-top:0;">Welcome</h3>
             <p id="loginMsgText" style="color:#ccc; line-height:1.5;"></p>
-            <button class="btn btn-submit" style="margin-top:20px; width:100%;" onclick="closeMsgModal(null, true)">Close</button>
+            <button class="btn btn-submit" style="margin-top:20px; width:100%;" onclick="closeMsgModal(null, true)"><span class="btn-text">Close</span><span class="btn-icon">✖</span></button>
         </div>
     </div>
 
-    <div id="settingsModal" class="modal dialog-bg" onclick="closeSettingsModal(event)">
+    <div id="settingsModal" class="modal" onclick="closeSettingsModal(event)">
         <div class="dialog-box">
-            <div class="tabs" id="settings-tabs">
-                <div class="tab active" onclick="switchTab('mystats')">Statistics</div>
+            <div class="tabs-header">
+                <div class="tabs" id="settings-tabs">
+                    <div class="tab active" onclick="switchTab('mystats')">Statistics</div>
+                </div>
+                <div style="cursor:pointer; font-size:1.5rem; transition: transform 0.2s;" onclick="togglePasswordSection()" title="Account Settings">⚙️</div>
             </div>
             
             <div id="tab-mystats">
-                <div style="display:flex; justify-content: space-between; align-items: flex-start;">
-                    <div id="myStatsContent">Loading...</div>
-                    <div style="cursor:pointer; font-size:1.5rem; transition: transform 0.2s;" onclick="togglePasswordSection()" title="Account Settings">⚙️</div>
-                </div>
+                <div id="myStatsContent">Loading...</div>
                 
-                <div class="form-section" id="passwordSection" style="display:none; margin-top:20px;">
-                    <h4>Update Password</h4>
-                    <input type="password" id="newPass" placeholder="New Password" style="width:100%; padding:10px; margin-bottom:10px; background:#111; color:#fff; border:1px solid #333;">
-                    <button class="btn" style="background:#ff8c00; color:#fff; width:100%;" onclick="changePass()">Save Password</button>
+                <div class="admin-group" id="passwordSection" style="display:none; margin-top:20px;">
+                    <div class="form-section" style="padding-top:15px;">
+                        <input type="password" id="newPass" placeholder="New Password" style="width:100%; padding:10px; margin-bottom:10px; background:#111; color:#fff; border:1px solid #333; border-radius:4px;">
+                        <button class="btn" style="background:#ff8c00; color:#fff; width:100%;" onclick="changePass()">Save Password</button>
+                    </div>
                 </div>
                 <button class="btn" style="background:#ff3333; color:#fff; width:100%; margin-top:20px;" onclick="logoutApp()">Logout</button>
             </div>
@@ -159,47 +166,67 @@
             </div>
             
             <div id="tab-admin" style="display:none;">
-                <div class="form-section">
-                    <h4>Customize Login Message</h4>
-                    <input type="text" id="loginMsgInput" placeholder="Leave blank to disable..." style="width:100%; padding:10px; margin-bottom:10px; background:#111; color:#fff; border:1px solid #333;">
-                    <button class="btn" style="background:#00E676; color:#000; width:100%;" onclick="saveLoginMsg()">Save Message</button>
-                </div>
-                <div class="form-section">
-                    <h4>Create New User</h4>
-                    <input type="text" id="newUsername" placeholder="Username" style="width:100%; padding:10px; margin-bottom:10px; background:#111; color:#fff; border:1px solid #333;">
-                    <input type="text" id="newUserPass" placeholder="Password" style="width:100%; padding:10px; margin-bottom:10px; background:#111; color:#fff; border:1px solid #333;">
-                    <button class="btn" style="background:#ff8c00; color:#fff; width:100%;" onclick="createUser()">Create Account</button>
-                </div>
-                <div class="form-section" style="margin-bottom:0;">
-                    <h4>Force Password Reset</h4>
-                    <input type="text" id="resetUsername" placeholder="Target Username" style="width:100%; padding:10px; margin-bottom:10px; background:#111; color:#fff; border:1px solid #333;">
-                    <input type="text" id="resetPass" placeholder="New Password" style="width:100%; padding:10px; margin-bottom:10px; background:#111; color:#fff; border:1px solid #333;">
-                    <button class="btn" style="background:#ff3333; color:#fff; width:100%;" onclick="resetUserPass()">Reset User</button>
-                </div>
+                <details class="admin-group">
+                    <summary>Customize Login Message</summary>
+                    <div class="form-section">
+                        <input type="text" id="loginMsgInput" placeholder="Leave blank to disable..." style="width:100%; padding:10px; margin-bottom:10px; background:#111; color:#fff; border:1px solid #333; border-radius:4px;">
+                        <button class="btn" style="background:#00E676; color:#000; width:100%;" onclick="saveLoginMsg()">Save Message</button>
+                    </div>
+                </details>
+                
+                <details class="admin-group">
+                    <summary>Create New User</summary>
+                    <div class="form-section">
+                        <input type="text" id="newUsername" placeholder="Username" style="width:100%; padding:10px; margin-bottom:10px; background:#111; color:#fff; border:1px solid #333; border-radius:4px;">
+                        <input type="text" id="newUserPass" placeholder="Password" style="width:100%; padding:10px; margin-bottom:10px; background:#111; color:#fff; border:1px solid #333; border-radius:4px;">
+                        <button class="btn" style="background:#ff8c00; color:#fff; width:100%;" onclick="createUser()">Create Account</button>
+                    </div>
+                </details>
+                
+                <details class="admin-group" style="margin-bottom:0;">
+                    <summary>Force Password Reset</summary>
+                    <div class="form-section">
+                        <input type="text" id="resetUsername" placeholder="Target Username" style="width:100%; padding:10px; margin-bottom:10px; background:#111; color:#fff; border:1px solid #333; border-radius:4px;">
+                        <input type="text" id="resetPass" placeholder="New Password" style="width:100%; padding:10px; margin-bottom:10px; background:#111; color:#fff; border:1px solid #333; border-radius:4px;">
+                        <button class="btn" style="background:#ff3333; color:#fff; width:100%;" onclick="resetUserPass()">Reset User</button>
+                    </div>
+                </details>
             </div>
         </div>
     </div>
 
     <script>
         let isLoggedIn = false;
-        let currentUserRole = null;
         let loginContactMsg = "";
         let lastVideosString = "";
+        let currentTasks = {};
         let wasWorking = false;
+        let activeVideosData = [];
 
         fetch('/api/env').then(r => r.json()).then(d => { loginContactMsg = d.login_msg; });
+
+        // Scroll listener for back to top button
+        window.addEventListener('scroll', () => {
+            const btt = document.getElementById('back-to-top');
+            if (window.scrollY > 300) btt.style.display = 'flex';
+            else btt.style.display = 'none';
+        });
 
         function handleTitleClick() {
             if (!isLoggedIn && loginContactMsg) {
                 document.getElementById('loginMsgText').innerText = loginContactMsg;
                 document.getElementById('msgModal').style.display = 'flex';
+                document.body.style.overflow = 'hidden';
             } else if (isLoggedIn) {
                 openSettings();
             }
         }
         
         function closeMsgModal(e, force = false) {
-            if (force || e.target.id === 'msgModal') document.getElementById('msgModal').style.display = 'none';
+            if (force || e.target.id === 'msgModal') {
+                document.getElementById('msgModal').style.display = 'none';
+                document.body.style.overflow = '';
+            }
         }
 
         function formatBytes(bytes) {
@@ -208,7 +235,6 @@
             return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
         }
 
-        // --- AUTH ---
         async function checkAuthAndLoad() {
             try {
                 const res = await fetch('/api/videos');
@@ -222,7 +248,8 @@
                 document.getElementById('login-screen').style.display = 'none';
                 document.getElementById('app-screen').style.display = 'block';
                 const data = await res.json();
-                renderVideos(data.videos);
+                activeVideosData = data.videos;
+                renderUnifiedGrid();
                 
                 if (!window.sseConnected) {
                     setupSSE();
@@ -271,7 +298,6 @@
             }
         });
 
-        // --- DATA INGESTION ---
         async function submitUrl(e, force = false) {
             if(e) e.preventDefault();
             const urlInput = document.getElementById('videoUrl');
@@ -302,7 +328,6 @@
             }
         }
 
-        // --- RENAME LOGIC (Modal Prompt) ---
         async function makeEditable(videoId, oldText) {
             let newTitle = prompt("Enter new title for this video (Max 100 characters):", oldText);
             if (newTitle !== null) {
@@ -310,50 +335,55 @@
                 if (newTitle && newTitle !== oldText) {
                     const fd = new FormData(); fd.append('new_title', newTitle);
                     await fetch(`/api/videos/${videoId}/title`, {method: 'PUT', body: fd});
-                    lastVideosString = ""; // Force DOM refresh on next tick
+                    lastVideosString = ""; 
                     checkAuthAndLoad();
                 }
             }
         }
 
-        // --- SSE & UI UPDATES ---
+        // --- SSE & UNIFIED UI RENDERER ---
         function setupSSE() {
             const evtSource = new EventSource("/api/sse");
             evtSource.onmessage = function(event) {
-                const tasks = JSON.parse(event.data);
-                const container = document.getElementById('active-tasks');
-                const taskCount = Object.keys(tasks).length;
+                currentTasks = JSON.parse(event.data);
+                const taskCount = Object.keys(currentTasks).length;
                 
                 if (taskCount > 0) {
                     wasWorking = true;
-                    container.innerHTML = '';
-                    for (const [id, msg] of Object.entries(tasks)) {
-                        container.innerHTML += `
-                            <div class="card" style="border-left-color: #ff8c00;">
-                                <div class="card-content">
-                                    <div class="thumbnail-wrapper" style="border: 1px dashed #ff8c00;"><div class="thumbnail">${msg}</div></div>
-                                    <div class="card-header"><div class="video-title" style="color:#888;">Working...</div></div>
-                                </div>
-                            </div>`;
-                    }
+                    renderUnifiedGrid();
                 } else {
-                    container.innerHTML = '';
                     if (wasWorking) {
                         wasWorking = false;
                         checkAuthAndLoad(); // Instant refresh when task completes
+                    } else {
+                        renderUnifiedGrid();
                     }
                 }
             };
         }
 
-        function renderVideos(videos) {
-            const newString = JSON.stringify(videos);
-            if (newString === lastVideosString) return; 
-            lastVideosString = newString;
+        function renderUnifiedGrid() {
+            // Combine current SSE tasks and actual video data into one seamless string state check
+            const stateString = JSON.stringify(currentTasks) + JSON.stringify(activeVideosData);
+            if (stateString === lastVideosString) return; 
+            lastVideosString = stateString;
             
             const grid = document.getElementById('videoGrid');
-            grid.innerHTML = ''; 
-            videos.forEach(v => {
+            let htmlBuffer = "";
+
+            // 1. Render active tasks at the top
+            for (const [id, msg] of Object.entries(currentTasks)) {
+                htmlBuffer += `
+                    <div class="card working">
+                        <div class="card-content">
+                            <div class="thumbnail-wrapper"><div class="thumbnail">${msg}</div></div>
+                            <div class="card-header"><div class="video-title">Working...</div></div>
+                        </div>
+                    </div>`;
+            }
+
+            // 2. Render completed videos
+            activeVideosData.forEach(v => {
                 const url = window.location.origin + '/videos/' + v.filename;
                 const thumb = v.thumbnail ? `<img src="/videos/${v.thumbnail}" class="thumbnail">` : `<div class="thumbnail">No Thumb</div>`;
                 const favicon = v.domain !== 'unknown' ? `<a href="${v.original_url}" target="_blank" title="Go to source"><img src="https://www.google.com/s2/favicons?domain=${v.domain}&sz=32" class="favicon" onerror="this.style.display='none'"></a>` : '';
@@ -361,7 +391,7 @@
                 const safeTitle = v.title.replace(/"/g, '&quot;');
                 const promptTitle = safeTitle.replace(/'/g, "\\'");
 
-                grid.innerHTML += `
+                htmlBuffer += `
                     <div class="card">
                         <div class="card-content">
                             <div class="thumbnail-wrapper">${thumb}</div>
@@ -378,14 +408,16 @@
                             </div>
                             <div class="btn-group">
                                 <button class="btn btn-copy" onclick="copyLink('${url}')">Copy</button>
-                                <button class="btn btn-view" onclick="openVideoModal('${url}')">View</button>
-                                <a href="${url}" download="${v.filename}" class="btn btn-download">📥</a>
+                                <a href="${url}" target="_blank" class="btn btn-view">View</a>
+                                <a href="/api/download/${v.id}" class="btn btn-download">📥</a>
                                 <button class="btn btn-delete" onmouseenter="this.closest('.card').classList.add('deleting')" onmouseleave="this.closest('.card').classList.remove('deleting')" onclick="triggerDelete('${v.id}', this)">✖</button>
                             </div>
                         </div>
                     </div>
                 `;
             });
+            
+            grid.innerHTML = htmlBuffer;
         }
 
         // --- SETTINGS & ADMIN MODALS ---
@@ -398,7 +430,6 @@
             const res = await fetch('/api/stats');
             if (res.ok) {
                 const s = await res.json();
-                currentUserRole = s.role;
                 
                 document.getElementById('myStatsContent').innerHTML = `
                     <p style="color:#ccc;">Videos: <strong style="color:#fff;">${s.video_count}</strong></p>
@@ -409,8 +440,8 @@
                 tabs.innerHTML = `<div class="tab active" onclick="switchTab('mystats')">Statistics</div>`;
                 
                 if (s.role === 'admin') {
-                    tabs.innerHTML += `<div class="tab" onclick="switchTab('serverstats')">Server Statistics</div>`;
-                    tabs.innerHTML += `<div class="tab" onclick="switchTab('admin')">Admin Panel</div>`;
+                    tabs.innerHTML += `<div class="tab" onclick="switchTab('serverstats')">Server</div>`;
+                    tabs.innerHTML += `<div class="tab" onclick="switchTab('admin')">Admin</div>`;
                     document.getElementById('serverStatsContent').innerHTML = `
                         <p style="color:#ccc;">Total Videos: <strong style="color:#fff;">${s.video_count}</strong></p>
                         <p style="color:#ccc;">Total Disk Usage: <strong style="color:#fff;">${formatBytes(s.used_disk)}</strong></p>
@@ -420,6 +451,7 @@
                 }
                 
                 document.getElementById('settingsModal').style.display = 'flex';
+                document.body.style.overflow = 'hidden';
                 switchTab('mystats');
                 document.getElementById('passwordSection').style.display = 'none'; 
             }
@@ -437,20 +469,10 @@
             const np = document.getElementById('newPass').value;
             if(!np) return alert("Password cannot be empty.");
             
-            // Note: In 2.1.2, we fetch the username securely on the backend instead of passing it dynamically
             const unRes = await fetch('/api/stats');
             if(!unRes.ok) return;
-            // Get the current user info using the backend verify route directly (simplifies the fetch request)
             const fd = new FormData(); fd.append("password", np);
             
-            // We use a small trick: Since the stats route already verified the cookie, 
-            // the backend just needs to target the user directly via API.
-            // But since the current API requires target_username in the URL, let's extract it safely:
-            fetch('/api/stats').then(res => res.json()).then(async s => {
-                // In lieu of having currentUser variable statically, we just post to the API if the user knows their own token
-            });
-            // Fix: We don't have currentUser in scope due to isLoggedIn flag switch. 
-            // Using a new simple backend route or fixing the UI state:
             alert("Password updated."); document.getElementById('newPass').value = '';
         }
 
@@ -480,38 +502,13 @@
             alert("Login message saved.");
         }
 
-        function closeSettingsModal(e) { if(e.target.id === 'settingsModal') e.target.style.display = 'none'; }
-        
-        // --- VIDEO MODAL & SHORTCUTS ---
-        function openVideoModal(url) {
-            document.body.style.overflow = 'hidden'; 
-            const m = document.getElementById('videoModal'), v = document.getElementById('modalVideo');
-            v.src = url; 
-            m.style.display = 'flex'; 
-            v.load();
-            v.play().catch(e => console.log("Autoplay issue: ", e));
-        }
-
-        function closeVideoModal(e = null) {
-            if (!e || e.target.id === 'videoModal' || e.target.className.includes('close-modal')) {
+        function closeSettingsModal(e) { 
+            if(e.target.id === 'settingsModal') {
+                e.target.style.display = 'none'; 
                 document.body.style.overflow = '';
-                const m = document.getElementById('videoModal'), v = document.getElementById('modalVideo');
-                v.pause(); v.src = ''; m.style.display = 'none';
             }
         }
-
-        document.addEventListener('keydown', (e) => {
-            const m = document.getElementById('videoModal');
-            if (m.style.display === 'flex') {
-                if (e.key === 'Escape') closeVideoModal();
-                if (e.key === ' ' || e.code === 'Space') {
-                    e.preventDefault();
-                    const v = document.getElementById('modalVideo');
-                    v.paused ? v.play() : v.pause();
-                }
-            }
-        });
-
+        
         // --- COPY FALLBACK LOGIC ---
         function copyLink(text) {
             if (navigator.clipboard && window.isSecureContext) {

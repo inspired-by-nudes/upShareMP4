@@ -115,7 +115,6 @@ async def track_video_views(request: Request, call_next):
             filename = path.split("/")[-1]
             video_id = filename.split(".")[0]
             file_path = os.path.join(DOWNLOAD_DIR, filename)
-            # Offload tracking to unblock iMessage and other crawlers instantly
             asyncio.create_task(asyncio.to_thread(increment_view_counter, video_id, file_path))
             
     return response
@@ -296,7 +295,6 @@ def force_download(video_id: str):
     if not os.path.exists(mp4_file): raise StarletteHTTPException(status_code=404, detail="File not found")
     
     filename = f"{vid_info.get('title', safe_id)}.mp4"
-    # Provide safe filename encoding
     filename = filename.replace('"', '').replace(',', '')
     return FileResponse(mp4_file, media_type="video/mp4", headers={"Content-Disposition": f'attachment; filename="{filename}"'})
 
@@ -315,6 +313,10 @@ def list_videos(user: dict = Depends(verify_auth)):
             thumb = next((f"{base_name}{ext}" for ext in ['.jpg', '.webp', '.png'] if os.path.exists(os.path.join(DOWNLOAD_DIR, f"{base_name}{ext}"))), None)
             mins, secs = divmod(int(vid_info.get("duration", 0)), 60)
             
+            # Format date for thumbnail overlay badge (e.g. "Sep 3")
+            added_timestamp = vid_info.get("added", os.path.getmtime(mp4_file))
+            date_str = time.strftime("%b %d", time.localtime(added_timestamp))
+            
             videos_data.append({
                 "id": base_name,
                 "filename": f,
@@ -324,7 +326,8 @@ def list_videos(user: dict = Depends(verify_auth)):
                 "thumbnail": thumb,
                 "duration": f"{mins}:{secs:02d}",
                 "size_bytes": os.path.getsize(mp4_file),
-                "date": vid_info.get("added", os.path.getmtime(mp4_file)),
+                "date": added_timestamp,
+                "date_badge": date_str,
                 "views": vid_info.get("views", 0)
             })
     return {"videos": sorted(videos_data, key=lambda x: x['date'], reverse=True)}

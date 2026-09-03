@@ -11,11 +11,8 @@
         
         .container { padding: 20px; padding-top: max(20px, env(safe-area-inset-top)); padding-bottom: 60px; max-width: 1200px; margin: 0 auto; position: relative; }
         .header-bar { display: flex; justify-content: center; align-items: center; position: relative; margin-bottom: 30px; }
-        h1 { color: #ff8c00; font-size: 2.5rem; margin: 0; cursor: pointer; transition: opacity 0.2s ease; }
+        h1 { color: #ff8c00; font-size: 2.5rem; margin: 0; cursor: pointer; transition: opacity 0.2s ease; user-select: none; }
         h1:hover { opacity: 0.8; }
-        
-        .settings-icon { position: absolute; right: 0; font-size: 1.5rem; cursor: pointer; transition: transform 0.2s ease; display: none; }
-        .settings-icon:hover { transform: rotate(45deg); }
         
         p.subtitle { text-align: center; color: #888; margin-top: 5px; margin-bottom: 30px; }
         
@@ -28,18 +25,17 @@
         .input-group { display: flex; flex-direction: column; gap: 10px; margin-bottom: 15px; }
         @media (min-width: 600px) { .input-group { flex-direction: row; align-items: stretch; } }
         
-        /* Restyled Browse Button */
         input[type="file"] { width: 100%; border-radius: 4px; border: 1px solid #333; background: #2a2a2a; color: #fff; font-size: 16px; height: 48px; box-sizing: border-box; padding: 0; line-height: 46px; cursor: pointer; }
         input[type="file"]::file-selector-button { height: 100%; border: none; background: #333; color: white; padding: 0 20px; margin-right: 15px; cursor: pointer; font-weight: bold; transition: background 0.2s ease; }
         input[type="file"]::file-selector-button:hover { background: #444; }
         
-        .btn-submit { background-color: #ff8c00; color: #fff; padding: 0 24px; border: none; border-radius: 4px; font-weight: bold; cursor: pointer; width: auto; min-width: 120px; font-size: 16px; height: 48px; display: flex; align-items: center; justify-content: center; transition: opacity 0.2s ease, transform 0.1s; margin: 0 auto; }
+        .btn-submit { background-color: #ff8c00; color: #fff; padding: 0 24px; border: none; border-radius: 4px; font-weight: bold; cursor: pointer; width: auto; min-width: 120px; font-size: 16px; height: 48px; display: flex; align-items: center; justify-content: center; transition: opacity 0.2s ease; margin: 0 auto; }
         @media (min-width: 600px) { .controls .btn-submit { margin: 0; } }
-        .btn-submit:hover { opacity: 0.8; transform: translateY(-1px); }
+        .btn-submit:hover { opacity: 0.8; }
 
         .video-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 20px; width: 100%; }
-        .card { position: relative; background-color: #1e1e1e; border-left: 5px solid #00E676; border-radius: 8px; padding: 20px; display: flex; flex-direction: column; transition: transform 0.2s ease, border-color 0.2s; }
-        .card:hover { transform: translateY(-3px); }
+        .card { position: relative; background-color: #1e1e1e; border-left: 5px solid #00E676; border-radius: 8px; padding: 20px; display: flex; flex-direction: column; transition: border-color 0.2s; }
+        .card.deleting { border-left-color: #ff3333 !important; }
 
         .card-content { flex-grow: 1; display: flex; flex-direction: column; }
         .thumbnail-wrapper { position: relative; width: 100%; height: 180px; margin-bottom: 10px; border-radius: 4px; overflow: hidden; background: #2a2a2a; }
@@ -48,7 +44,6 @@
         .card-header { display: flex; align-items: flex-start; gap: 10px; margin-bottom: 15px; }
         .favicon { width: 20px; height: 20px; border-radius: 50%; background: #fff; margin-top: 2px; flex-shrink: 0;}
         
-        /* Editable Title */
         .video-title { font-size: 1.05rem; font-weight: bold; word-wrap: break-word; line-height: 1.3; cursor: text; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
         .edit-input { width: 100%; background: #111; color: #fff; border: 1px solid #ff8c00; font-size: 1rem; padding: 4px; font-family: inherit; }
 
@@ -80,7 +75,6 @@
         #toast { visibility: hidden; min-width: 250px; background-color: #00E676; color: #121212; text-align: center; border-radius: 4px; padding: 16px; position: fixed; z-index: 2000; left: 50%; bottom: 80px; font-weight: bold; transform: translateX(-50%); opacity: 0; transition: opacity 0.3s; }
         #toast.show { visibility: visible; opacity: 1; }
 
-        /* Global Drag & Drop Overlay */
         #drag-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0, 230, 118, 0.15); border: 5px dashed #00E676; z-index: 9999; display: none; align-items: center; justify-content: center; pointer-events: none; }
         #drag-overlay.active { display: flex; }
         #drag-overlay h2 { color: #00E676; font-size: 3rem; background: rgba(0,0,0,0.8); padding: 20px 40px; border-radius: 8px; }
@@ -94,8 +88,7 @@
 
     <div class="container">
         <div class="header-bar">
-            <h1 id="app-title">upShareMP4</h1>
-            <div id="settings-btn" class="settings-icon" onclick="openSettings()">⚙️</div>
+            <h1 id="app-title" onclick="handleTitleClick()">upShareMP4</h1>
         </div>
         <p class="subtitle">Download, Convert, & Share .mp4s</p>
 
@@ -125,7 +118,7 @@
         </div>
     </div>
 
-    <div id="toast">Copied!</div>
+    <div id="toast">Link copied to clipboard!</div>
 
     <div id="videoModal" class="modal" onclick="closeVideoModal(event)">
         <div class="modal-content">
@@ -133,17 +126,29 @@
             <video id="modalVideo" controls playsinline></video>
         </div>
     </div>
+    
+    <!-- Custom Login Message Modal -->
+    <div id="msgModal" class="modal dialog-bg" onclick="closeMsgModal(event)">
+        <div class="dialog-box" style="border-top-color:#00E676; text-align:center;">
+            <h3 style="margin-top:0;">Welcome</h3>
+            <p id="loginMsgText" style="color:#ccc; line-height:1.5;"></p>
+            <button class="btn btn-submit" style="margin-top:20px; width:100%;" onclick="closeMsgModal(null, true)">Close</button>
+        </div>
+    </div>
 
     <div id="settingsModal" class="modal dialog-bg" onclick="closeSettingsModal(event)">
         <div class="dialog-box">
             <div class="tabs" id="settings-tabs">
-                <div class="tab active" onclick="switchTab('mystats')">My Statistics</div>
-                <!-- Admin tabs injected here dynamically -->
+                <div class="tab active" onclick="switchTab('mystats')">Statistics</div>
             </div>
             
             <div id="tab-mystats">
-                <div id="myStatsContent">Loading...</div>
-                <div class="form-section" style="margin-top:20px;">
+                <div style="display:flex; justify-content: space-between; align-items: flex-start;">
+                    <div id="myStatsContent">Loading...</div>
+                    <div style="cursor:pointer; font-size:1.5rem; transition: transform 0.2s;" onclick="togglePasswordSection()" title="Account Settings">⚙️</div>
+                </div>
+                
+                <div class="form-section" id="passwordSection" style="display:none; margin-top:20px;">
                     <h4>Update Password</h4>
                     <input type="password" id="newPass" placeholder="New Password" style="width:100%; padding:10px; margin-bottom:10px; background:#111; color:#fff; border:1px solid #333;">
                     <button class="btn" style="background:#ff8c00; color:#fff; width:100%;" onclick="changePass()">Save Password</button>
@@ -181,12 +186,23 @@
         let currentUser = null;
         let currentUserRole = null;
         let loginContactMsg = "";
+        let lastVideosString = "";
+        let wasWorking = false;
 
         fetch('/api/env').then(r => r.json()).then(d => { loginContactMsg = d.login_msg; });
 
-        document.getElementById('app-title').addEventListener('click', () => {
-            if (document.getElementById('login-screen').style.display === 'block' && loginContactMsg) alert(loginContactMsg);
-        });
+        function handleTitleClick() {
+            if (document.getElementById('login-screen').style.display === 'block' && loginContactMsg) {
+                document.getElementById('loginMsgText').innerText = loginContactMsg;
+                document.getElementById('msgModal').style.display = 'flex';
+            } else if (currentUser) {
+                openSettings();
+            }
+        }
+        
+        function closeMsgModal(e, force = false) {
+            if (force || e.target.id === 'msgModal') document.getElementById('msgModal').style.display = 'none';
+        }
 
         function formatBytes(bytes) {
             if (bytes === 0) return '0 B';
@@ -201,15 +217,17 @@
                 if (res.status === 401) {
                     document.getElementById('login-screen').style.display = 'block';
                     document.getElementById('app-screen').style.display = 'none';
-                    document.getElementById('settings-btn').style.display = 'none';
                     return false;
                 }
                 document.getElementById('login-screen').style.display = 'none';
                 document.getElementById('app-screen').style.display = 'block';
-                document.getElementById('settings-btn').style.display = 'block';
                 const data = await res.json();
                 renderVideos(data.videos);
-                setupSSE();
+                
+                if (!window.sseConnected) {
+                    setupSSE();
+                    window.sseConnected = true;
+                }
                 return true;
             } catch (e) {}
         }
@@ -280,7 +298,8 @@
 
         function triggerDelete(videoId, btnElement) {
             if(confirm("Permanently delete this video?")) {
-                fetch('/api/videos/' + videoId, { method: 'DELETE' }).then(() => { btnElement.closest('.card').remove(); });
+                btnElement.closest('.card').classList.add('deleting');
+                fetch('/api/videos/' + videoId, { method: 'DELETE' }).then(() => { checkAuthAndLoad(); });
             }
         }
 
@@ -297,6 +316,7 @@
             const fd = new FormData(); fd.append('new_title', newTitle);
             await fetch(`/api/videos/${videoId}/title`, {method: 'PUT', body: fd});
             inputNode.parentElement.innerText = newTitle;
+            lastVideosString = ""; // Force DOM refresh on next tick
         }
 
         // --- SSE & UI UPDATES ---
@@ -305,26 +325,41 @@
             evtSource.onmessage = function(event) {
                 const tasks = JSON.parse(event.data);
                 const container = document.getElementById('active-tasks');
-                container.innerHTML = '';
-                for (const [id, msg] of Object.entries(tasks)) {
-                    container.innerHTML += `
-                        <div class="card" style="border-left-color: #ff8c00;">
-                            <div class="card-content">
-                                <div class="thumbnail-wrapper" style="border: 1px dashed #ff8c00;"><div class="thumbnail">${msg}</div></div>
-                                <div class="card-header"><div class="video-title" style="color:#888;">Working...</div></div>
-                            </div>
-                        </div>`;
+                const taskCount = Object.keys(tasks).length;
+                
+                if (taskCount > 0) {
+                    wasWorking = true;
+                    container.innerHTML = '';
+                    for (const [id, msg] of Object.entries(tasks)) {
+                        container.innerHTML += `
+                            <div class="card" style="border-left-color: #ff8c00;">
+                                <div class="card-content">
+                                    <div class="thumbnail-wrapper" style="border: 1px dashed #ff8c00;"><div class="thumbnail">${msg}</div></div>
+                                    <div class="card-header"><div class="video-title" style="color:#888;">Working...</div></div>
+                                </div>
+                            </div>`;
+                    }
+                } else {
+                    container.innerHTML = '';
+                    if (wasWorking) {
+                        wasWorking = false;
+                        checkAuthAndLoad(); // Instant refresh when task completes
+                    }
                 }
             };
         }
 
         function renderVideos(videos) {
+            const newString = JSON.stringify(videos);
+            if (newString === lastVideosString) return; // Prevent DOM flickering
+            lastVideosString = newString;
+            
             const grid = document.getElementById('videoGrid');
             grid.innerHTML = ''; 
             videos.forEach(v => {
                 const url = window.location.origin + '/videos/' + v.filename;
                 const thumb = v.thumbnail ? `<img src="/videos/${v.thumbnail}" class="thumbnail">` : `<div class="thumbnail">No Thumb</div>`;
-                const favicon = v.domain !== 'unknown' ? `<img src="https://www.google.com/s2/favicons?domain=${v.domain}&sz=32" class="favicon" onerror="this.style.display='none'">` : '';
+                const favicon = v.domain !== 'unknown' ? `<a href="${v.original_url}" target="_blank" title="Go to source"><img src="https://www.google.com/s2/favicons?domain=${v.domain}&sz=32" class="favicon" onerror="this.style.display='none'"></a>` : '';
 
                 grid.innerHTML += `
                     <div class="card">
@@ -354,6 +389,11 @@
         }
 
         // --- SETTINGS & ADMIN MODALS ---
+        function togglePasswordSection() {
+            const p = document.getElementById('passwordSection');
+            p.style.display = p.style.display === 'none' ? 'block' : 'none';
+        }
+
         async function openSettings() {
             const res = await fetch('/api/stats');
             if (res.ok) {
@@ -366,7 +406,7 @@
                 `;
                 
                 const tabs = document.getElementById('settings-tabs');
-                tabs.innerHTML = `<div class="tab active" onclick="switchTab('mystats')">My Statistics</div>`;
+                tabs.innerHTML = `<div class="tab active" onclick="switchTab('mystats')">Statistics</div>`;
                 
                 if (s.role === 'admin') {
                     tabs.innerHTML += `<div class="tab" onclick="switchTab('serverstats')">Server Statistics</div>`;
@@ -381,6 +421,7 @@
                 
                 document.getElementById('settingsModal').style.display = 'flex';
                 switchTab('mystats');
+                document.getElementById('passwordSection').style.display = 'none'; // reset toggle
             }
         }
         
@@ -432,7 +473,10 @@
         function openVideoModal(url) {
             document.body.style.overflow = 'hidden'; 
             const m = document.getElementById('videoModal'), v = document.getElementById('modalVideo');
-            v.src = url; m.style.display = 'flex'; v.play();
+            v.src = url; 
+            m.style.display = 'flex'; 
+            v.load(); // Forces fresh initialization to prevent loading stalls
+            v.play().catch(e => console.log("Autoplay issue: ", e));
         }
 
         function closeVideoModal(e = null) {
@@ -455,11 +499,26 @@
             }
         });
 
+        // --- COPY FALLBACK LOGIC ---
         function copyLink(text) {
-            navigator.clipboard.writeText(text).then(() => {
-                const t = document.getElementById("toast"); t.className = "show";
-                setTimeout(() => { t.className = t.className.replace("show", ""); }, 3000);
-            });
+            if (navigator.clipboard && window.isSecureContext) {
+                navigator.clipboard.writeText(text).then(showToast);
+            } else {
+                let textArea = document.createElement("textarea");
+                textArea.value = text;
+                textArea.style.position = "fixed";
+                document.body.appendChild(textArea);
+                textArea.focus();
+                textArea.select();
+                try { document.execCommand('copy'); showToast(); } catch (err) {}
+                document.body.removeChild(textArea);
+            }
+        }
+        
+        function showToast() {
+            const t = document.getElementById("toast"); 
+            t.className = "show";
+            setTimeout(() => { t.className = t.className.replace("show", ""); }, 3000);
         }
 
         setInterval(() => { if (document.getElementById('app-screen').style.display === 'block') checkAuthAndLoad(); }, 5000);

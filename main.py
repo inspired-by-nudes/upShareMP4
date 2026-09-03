@@ -134,6 +134,18 @@ def extract_true_duration(video_id: str, user_id: str, url: str = "#"):
     except Exception:
         pass
 
+def sync_new_files(user_id: str, url: str):
+    missing_ids = []
+    with db_lock:
+        db = load_db()
+        for f in os.listdir(DOWNLOAD_DIR):
+            if f.endswith('.mp4') and not f.startswith('temp_'):
+                vid_id = f.rsplit('.', 1)[0]
+                if vid_id not in db["videos"]: missing_ids.append(vid_id)
+    # Process outside lock
+    for vid_id in missing_ids:
+        extract_true_duration(vid_id, user_id, url)
+
 def generate_secure_id(): return f"vid_{secrets.token_urlsafe(8)}"
 
 def my_hook(d, task_id, user_id):
@@ -162,6 +174,7 @@ def process_yt_dlp(url: str, user_id: str, task_id: str):
     except Exception as e: logger.error(f"Download failed: {e}")
     finally:
         if task_id in active_downloads: del active_downloads[task_id]
+        sync_new_files(user_id, url)
 
 def convert_local_file(input_path: str, final_path: str, video_id: str, user_id: str, task_id: str):
     active_downloads[task_id] = "Converting..."
@@ -261,6 +274,7 @@ def list_videos(user: dict = Depends(verify_auth)):
                 "id": base_name,
                 "filename": f,
                 "title": vid_info.get("title", f),
+                "original_url": vid_info.get("url", "#"),
                 "domain": vid_info.get("domain", "unknown"),
                 "thumbnail": thumb,
                 "duration": f"{mins}:{secs:02d}",
@@ -307,6 +321,8 @@ async def event_generator():
     while True:
         if await asyncio.get_event_loop().run_in_executor(None, lambda: bool(active_downloads)):
             yield {"data": json.dumps(active_downloads)}
+        else:
+            yield {"data": "{}"}
         await asyncio.sleep(1)
 
 @app.get('/api/sse')

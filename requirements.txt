@@ -4,3 +4,5 @@ yt-dlp
 pydantic
 sse-starlette
 python-multipart
+beautifulsoup4
+requests

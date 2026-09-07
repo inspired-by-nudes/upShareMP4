@@ -1,5 +1,5 @@
 import os, secrets, json, hashlib, subprocess, threading, logging, time, asyncio, shutil
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urljoin
 from fastapi import FastAPI, BackgroundTasks, UploadFile, File, Form, Depends, Request, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, FileResponse, RedirectResponse
@@ -174,8 +174,26 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
         soup = BeautifulSoup(r.content, 'html.parser')
         
         title = soup.title.string if soup.title else "News Article"
-        paragraphs = soup.find_all('p')
-        content = "<br><br>".join([p.get_text() for p in paragraphs if len(p.get_text()) > 30])
+        
+        # Rich Article Extraction: Grabs Text, Images, and HTML5 Videos
+        content_html = ""
+        for tag in soup.find_all(['p', 'img', 'video', 'h1', 'h2', 'h3']):
+            if tag.name == 'img':
+                src = tag.get('src') or tag.get('data-src') or tag.get('data-lazy-src')
+                if src:
+                    src = urljoin(url, src)
+                    content_html += f'<img src="{src}" style="max-width:100%; height:auto; border-radius:8px; margin: 15px 0; display:block;">'
+            elif tag.name == 'video':
+                src = tag.get('src')
+                if not src and tag.find('source'):
+                    src = tag.find('source').get('src')
+                if src:
+                    src = urljoin(url, src)
+                    content_html += f'<video src="{src}" controls style="max-width:100%; border-radius:8px; margin: 15px 0; display:block; background:#000;"></video>'
+            elif tag.name in ['h1', 'h2', 'h3', 'p']:
+                text = tag.get_text(strip=True)
+                if len(text) > 15:
+                    content_html += f'<{tag.name} style="margin-bottom:12px;">{text}</{tag.name}>'
         
         new_id = generate_secure_id()
         html_path = os.path.join(DOWNLOAD_DIR, f"{new_id}.html")
@@ -184,7 +202,7 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
         <html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'>
         <title>{title}</title>
         <style>body{{font-family: system-ui, sans-serif; line-height: 1.6; max-width: 800px; margin: 0 auto; padding: 20px; background:#121212; color:#fff;}} h1{{color:#ff8c00;}}</style>
-        </head><body><h1>{title}</h1><div>{content}</div></body></html>
+        </head><body><h1 style="border-bottom: 2px solid #333; padding-bottom: 10px;">{title}</h1><div>{content_html}</div></body></html>
         """
         with open(html_path, "w", encoding="utf-8") as f:
             f.write(clean_html)
@@ -195,7 +213,11 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
     finally:
         if task_id in active_downloads: del active_downloads[task_id]
 
-def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
+def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int, force_article: bool = False):
+    if force_article:
+        extract_article(url, user_id, task_id, expire_days)
+        return
+
     ydl_opts = {
         'outtmpl': f'{DOWNLOAD_DIR}/temp_yt_{task_id}_%(id)s.%(ext)s',
         'format': 'bestvideo[ext=mp4][vcodec^=avc]+bestaudio[ext=m4a]/best[ext=mp4]/best',
@@ -218,7 +240,7 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
         logger.error(f"Download failed: {e}")
         
     if not success:
-        # Fallback to article reader
+        # Fallback to article reader if yt-dlp fails
         extract_article(url, user_id, task_id, expire_days)
         return
 
@@ -308,9 +330,11 @@ def get_stats(user: dict = Depends(verify_auth)):
     }
 
 @app.post("/api/download_form")
-async def form_download(background_tasks: BackgroundTasks, url: str = Form(...), expire_days: int = Form(0), confirm_override: str = Form(None), user: dict = Depends(verify_auth)):
+async def form_download(background_tasks: BackgroundTasks, url: str = Form(...), fetch_mode: str = Form("media"), expire_days: int = Form(0), confirm_override: str = Form(None), user: dict = Depends(verify_auth)):
     warning_mb = user["config"].get("warning_mb", 150)
-    if confirm_override != "true":
+    force_article = (fetch_mode == "article")
+
+    if not force_article and confirm_override != "true":
         try:
             ydl_opts = {'noplaylist': True}
             if cp := get_cookie_file_for_url(url): ydl_opts['cookiefile'] = cp
@@ -322,7 +346,7 @@ async def form_download(background_tasks: BackgroundTasks, url: str = Form(...),
             
     task_id = generate_secure_id()
     active_downloads[task_id] = "Starting up..."
-    background_tasks.add_task(process_yt_dlp, url, user["username"], task_id, expire_days)
+    background_tasks.add_task(process_yt_dlp, url, user["username"], task_id, expire_days, force_article)
     return {"status": "processing"}
 
 @app.post("/api/upload")
@@ -357,7 +381,7 @@ async def edit_video(video_id: str, background_tasks: BackgroundTasks, start: st
             subprocess.run(["ffmpeg", "-i", input_path, "-ss", start, "-to", end, "-c", "copy", out_path, "-y"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             subprocess.run(["ffmpeg", "-y", "-i", out_path, "-ss", "00:00:00.100", "-vframes", "1", "-q:v", "2", f"{DOWNLOAD_DIR}/{new_id}.jpg"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             extract_true_duration(new_id, user["username"], custom_title=f"Clip - {vid.get('title', new_id)}")
-        else: # Overwrite
+        else:
             temp_out = os.path.join(DOWNLOAD_DIR, f"temp_edit_{safe_id}.mp4")
             subprocess.run(["ffmpeg", "-i", input_path, "-ss", start, "-to", end, "-c", "copy", temp_out, "-y"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             shutil.move(temp_out, input_path)
@@ -537,7 +561,7 @@ async def cleanup_expired_media():
             for vid in to_delete:
                 _delete_video_internal(vid, db)
             if to_delete: save_db(db)
-        await asyncio.sleep(3600) # Check every hour
+        await asyncio.sleep(3600)
 
 @app.on_event("startup")
 async def startup_event():

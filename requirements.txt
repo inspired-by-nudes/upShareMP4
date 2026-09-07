@@ -6,3 +6,4 @@ sse-starlette
 python-multipart
 beautifulsoup4
 requests
+readability-lxml

@@ -1,4 +1,4 @@
-import os, secrets, json, hashlib, subprocess, threading, logging, time, asyncio, shutil
+import os, secrets, json, hashlib, subprocess, threading, logging, time, asyncio, shutil, re
 from urllib.parse import urlparse, urljoin
 from fastapi import FastAPI, BackgroundTasks, UploadFile, File, Form, Depends, Request, Response
 from fastapi.staticfiles import StaticFiles
@@ -8,6 +8,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 import yt_dlp
 import requests
 from bs4 import BeautifulSoup
+from readability import Document
 
 logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
 logger = logging.getLogger("upshare")
@@ -29,6 +30,11 @@ SESSION_DAYS = int(os.getenv("SESSION_DAYS", "30"))
 YTDLP_COOKIES = os.getenv("YTDLP_COOKIES", "")
 TIKTOK_COOKIES = os.getenv("TIKTOK_COOKIES", "")
 
+# AI Article Cleaner Variables
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+INFERENCE_TEXT_MODEL = os.getenv("INFERENCE_TEXT_MODEL", "qwen2.5:14b")
+OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
+
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 os.makedirs(CONFIG_DIR, exist_ok=True)
 DB_V2 = os.path.join(CONFIG_DIR, "v2_db.json")
@@ -48,6 +54,11 @@ def get_cookie_file_for_url(url: str):
     if "tiktok.com" in url and os.path.exists(TIKTOK_COOKIE_FILE): return TIKTOK_COOKIE_FILE
     if os.path.exists(COOKIE_FILE): return COOKIE_FILE
     return None
+
+def is_social_media_url(url: str) -> bool:
+    domain = urlparse(url).netloc.lower()
+    social_domains = ["instagram.com", "tiktok.com", "youtube.com", "youtu.be", "twitter.com", "x.com"]
+    return any(d in domain for d in social_domains)
 
 def load_db():
     if os.path.exists(DB_FILE):
@@ -140,7 +151,6 @@ def extract_true_duration(video_id: str, user_id: str, url: str = "#", custom_ti
         
     title = custom_title if custom_title else f"{video_id}{ext}"
     title = title[:100]
-    
     expires_at = time.time() + (expire_days * 86400) if expire_days > 0 else 0
     
     with db_lock:
@@ -166,47 +176,73 @@ def my_hook(d, task_id, user_id):
     elif d['status'] == 'finished':
         active_downloads[task_id] = "Processing..."
 
+# --- AI ARTICLE CLEANING ENGINE ---
+def clean_html_with_ai(raw_text: str) -> str:
+    prompt = f"Strip all promotional links, 'Read More' callouts, ad captions, and social widgets from this text. Return only clean paragraphs:\n\n{raw_text[:4000]}"
+    
+    # Tier A: Gemini Flash API
+    if GEMINI_API_KEY:
+        try:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
+            payload = {"contents": [{"parts": [{"text": prompt}]}]}
+            res = requests.post(url, json=payload, timeout=8)
+            if res.status_code == 200:
+                return res.json()['candidates'][0]['content']['parts'][0]['text']
+        except Exception: pass
+
+    # Tier B: Local Ollama Endpoint
+    if INFERENCE_TEXT_MODEL:
+        try:
+            url = f"{OLLAMA_HOST}/api/generate"
+            payload = {"model": INFERENCE_TEXT_MODEL, "prompt": prompt, "stream": False}
+            res = requests.post(url, json=payload, timeout=10)
+            if res.status_code == 200:
+                return res.json().get('response', raw_text)
+        except Exception: pass
+
+    return raw_text
+
 def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
     try:
         active_downloads[task_id] = "Parsing Article..."
-        headers = {'User-Agent': 'Mozilla/5.0'}
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
         r = requests.get(url, headers=headers, timeout=10)
-        soup = BeautifulSoup(r.content, 'html.parser')
         
-        title = soup.title.string if soup.title else "News Article"
+        # Tier C: Mozilla Readability Engine
+        doc = Document(r.content)
+        title = doc.title()
+        readable_html = doc.summary()
         
-        # Rich Article Extraction: Grabs Text, Images, and HTML5 Videos
-        content_html = ""
-        for tag in soup.find_all(['p', 'img', 'video', 'h1', 'h2', 'h3']):
-            if tag.name == 'img':
-                src = tag.get('src') or tag.get('data-src') or tag.get('data-lazy-src')
-                if src:
-                    src = urljoin(url, src)
-                    content_html += f'<img src="{src}" style="max-width:100%; height:auto; border-radius:8px; margin: 15px 0; display:block;">'
-            elif tag.name == 'video':
-                src = tag.get('src')
-                if not src and tag.find('source'):
-                    src = tag.find('source').get('src')
-                if src:
-                    src = urljoin(url, src)
-                    content_html += f'<video src="{src}" controls style="max-width:100%; border-radius:8px; margin: 15px 0; display:block; background:#000;"></video>'
-            elif tag.name in ['h1', 'h2', 'h3', 'p']:
-                text = tag.get_text(strip=True)
-                if len(text) > 15:
-                    content_html += f'<{tag.name} style="margin-bottom:12px;">{text}</{tag.name}>'
+        soup = BeautifulSoup(readable_html, 'html.parser')
         
+        # Prune common artifact phrases
+        for p in soup.find_all(['p', 'h1', 'h2', 'h3']):
+            txt = p.get_text()
+            if re.search(r'(Read More|SEE ALSO|Follow us|Photo:|Subscribe|Newsletter)', txt, re.IGNORECASE):
+                p.decompose()
+
+        # Resolve media links
+        for img in soup.find_all('img'):
+            src = img.get('src') or img.get('data-src')
+            if src: img['src'] = urljoin(url, src)
+            img['style'] = "max-width:100%; height:auto; border-radius:8px; margin:15px 0; display:block;"
+
+        # Run AI pass over raw paragraphs if available
+        raw_text = soup.get_text(separator="\n\n")
+        cleaned_text = clean_html_with_ai(raw_text)
+        
+        content_body = "".join([f"<p>{p.strip()}</p>" for p in cleaned_text.split("\n\n") if len(p.strip()) > 20]) if GEMINI_API_KEY or INFERENCE_TEXT_MODEL else str(soup)
+
         new_id = generate_secure_id()
         html_path = os.path.join(DOWNLOAD_DIR, f"{new_id}.html")
         
         clean_html = f"""
         <html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'>
         <title>{title}</title>
-        <style>body{{font-family: system-ui, sans-serif; line-height: 1.6; max-width: 800px; margin: 0 auto; padding: 20px; background:#121212; color:#fff;}} h1{{color:#ff8c00;}}</style>
-        </head><body><h1 style="border-bottom: 2px solid #333; padding-bottom: 10px;">{title}</h1><div>{content_html}</div></body></html>
+        <style>body{{font-family: system-ui, sans-serif; line-height: 1.6; max-width: 800px; margin: 0 auto; padding: 20px; background:#121212; color:#fff;}} h1{{color:#ff8c00; border-bottom:2px solid #333; padding-bottom:10px;}}</style>
+        </head><body><h1>{title}</h1><div>{content_body}</div></body></html>
         """
-        with open(html_path, "w", encoding="utf-8") as f:
-            f.write(clean_html)
-            
+        with open(html_path, "w", encoding="utf-8") as f: f.write(clean_html)
         extract_true_duration(new_id, user_id, url, title, ".html", expire_days)
     except Exception as e:
         logger.error(f"Article parse failed: {e}")
@@ -214,6 +250,10 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
         if task_id in active_downloads: del active_downloads[task_id]
 
 def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int, force_article: bool = False):
+    # Enforce Social Media Exemptions
+    if is_social_media_url(url):
+        force_article = False
+
     if force_article:
         extract_article(url, user_id, task_id, expire_days)
         return
@@ -239,8 +279,7 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int, force
     except Exception as e: 
         logger.error(f"Download failed: {e}")
         
-    if not success:
-        # Fallback to article reader if yt-dlp fails
+    if not success and not is_social_media_url(url):
         extract_article(url, user_id, task_id, expire_days)
         return
 
@@ -332,7 +371,7 @@ def get_stats(user: dict = Depends(verify_auth)):
 @app.post("/api/download_form")
 async def form_download(background_tasks: BackgroundTasks, url: str = Form(...), fetch_mode: str = Form("media"), expire_days: int = Form(0), confirm_override: str = Form(None), user: dict = Depends(verify_auth)):
     warning_mb = user["config"].get("warning_mb", 150)
-    force_article = (fetch_mode == "article")
+    force_article = (fetch_mode == "article") and not is_social_media_url(url)
 
     if not force_article and confirm_override != "true":
         try:

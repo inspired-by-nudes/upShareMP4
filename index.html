@@ -22,36 +22,38 @@
         input[type="text"], input[type="password"], select { width: 100%; padding: 0 15px; border-radius: 4px; border: 1px solid #333; background: #2a2a2a; color: #fff; font-size: 16px; height: 48px; box-sizing: border-box; }
         
         #app-screen { display: none; }
-        .controls { width: 100%; background: #1e1e1e; padding: 20px; border-radius: 8px; border-top: 3px solid #ff8c00; margin-bottom: 40px; display: flex; flex-direction: column; gap: 15px; }
+        
+        /* Segmented Control Bar */
+        .segmented-control { display: flex; background: #1e1e1e; border-radius: 8px 8px 0 0; border: 1px solid #333; border-bottom: none; overflow: hidden; }
+        .segment-btn { flex: 1; padding: 14px 10px; background: transparent; border: none; color: #888; font-weight: bold; cursor: pointer; font-size: 0.95rem; text-align: center; transition: all 0.2s ease; }
+        .segment-btn.active { background: #ff8c00; color: #fff; }
+
+        .controls { width: 100%; background: #1e1e1e; padding: 20px; border-radius: 0 0 8px 8px; border-top: 3px solid #ff8c00; margin-bottom: 30px; display: flex; flex-direction: column; gap: 15px; }
         .input-group { display: flex; flex-direction: row; align-items: stretch; gap: 10px; width: 100%; }
         
         input[type="file"], input[type="text"]#videoUrl { width: 100%; }
         input[type="file"] { padding: 0; line-height: 46px; cursor: pointer; }
-        input[type="file"]::file-selector-button { height: 100%; border: none; background: #333; color: white; padding: 0 20px; margin-right: 15px; cursor: pointer; font-weight: bold; }
+        input[type="file"]::file-selector-button { height: 100%; border: none; background: #333; color: white; padding: 0 15px; margin-right: 15px; cursor: pointer; font-weight: bold; }
         
         select.expire-drop { width: auto; max-width: 140px; background: #222; border-color: #444; }
         
         .btn-submit { background-color: #ff8c00; color: #fff; border: none; border-radius: 4px; font-weight: bold; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 16px; height: 48px; padding: 0 24px; min-width: 100px; }
         .btn-submit:hover { opacity: 0.8; }
-        .btn-icon { display: none; font-size: 1.2rem; }
 
         @media (max-width: 600px) {
-            .btn-submit { min-width: 48px; width: 48px; padding: 0; }
-            .btn-text { display: none; }
-            .btn-icon { display: inline-block; }
-            select.expire-drop { max-width: 100px; padding: 0 5px; font-size: 14px;}
+            .controls { padding: 15px; }
+            select.expire-drop { max-width: 100px; padding: 0 5px; font-size: 13px;}
+            .segment-btn { font-size: 0.85rem; padding: 12px 5px; }
         }
         
         .mode-toggle { text-align: right; margin-bottom: 15px; }
-        .mode-btn { background: #333; color: #fff; border: 1px solid #555; padding: 5px 10px; border-radius: 4px; cursor: pointer; }
+        .mode-btn { background: #333; color: #fff; border: 1px solid #555; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-weight: bold; }
         .mode-btn.active { background: #ff8c00; border-color: #ff8c00; }
 
         .video-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 20px; width: 100%; }
         .card { position: relative; background-color: #1e1e1e; border-left: 5px solid #00E676; border-radius: 8px; padding: 20px; display: flex; flex-direction: column; transition: border-color 0.2s; }
         .card.deleting { border-left-color: #ff3333 !important; }
         .card.working { border-left-color: #ff8c00 !important; }
-        
-        /* White border specifically for Reader Mode Articles */
         .card.article-card { border-left-color: #ffffff !important; }
 
         .card-checkbox { display: none; position: absolute; top: 10px; right: 10px; width: 20px; height: 20px; z-index: 10; cursor: pointer; }
@@ -99,12 +101,12 @@
 
         #editor-modal .dialog-box { max-width: 800px; }
         
-        /* Range Sliders for Editor */
         input[type=range] { -webkit-appearance: none; background: transparent; width: 100%; margin: 5px 0 15px 0;}
         input[type=range]:focus { outline: none; }
         input[type=range]::-webkit-slider-runnable-track { width: 100%; height: 6px; cursor: pointer; background: #333; border-radius: 3px; }
         input[type=range]::-webkit-slider-thumb { height: 16px; width: 16px; border-radius: 50%; background: #ff8c00; cursor: pointer; -webkit-appearance: none; margin-top: -5px; }
         
+        /* Floating Toast Tooltip */
         #toast { visibility: hidden; min-width: 250px; background-color: #00E676; color: #121212; text-align: center; border-radius: 4px; padding: 16px; position: fixed; z-index: 2000; left: 50%; bottom: 80px; font-weight: bold; transform: translateX(-50%); opacity: 0; transition: opacity 0.3s; }
         #toast.show { visibility: visible; opacity: 1; }
 
@@ -125,13 +127,19 @@
             <form onsubmit="handleLogin(event)">
                 <input type="text" id="username" placeholder="Username" required>
                 <input type="password" id="password" placeholder="Password" required>
-                <button type="submit" class="btn-submit" style="width: 100%;"><span class="btn-text">Login</span><span class="btn-icon">➔</span></button>
+                <button type="submit" class="btn-submit" style="width: 100%;">Login ➔</button>
             </form>
         </div>
 
         <div id="app-screen">
+            <!-- Segmented Control Bar -->
+            <div class="segmented-control">
+                <button id="segFetchBtn" class="segment-btn active" onclick="switchSegment('fetch')">🔍 Fetch Link</button>
+                <button id="segUploadBtn" class="segment-btn" onclick="switchSegment('upload')">⬆️ Upload File</button>
+            </div>
+
             <div class="controls">
-                <form onsubmit="submitUrl(event)" class="input-group">
+                <form id="fetchForm" onsubmit="submitUrl(event)" class="input-group">
                     <input type="text" id="videoUrl" placeholder="Paste link here..." required>
                     <select id="fetchMode" class="expire-drop">
                         <option value="media">Media (Auto)</option>
@@ -143,25 +151,27 @@
                         <option value="7">Expire 7d</option>
                         <option value="30">Expire 30d</option>
                     </select>
-                    <button type="submit" class="btn-submit"><span class="btn-text">Fetch</span><span class="btn-icon">🔍</span></button>
+                    <button type="submit" class="btn-submit">Fetch</button>
                 </form>
-                <form onsubmit="uploadFile(event)" class="input-group">
+
+                <form id="uploadForm" onsubmit="uploadFile(event)" class="input-group" style="display:none;">
                     <input type="file" id="localFile" accept="video/*" required>
                     <select id="fileExpire" class="expire-drop">
                         <option value="0">Keep Forever</option>
                         <option value="1">Expire 24h</option>
                     </select>
-                    <button type="submit" class="btn-submit"><span class="btn-text">Upload</span><span class="btn-icon">⬆️</span></button>
+                    <button type="submit" class="btn-submit">Upload</button>
                 </form>
             </div>
             
             <div class="mode-toggle">
-                <button id="selectModeBtn" class="mode-btn" onclick="toggleSelectMode()">Toggle Select Mode</button>
+                <button id="selectModeBtn" class="mode-btn" onclick="toggleSelectMode()">Select Mode</button>
             </div>
             <div class="video-grid" id="videoGrid"></div>
         </div>
     </div>
 
+    <div id="toast">copied to clipboard!</div>
     <div id="bulk-action-bar" onclick="processBulkDelete()">Delete Selected Items (0)</div>
 
     <!-- Interactive Editor Modal -->
@@ -171,10 +181,10 @@
             <video id="editorVideo" controls playsinline style="width:100%; max-height:40vh; background:#000; border-radius: 4px;"></video>
             
             <div style="margin-top: 20px;">
-                <label style="color:#aaa; font-size:0.85rem; display:flex; justify-content:space-between; font-weight:bold;"><span>Start Time:</span><span id="lblStart" style="color:#fff;">00:00:00</span></label>
+                <label style="color:#aaa; font-size:0.85rem; display:flex; justify-space-between; font-weight:bold;"><span>Start Time:</span><span id="lblStart" style="color:#fff;">00:00:00</span></label>
                 <input type="range" id="clipStart" min="0" value="0" step="0.1">
 
-                <label style="color:#aaa; font-size:0.85rem; display:flex; justify-content:space-between; font-weight:bold;"><span>End Time:</span><span id="lblEnd" style="color:#fff;">00:00:00</span></label>
+                <label style="color:#aaa; font-size:0.85rem; display:flex; justify-space-between; font-weight:bold;"><span>End Time:</span><span id="lblEnd" style="color:#fff;">00:00:00</span></label>
                 <input type="range" id="clipEnd" min="0" value="0" step="0.1">
                 
                 <input type="hidden" id="editStart" value="00:00:00">
@@ -248,6 +258,13 @@
         let loginContactMsg = "";
 
         fetch('/api/env').then(r => r.json()).then(d => { loginContactMsg = d.login_msg; });
+
+        function switchSegment(mode) {
+            document.getElementById('segFetchBtn').className = mode === 'fetch' ? 'segment-btn active' : 'segment-btn';
+            document.getElementById('segUploadBtn').className = mode === 'upload' ? 'segment-btn active' : 'segment-btn';
+            document.getElementById('fetchForm').style.display = mode === 'fetch' ? 'flex' : 'none';
+            document.getElementById('uploadForm').style.display = mode === 'upload' ? 'flex' : 'none';
+        }
 
         function formatBytes(bytes) {
             if (bytes === 0) return '0 B';
@@ -417,7 +434,7 @@
             grid.innerHTML = htmlBuffer;
         }
 
-        // --- EDITOR MODAL (Interactive Sliders) ---
+        // --- EDITOR MODAL ---
         const vPlayer = document.getElementById('editorVideo');
         const sStart = document.getElementById('clipStart');
         const sEnd = document.getElementById('clipEnd');
@@ -443,9 +460,7 @@
             updateTimeLabels();
         };
 
-        function formatTime(sec) {
-            return new Date(sec * 1000).toISOString().substring(11, 19);
-        }
+        function formatTime(sec) { return new Date(sec * 1000).toISOString().substring(11, 19); }
 
         function updateTimeLabels() {
             document.getElementById('lblStart').innerText = formatTime(sStart.value);
@@ -510,6 +525,7 @@
         async function createUser() { const un = document.getElementById('newUsername').value, pw = document.getElementById('newUserPass').value; if(un&&pw){ const fd = new FormData(); fd.append("new_username", un); fd.append("new_password", pw); const r = await fetch(`/api/users`, {method:'POST', body:fd}); if(r.ok) alert("Created."); else alert("Error.");} }
         async function resetUserPass() { const un = document.getElementById('resetUsername').value, pw = document.getElementById('resetPass').value; if(un&&pw){ const fd = new FormData(); fd.append("password", pw); const r = await fetch(`/api/users/${un}/password`, {method:'POST', body:fd}); if(r.ok) alert("Reset."); else alert("Not found.");} }
 
+        // Restored Toast Notification Logic
         function copyLink(text) {
             let textArea = document.createElement("textarea");
             textArea.value = text;
@@ -517,7 +533,12 @@
             document.body.appendChild(textArea);
             textArea.focus();
             textArea.select();
-            try { document.execCommand('copy'); const t = document.getElementById("toast"); t.className = "show"; setTimeout(() => { t.className = t.className.replace("show", ""); }, 3000); } catch (err) {}
+            try { 
+                document.execCommand('copy'); 
+                const t = document.getElementById("toast"); 
+                t.className = "show"; 
+                setTimeout(() => { t.className = t.className.replace("show", ""); }, 3000); 
+            } catch (err) {}
             document.body.removeChild(textArea);
         }
 

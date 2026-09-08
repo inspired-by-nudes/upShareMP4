@@ -30,8 +30,6 @@ SESSION_DAYS = int(os.getenv("SESSION_DAYS", "30"))
 YTDLP_COOKIES = os.getenv("YTDLP_COOKIES", "")
 TIKTOK_COOKIES = os.getenv("TIKTOK_COOKIES", "")
 
-# AI Article Cleaner Variables
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 INFERENCE_TEXT_MODEL = os.getenv("INFERENCE_TEXT_MODEL", "qwen2.5:14b")
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
 
@@ -141,7 +139,7 @@ app.mount("/videos", StaticFiles(directory=DOWNLOAD_DIR), name="videos")
 
 def generate_secure_id(): return f"vid_{secrets.token_urlsafe(8)}"
 
-def extract_true_duration(video_id: str, user_id: str, url: str = "#", custom_title: str = None, ext: str = ".mp4", expire_days: int = 0):
+def extract_true_duration(video_id: str, user_id: str, url: str = "#", custom_title: str = None, ext: str = ".mp4", expire_days: int = 0, tool: str = None):
     file_path = os.path.join(DOWNLOAD_DIR, f"{video_id}{ext}")
     duration = 0.0
     if ext == ".mp4":
@@ -165,7 +163,8 @@ def extract_true_duration(video_id: str, user_id: str, url: str = "#", custom_ti
             "added": time.time(),
             "title": title,
             "ext": ext,
-            "expires_at": expires_at
+            "expires_at": expires_at,
+            "tool": tool
         }
         save_db(db)
 
@@ -177,15 +176,17 @@ def my_hook(d, task_id, user_id):
     elif d['status'] == 'finished':
         active_downloads[task_id] = "Processing..."
 
-def clean_html_with_ai(raw_text: str) -> str:
+def clean_html_with_ai(raw_text: str) -> tuple[str, str]:
     prompt = f"Strip all promotional links, 'Read More' callouts, ad captions, and social widgets from this text. Return only clean paragraphs:\n\n{raw_text[:4000]}"
-    if GEMINI_API_KEY:
+    gemini_key = os.getenv("GEMINI_API_KEY", "").strip()
+    
+    if gemini_key:
         try:
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={gemini_key}"
             payload = {"contents": [{"parts": [{"text": prompt}]}]}
-            res = requests.post(url, json=payload, timeout=8)
+            res = requests.post(url, json=payload, timeout=10)
             if res.status_code == 200:
-                return res.json()['candidates'][0]['content']['parts'][0]['text']
+                return res.json()['candidates'][0]['content']['parts'][0]['text'], "Gemini"
             else:
                 logger.error(f"Gemini API Error {res.status_code}: {res.text}")
         except Exception as e: logger.error(f"Gemini request exception: {e}")
@@ -194,11 +195,12 @@ def clean_html_with_ai(raw_text: str) -> str:
         try:
             url = f"{OLLAMA_HOST}/api/generate"
             payload = {"model": INFERENCE_TEXT_MODEL, "prompt": prompt, "stream": False}
-            res = requests.post(url, json=payload, timeout=10)
+            res = requests.post(url, json=payload, timeout=15)
             if res.status_code == 200:
-                return res.json().get('response', raw_text)
+                return res.json().get('response', raw_text), "Ollama"
         except Exception: pass
-    return raw_text
+        
+    return raw_text, "Readability"
 
 def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
     try:
@@ -211,6 +213,19 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
         readable_html = doc.summary()
         soup = BeautifulSoup(readable_html, 'html.parser')
         
+        new_id = generate_secure_id()
+
+        # Extract Cover Image for Thumbnail
+        full_soup = BeautifulSoup(r.content, 'html.parser')
+        og_img = full_soup.find("meta", property="og:image")
+        if og_img and og_img.get("content"):
+            img_url = og_img.get("content")
+            try:
+                img_data = requests.get(img_url, timeout=5).content
+                with open(os.path.join(DOWNLOAD_DIR, f"{new_id}.jpg"), 'wb') as handler:
+                    handler.write(img_data)
+            except Exception: pass
+
         for p in soup.find_all(['p', 'h1', 'h2', 'h3']):
             txt = p.get_text()
             if re.search(r'(Read More|SEE ALSO|Follow us|Photo:|Subscribe|Newsletter)', txt, re.IGNORECASE):
@@ -222,12 +237,11 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
             img['style'] = "max-width:100%; height:auto; border-radius:8px; margin:15px 0; display:block;"
 
         raw_text = soup.get_text(separator="\n\n")
-        cleaned_text = clean_html_with_ai(raw_text)
+        cleaned_text, tool_used = clean_html_with_ai(raw_text)
         
-        content_body = "".join([f"<p>{p.strip()}</p>" for p in cleaned_text.split("\n\n") if len(p.strip()) > 20]) if GEMINI_API_KEY or INFERENCE_TEXT_MODEL else str(soup)
-        new_id = generate_secure_id()
+        content_body = "".join([f"<p>{p.strip()}</p>" for p in cleaned_text.split("\n\n") if len(p.strip()) > 20]) if tool_used in ["Gemini", "Ollama"] else str(soup)
+        
         html_path = os.path.join(DOWNLOAD_DIR, f"{new_id}.html")
-        
         clean_html = f"""
         <html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'>
         <title>{title}</title>
@@ -235,7 +249,8 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
         </head><body><h1>{title}</h1><div>{content_body}</div></body></html>
         """
         with open(html_path, "w", encoding="utf-8") as f: f.write(clean_html)
-        extract_true_duration(new_id, user_id, url, title, ".html", expire_days)
+        
+        extract_true_duration(new_id, user_id, url, title, ".html", expire_days, tool_used)
     except Exception as e:
         logger.error(f"Article parse failed: {e}")
     finally:
@@ -296,21 +311,18 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int, force
                 main_ext = ".mp4"
                 os.rename(os.path.join(DOWNLOAD_DIR, f"{base}.mp4"), os.path.join(DOWNLOAD_DIR, f"{new_id}.mp4"))
             else:
-                # Handle Image-Only carousels (Instagram slides)
                 img_file = next((f for f in temp_files if f.startswith(base) and f.endswith(('.jpg', '.jpeg', '.png', '.webp'))), None)
                 if img_file:
                     main_ext = os.path.splitext(img_file)[1]
                     os.rename(os.path.join(DOWNLOAD_DIR, img_file), os.path.join(DOWNLOAD_DIR, f"{new_id}{main_ext}"))
                 
             if main_ext:
-                # Rename remaining images as thumbnails
                 for ext in ['.jpg', '.webp', '.png', '.jpeg']:
                     old_thumb = os.path.join(DOWNLOAD_DIR, f"{base}{ext}")
                     if os.path.exists(old_thumb):
                         os.rename(old_thumb, os.path.join(DOWNLOAD_DIR, f"{new_id}{ext}"))
                 extract_true_duration(new_id, user_id, url, extracted_title, main_ext, expire_days)
 
-        # Cleanup leftover temps
         for f in os.listdir(DOWNLOAD_DIR):
             if f.startswith(f"temp_yt_{task_id}_"):
                 try: os.remove(os.path.join(DOWNLOAD_DIR, f))
@@ -457,7 +469,6 @@ def list_videos(user: dict = Depends(verify_auth)):
         vid_info = db["videos"].get(base_name)
         if not vid_info: continue
         
-        # Only parse the main registered file, skip reading thumbnails as videos
         if f != f"{base_name}{vid_info.get('ext', '.mp4')}": continue
 
         if user["role"] != "admin" and vid_info.get("owner") != user["username"]: continue
@@ -478,6 +489,7 @@ def list_videos(user: dict = Depends(verify_auth)):
             "domain": vid_info.get("domain", "unknown"),
             "thumbnail": thumb,
             "duration_raw": vid_info.get("duration", 0),
+            "tool": vid_info.get("tool"),
             "size_bytes": os.path.getsize(media_file),
             "date": added_timestamp,
             "date_badge": date_str,
@@ -591,7 +603,6 @@ def get_favicon(): return FileResponse("icon.svg")
 def read_root():
     with open("index.html", "r", encoding='utf-8') as f: return f.read()
 
-# Auto Expiration Background Task
 async def cleanup_expired_media():
     while True:
         now = time.time()

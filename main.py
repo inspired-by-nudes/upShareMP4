@@ -30,7 +30,6 @@ SESSION_DAYS = int(os.getenv("SESSION_DAYS", "30"))
 YTDLP_COOKIES = os.getenv("YTDLP_COOKIES", "")
 TIKTOK_COOKIES = os.getenv("TIKTOK_COOKIES", "")
 
-# AI Article Cleaner Variables
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 INFERENCE_TEXT_MODEL = os.getenv("INFERENCE_TEXT_MODEL", "qwen2.5:14b")
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
@@ -140,7 +139,7 @@ app.mount("/videos", StaticFiles(directory=DOWNLOAD_DIR), name="videos")
 
 def generate_secure_id(): return f"vid_{secrets.token_urlsafe(8)}"
 
-def extract_true_duration(video_id: str, user_id: str, url: str = "#", custom_title: str = None, ext: str = ".mp4", expire_days: int = 0):
+def extract_true_duration(video_id: str, user_id: str, url: str = "#", custom_title: str = None, ext: str = ".mp4", expire_days: int = 0, ai_model: str = None):
     file_path = os.path.join(DOWNLOAD_DIR, f"{video_id}{ext}")
     duration = 0.0
     if ext == ".mp4":
@@ -164,7 +163,8 @@ def extract_true_duration(video_id: str, user_id: str, url: str = "#", custom_ti
             "added": time.time(),
             "title": title,
             "ext": ext,
-            "expires_at": expires_at
+            "expires_at": expires_at,
+            "ai_model": ai_model
         }
         save_db(db)
 
@@ -176,31 +176,28 @@ def my_hook(d, task_id, user_id):
     elif d['status'] == 'finished':
         active_downloads[task_id] = "Processing..."
 
-# --- AI ARTICLE CLEANING ENGINE ---
-def clean_html_with_ai(raw_text: str) -> str:
+def clean_html_with_ai(raw_text: str):
     prompt = f"Strip all promotional links, 'Read More' callouts, ad captions, and social widgets from this text. Return only clean paragraphs:\n\n{raw_text[:4000]}"
     
-    # Tier A: Gemini Flash API
     if GEMINI_API_KEY:
         try:
             url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
             payload = {"contents": [{"parts": [{"text": prompt}]}]}
             res = requests.post(url, json=payload, timeout=8)
             if res.status_code == 200:
-                return res.json()['candidates'][0]['content']['parts'][0]['text']
+                return res.json()['candidates'][0]['content']['parts'][0]['text'], "Gemini"
         except Exception: pass
 
-    # Tier B: Local Ollama Endpoint
     if INFERENCE_TEXT_MODEL:
         try:
             url = f"{OLLAMA_HOST}/api/generate"
             payload = {"model": INFERENCE_TEXT_MODEL, "prompt": prompt, "stream": False}
             res = requests.post(url, json=payload, timeout=10)
             if res.status_code == 200:
-                return res.json().get('response', raw_text)
+                return res.json().get('response', raw_text), "Ollama"
         except Exception: pass
 
-    return raw_text
+    return raw_text, "Readability"
 
 def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
     try:
@@ -208,30 +205,35 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
         r = requests.get(url, headers=headers, timeout=10)
         
-        # Tier C: Mozilla Readability Engine
         doc = Document(r.content)
         title = doc.title()
         readable_html = doc.summary()
+        domain = urlparse(url).netloc.replace('www.', '')
         
         soup = BeautifulSoup(readable_html, 'html.parser')
         
-        # Prune common artifact phrases
         for p in soup.find_all(['p', 'h1', 'h2', 'h3']):
             txt = p.get_text()
             if re.search(r'(Read More|SEE ALSO|Follow us|Photo:|Subscribe|Newsletter)', txt, re.IGNORECASE):
                 p.decompose()
 
-        # Resolve media links
         for img in soup.find_all('img'):
             src = img.get('src') or img.get('data-src')
             if src: img['src'] = urljoin(url, src)
             img['style'] = "max-width:100%; height:auto; border-radius:8px; margin:15px 0; display:block;"
 
-        # Run AI pass over raw paragraphs if available
         raw_text = soup.get_text(separator="\n\n")
-        cleaned_text = clean_html_with_ai(raw_text)
+        cleaned_text, used_model = clean_html_with_ai(raw_text)
         
-        content_body = "".join([f"<p>{p.strip()}</p>" for p in cleaned_text.split("\n\n") if len(p.strip()) > 20]) if GEMINI_API_KEY or INFERENCE_TEXT_MODEL else str(soup)
+        content_body = "".join([f"<p>{p.strip()}</p>" for p in cleaned_text.split("\n\n") if len(p.strip()) > 20]) if used_model != "Readability" else str(soup)
+
+        favicon_url = f"https://www.google.com/s2/favicons?domain={domain}&sz=64"
+        top_header = f"""
+        <div style="text-align:center; margin-bottom: 20px;">
+            <img src="{favicon_url}" style="width:48px; height:48px; border-radius:50%; background:#fff; padding:4px; box-shadow:0 2px 8px rgba(0,0,0,0.5);">
+            <div style="color:#888; font-size:0.9rem; margin-top:5px;">{domain}</div>
+        </div>
+        """
 
         new_id = generate_secure_id()
         html_path = os.path.join(DOWNLOAD_DIR, f"{new_id}.html")
@@ -239,18 +241,17 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
         clean_html = f"""
         <html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'>
         <title>{title}</title>
-        <style>body{{font-family: system-ui, sans-serif; line-height: 1.6; max-width: 800px; margin: 0 auto; padding: 20px; background:#121212; color:#fff;}} h1{{color:#ff8c00; border-bottom:2px solid #333; padding-bottom:10px;}}</style>
-        </head><body><h1>{title}</h1><div>{content_body}</div></body></html>
+        <style>body{{font-family: system-ui, sans-serif; line-height: 1.6; max-width: 800px; margin: 0 auto; padding: 20px; background:#121212; color:#fff;}} h1{{color:#ff8c00; border-bottom:2px solid #333; padding-bottom:10px; text-align:center;}}</style>
+        </head><body>{top_header}<h1>{title}</h1><div>{content_body}</div></body></html>
         """
         with open(html_path, "w", encoding="utf-8") as f: f.write(clean_html)
-        extract_true_duration(new_id, user_id, url, title, ".html", expire_days)
+        extract_true_duration(new_id, user_id, url, title, ".html", expire_days, ai_model=used_model)
     except Exception as e:
         logger.error(f"Article parse failed: {e}")
     finally:
         if task_id in active_downloads: del active_downloads[task_id]
 
 def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int, force_article: bool = False):
-    # Enforce Social Media Exemptions
     if is_social_media_url(url):
         force_article = False
 
@@ -477,7 +478,8 @@ def list_videos(user: dict = Depends(verify_auth)):
                 "date": added_timestamp,
                 "date_badge": date_str,
                 "views": vid_info.get("views", 0),
-                "expires_at": vid_info.get("expires_at", 0)
+                "expires_at": vid_info.get("expires_at", 0),
+                "ai_model": vid_info.get("ai_model", "Readability")
             })
     return {"videos": sorted(videos_data, key=lambda x: x['date'], reverse=True)}
 

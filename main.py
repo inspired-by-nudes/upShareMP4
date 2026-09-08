@@ -30,6 +30,7 @@ SESSION_DAYS = int(os.getenv("SESSION_DAYS", "30"))
 YTDLP_COOKIES = os.getenv("YTDLP_COOKIES", "")
 TIKTOK_COOKIES = os.getenv("TIKTOK_COOKIES", "")
 
+# AI Article Cleaner Variables
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 INFERENCE_TEXT_MODEL = os.getenv("INFERENCE_TEXT_MODEL", "qwen2.5:14b")
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
@@ -128,18 +129,19 @@ async def track_video_views(request: Request, call_next):
     if request.method == "GET" and response.status_code in (200, 206):
         path = request.url.path
         range_header = request.headers.get("range", "")
-        if path.startswith("/videos/") and (path.endswith(".mp4") or path.endswith(".html")) and (not range_header or "bytes=0-" in range_header):
+        if path.startswith("/videos/") and (not range_header or "bytes=0-" in range_header):
             filename = path.split("/")[-1]
             video_id = filename.split(".")[0]
             file_path = os.path.join(DOWNLOAD_DIR, filename)
-            asyncio.create_task(asyncio.to_thread(increment_view_counter, video_id, file_path))
+            if not filename.endswith(('.jpg', '.png', '.webp')) or not os.path.exists(os.path.join(DOWNLOAD_DIR, f"{video_id}.mp4")):
+                asyncio.create_task(asyncio.to_thread(increment_view_counter, video_id, file_path))
     return response
 
 app.mount("/videos", StaticFiles(directory=DOWNLOAD_DIR), name="videos")
 
 def generate_secure_id(): return f"vid_{secrets.token_urlsafe(8)}"
 
-def extract_true_duration(video_id: str, user_id: str, url: str = "#", custom_title: str = None, ext: str = ".mp4", expire_days: int = 0, ai_model: str = None):
+def extract_true_duration(video_id: str, user_id: str, url: str = "#", custom_title: str = None, ext: str = ".mp4", expire_days: int = 0):
     file_path = os.path.join(DOWNLOAD_DIR, f"{video_id}{ext}")
     duration = 0.0
     if ext == ".mp4":
@@ -163,8 +165,7 @@ def extract_true_duration(video_id: str, user_id: str, url: str = "#", custom_ti
             "added": time.time(),
             "title": title,
             "ext": ext,
-            "expires_at": expires_at,
-            "ai_model": ai_model
+            "expires_at": expires_at
         }
         save_db(db)
 
@@ -176,17 +177,18 @@ def my_hook(d, task_id, user_id):
     elif d['status'] == 'finished':
         active_downloads[task_id] = "Processing..."
 
-def clean_html_with_ai(raw_text: str):
+def clean_html_with_ai(raw_text: str) -> str:
     prompt = f"Strip all promotional links, 'Read More' callouts, ad captions, and social widgets from this text. Return only clean paragraphs:\n\n{raw_text[:4000]}"
-    
     if GEMINI_API_KEY:
         try:
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
             payload = {"contents": [{"parts": [{"text": prompt}]}]}
             res = requests.post(url, json=payload, timeout=8)
             if res.status_code == 200:
-                return res.json()['candidates'][0]['content']['parts'][0]['text'], "Gemini"
-        except Exception: pass
+                return res.json()['candidates'][0]['content']['parts'][0]['text']
+            else:
+                logger.error(f"Gemini API Error {res.status_code}: {res.text}")
+        except Exception as e: logger.error(f"Gemini request exception: {e}")
 
     if INFERENCE_TEXT_MODEL:
         try:
@@ -194,10 +196,9 @@ def clean_html_with_ai(raw_text: str):
             payload = {"model": INFERENCE_TEXT_MODEL, "prompt": prompt, "stream": False}
             res = requests.post(url, json=payload, timeout=10)
             if res.status_code == 200:
-                return res.json().get('response', raw_text), "Ollama"
+                return res.json().get('response', raw_text)
         except Exception: pass
-
-    return raw_text, "Readability"
+    return raw_text
 
 def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
     try:
@@ -208,8 +209,6 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
         doc = Document(r.content)
         title = doc.title()
         readable_html = doc.summary()
-        domain = urlparse(url).netloc.replace('www.', '')
-        
         soup = BeautifulSoup(readable_html, 'html.parser')
         
         for p in soup.find_all(['p', 'h1', 'h2', 'h3']):
@@ -223,38 +222,27 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
             img['style'] = "max-width:100%; height:auto; border-radius:8px; margin:15px 0; display:block;"
 
         raw_text = soup.get_text(separator="\n\n")
-        cleaned_text, used_model = clean_html_with_ai(raw_text)
+        cleaned_text = clean_html_with_ai(raw_text)
         
-        content_body = "".join([f"<p>{p.strip()}</p>" for p in cleaned_text.split("\n\n") if len(p.strip()) > 20]) if used_model != "Readability" else str(soup)
-
-        favicon_url = f"https://www.google.com/s2/favicons?domain={domain}&sz=64"
-        top_header = f"""
-        <div style="text-align:center; margin-bottom: 20px;">
-            <img src="{favicon_url}" style="width:48px; height:48px; border-radius:50%; background:#fff; padding:4px; box-shadow:0 2px 8px rgba(0,0,0,0.5);">
-            <div style="color:#888; font-size:0.9rem; margin-top:5px;">{domain}</div>
-        </div>
-        """
-
+        content_body = "".join([f"<p>{p.strip()}</p>" for p in cleaned_text.split("\n\n") if len(p.strip()) > 20]) if GEMINI_API_KEY or INFERENCE_TEXT_MODEL else str(soup)
         new_id = generate_secure_id()
         html_path = os.path.join(DOWNLOAD_DIR, f"{new_id}.html")
         
         clean_html = f"""
         <html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'>
         <title>{title}</title>
-        <style>body{{font-family: system-ui, sans-serif; line-height: 1.6; max-width: 800px; margin: 0 auto; padding: 20px; background:#121212; color:#fff;}} h1{{color:#ff8c00; border-bottom:2px solid #333; padding-bottom:10px; text-align:center;}}</style>
-        </head><body>{top_header}<h1>{title}</h1><div>{content_body}</div></body></html>
+        <style>body{{font-family: system-ui, sans-serif; line-height: 1.6; max-width: 800px; margin: 0 auto; padding: 20px; background:#121212; color:#fff;}} h1{{color:#ff8c00; border-bottom:2px solid #333; padding-bottom:10px;}}</style>
+        </head><body><h1>{title}</h1><div>{content_body}</div></body></html>
         """
         with open(html_path, "w", encoding="utf-8") as f: f.write(clean_html)
-        extract_true_duration(new_id, user_id, url, title, ".html", expire_days, ai_model=used_model)
+        extract_true_duration(new_id, user_id, url, title, ".html", expire_days)
     except Exception as e:
         logger.error(f"Article parse failed: {e}")
     finally:
         if task_id in active_downloads: del active_downloads[task_id]
 
 def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int, force_article: bool = False):
-    if is_social_media_url(url):
-        force_article = False
-
+    if is_social_media_url(url): force_article = False
     if force_article:
         extract_article(url, user_id, task_id, expire_days)
         return
@@ -285,31 +273,44 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int, force
         return
 
     try:
-        for f in os.listdir(DOWNLOAD_DIR):
-            if f.startswith(f"temp_yt_{task_id}_") and f.endswith(".mp4"):
-                base = f[:-4]
-                info_file = os.path.join(DOWNLOAD_DIR, f"{base}.info.json")
+        temp_files = [f for f in os.listdir(DOWNLOAD_DIR) if f.startswith(f"temp_yt_{task_id}_")]
+        bases = set(f.rsplit('.', 1)[0] for f in temp_files if not f.endswith('.info.json'))
+        
+        for base in bases:
+            has_video = os.path.exists(os.path.join(DOWNLOAD_DIR, f"{base}.mp4"))
+            info_file = os.path.join(DOWNLOAD_DIR, f"{base}.info.json")
+            
+            extracted_title = None
+            if os.path.exists(info_file):
+                try:
+                    with open(info_file, 'r', encoding='utf-8') as inf_f:
+                        info_data = json.load(inf_f)
+                        extracted_title = info_data.get('title') or info_data.get('fulltitle')
+                except: pass
+                os.remove(info_file)
                 
-                new_id = generate_secure_id()
-                new_mp4 = os.path.join(DOWNLOAD_DIR, f"{new_id}.mp4")
-                os.rename(os.path.join(DOWNLOAD_DIR, f), new_mp4)
+            new_id = generate_secure_id()
+            main_ext = None
+            
+            if has_video:
+                main_ext = ".mp4"
+                os.rename(os.path.join(DOWNLOAD_DIR, f"{base}.mp4"), os.path.join(DOWNLOAD_DIR, f"{new_id}.mp4"))
+            else:
+                # Handle Image-Only carousels (Instagram slides)
+                img_file = next((f for f in temp_files if f.startswith(base) and f.endswith(('.jpg', '.jpeg', '.png', '.webp'))), None)
+                if img_file:
+                    main_ext = os.path.splitext(img_file)[1]
+                    os.rename(os.path.join(DOWNLOAD_DIR, img_file), os.path.join(DOWNLOAD_DIR, f"{new_id}{main_ext}"))
                 
-                extracted_title = None
-                if os.path.exists(info_file):
-                    try:
-                        with open(info_file, 'r', encoding='utf-8') as inf_f:
-                            info_data = json.load(inf_f)
-                            extracted_title = info_data.get('title') or info_data.get('fulltitle')
-                    except: pass
-                    os.remove(info_file)
-                    
-                for ext in ['.jpg', '.webp', '.png']:
+            if main_ext:
+                # Rename remaining images as thumbnails
+                for ext in ['.jpg', '.webp', '.png', '.jpeg']:
                     old_thumb = os.path.join(DOWNLOAD_DIR, f"{base}{ext}")
                     if os.path.exists(old_thumb):
                         os.rename(old_thumb, os.path.join(DOWNLOAD_DIR, f"{new_id}{ext}"))
-                        
-                extract_true_duration(new_id, user_id, url, extracted_title, ".mp4", expire_days)
-                
+                extract_true_duration(new_id, user_id, url, extracted_title, main_ext, expire_days)
+
+        # Cleanup leftover temps
         for f in os.listdir(DOWNLOAD_DIR):
             if f.startswith(f"temp_yt_{task_id}_"):
                 try: os.remove(os.path.join(DOWNLOAD_DIR, f))
@@ -352,14 +353,12 @@ def get_stats(user: dict = Depends(verify_auth)):
     with db_lock: db = load_db()
     total_videos, total_disk = 0, 0
     
-    for f in os.listdir(DOWNLOAD_DIR):
-        if f.endswith('.mp4') or f.endswith('.html'):
-            if f.startswith('temp_'): continue
-            vid_id = f.split('.')[0]
-            owner = db["videos"].get(vid_id, {}).get("owner", "")
-            if user["role"] == "admin" or owner == user["username"]:
+    for vid_id, data in db.get("videos", {}).items():
+        if user["role"] == "admin" or data.get("owner") == user["username"]:
+            fp = os.path.join(DOWNLOAD_DIR, f"{vid_id}{data.get('ext', '.mp4')}")
+            if os.path.exists(fp):
                 total_videos += 1
-                total_disk += os.path.getsize(os.path.join(DOWNLOAD_DIR, f))
+                total_disk += os.path.getsize(fp)
                 
     return {
         "role": user["role"],
@@ -453,34 +452,38 @@ def list_videos(user: dict = Depends(verify_auth)):
     videos_data = []
     
     for f in os.listdir(DOWNLOAD_DIR):
-        if (f.endswith('.mp4') or f.endswith('.html')) and not f.startswith('temp_'):
-            base_name = f.rsplit('.', 1)[0]
-            vid_info = db["videos"].get(base_name, {})
-            if user["role"] != "admin" and vid_info.get("owner") != user["username"]: continue
-                
-            media_file = os.path.join(DOWNLOAD_DIR, f)
-            thumb = next((f"{base_name}{e}" for e in ['.jpg', '.webp', '.png'] if os.path.exists(os.path.join(DOWNLOAD_DIR, f"{base_name}{e}"))), None)
-            mins, secs = divmod(int(vid_info.get("duration", 0)), 60)
+        if f.startswith('temp_'): continue
+        base_name = f.rsplit('.', 1)[0]
+        vid_info = db["videos"].get(base_name)
+        if not vid_info: continue
+        
+        # Only parse the main registered file, skip reading thumbnails as videos
+        if f != f"{base_name}{vid_info.get('ext', '.mp4')}": continue
+
+        if user["role"] != "admin" and vid_info.get("owner") != user["username"]: continue
             
-            added_timestamp = vid_info.get("added", os.path.getmtime(media_file))
-            date_str = time.strftime("%b %d", time.localtime(added_timestamp))
-            
-            videos_data.append({
-                "id": base_name,
-                "filename": f,
-                "type": "article" if f.endswith('.html') else "video",
-                "title": vid_info.get("title", f),
-                "original_url": vid_info.get("url", "#"),
-                "domain": vid_info.get("domain", "unknown"),
-                "thumbnail": thumb,
-                "duration": f"{mins}:{secs:02d}" if f.endswith('.mp4') else "Reader",
-                "size_bytes": os.path.getsize(media_file),
-                "date": added_timestamp,
-                "date_badge": date_str,
-                "views": vid_info.get("views", 0),
-                "expires_at": vid_info.get("expires_at", 0),
-                "ai_model": vid_info.get("ai_model", "Readability")
-            })
+        media_file = os.path.join(DOWNLOAD_DIR, f)
+        ext = vid_info.get("ext", ".mp4")
+        thumb = next((f"{base_name}{e}" for e in ['.jpg', '.webp', '.png'] if os.path.exists(os.path.join(DOWNLOAD_DIR, f"{base_name}{e}"))), None)
+        
+        added_timestamp = vid_info.get("added", os.path.getmtime(media_file))
+        date_str = time.strftime("%b %d", time.localtime(added_timestamp))
+        
+        videos_data.append({
+            "id": base_name,
+            "filename": f,
+            "ext": ext,
+            "title": vid_info.get("title", f),
+            "original_url": vid_info.get("url", "#"),
+            "domain": vid_info.get("domain", "unknown"),
+            "thumbnail": thumb,
+            "duration_raw": vid_info.get("duration", 0),
+            "size_bytes": os.path.getsize(media_file),
+            "date": added_timestamp,
+            "date_badge": date_str,
+            "views": vid_info.get("views", 0),
+            "expires_at": vid_info.get("expires_at", 0)
+        })
     return {"videos": sorted(videos_data, key=lambda x: x['date'], reverse=True)}
 
 @app.put("/api/videos/{video_id}/title")
@@ -500,7 +503,7 @@ def rename_video(video_id: str, new_title: str = Form(...), user: dict = Depends
 
 def _delete_video_internal(safe_id: str, db: dict):
     deleted = False
-    for ext in ['.mp4', '.html', '.info.json', '.jpg', '.webp', '.png']:
+    for ext in ['.mp4', '.html', '.info.json', '.jpg', '.webp', '.png', '.jpeg']:
         fp = os.path.join(DOWNLOAD_DIR, f"{safe_id}{ext}")
         if os.path.exists(fp):
             os.remove(fp)

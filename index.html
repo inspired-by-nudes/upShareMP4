@@ -11,45 +11,42 @@
         body.modal-open { overflow: hidden !important; height: 100vh !important; touch-action: none; }
 
         .container { padding: 20px; padding-top: max(20px, env(safe-area-inset-top)); padding-bottom: 80px; max-width: 1200px; margin: 0 auto; position: relative; }
-        
-        /* Tightened Header Spacing */
-        .header-bar { display: flex; flex-direction: column; justify-content: center; align-items: center; position: relative; margin-bottom: 15px; }
-        h1 { color: #ff8c00; font-size: 2.5rem; margin: 0; cursor: pointer; transition: opacity 0.2s ease; user-select: none; line-height: 1.1; }
+        .header-bar { display: flex; justify-content: center; align-items: center; position: relative; margin-bottom: 30px; }
+        h1 { color: #ff8c00; font-size: 2.5rem; margin: 0; cursor: pointer; transition: opacity 0.2s ease; user-select: none; }
         h1:hover { opacity: 0.8; }
-        p.subtitle { text-align: center; color: #888; margin-top: 4px; margin-bottom: 25px; font-size: 0.95rem; }
         
-        #login-screen { display: none; max-width: 400px; margin: 80px auto; background: #1e1e1e; padding: 30px; border-radius: 8px; border-top: 3px solid #00E676; text-align: center; }
+        p.subtitle { text-align: center; color: #888; margin-top: 5px; margin-bottom: 30px; }
+        
+        #login-screen { display: none; max-width: 400px; margin: 100px auto; background: #1e1e1e; padding: 30px; border-radius: 8px; border-top: 3px solid #00E676; text-align: center; }
         #login-screen form { display: flex; flex-direction: column; align-items: center; gap: 15px; }
-        input[type="text"], input[type="password"], select { width: 100%; padding: 0 15px; border-radius: 4px; border: 1px solid #333; background: #2a2a2a; color: #fff; font-size: 16px; height: 48px; box-sizing: border-box; }
+        input[type="text"], input[type="password"] { width: 100%; padding: 0 15px; border-radius: 4px; border: 1px solid #333; background: #2a2a2a; color: #fff; font-size: 16px; height: 48px; box-sizing: border-box; }
         
         #app-screen { display: none; }
         
         /* Segmented Control Bar */
         .segmented-control { display: flex; background: #1e1e1e; border-radius: 8px 8px 0 0; border: 1px solid #333; border-bottom: none; overflow: hidden; }
-        .segment-btn { flex: 1; padding: 14px 10px; background: transparent; border: none; color: #888; font-weight: bold; cursor: pointer; font-size: 0.95rem; text-align: center; transition: all 0.2s ease; }
+        .segment-btn { flex: 1; padding: 14px 10px; background: transparent; border: none; color: #888; font-weight: bold; cursor: pointer; font-size: 1rem; text-align: center; transition: all 0.2s ease; }
         .segment-btn.active { background: #ff8c00; color: #fff; }
 
-        .controls { width: 100%; background: #1e1e1e; padding: 20px; border-radius: 0 0 8px 8px; border-top: 3px solid #ff8c00; margin-bottom: 30px; display: flex; flex-direction: column; gap: 15px; }
-        .input-group { display: flex; flex-direction: row; align-items: stretch; gap: 10px; width: 100%; flex-wrap: wrap; }
+        .controls { width: 100%; background: #1e1e1e; padding: 20px; border-radius: 0 0 8px 8px; border-top: 3px solid #ff8c00; margin-bottom: 30px; }
         
-        input[type="file"], input[type="text"]#videoUrl { flex: 1 1 100%; min-width: 200px; }
-        input[type="file"] { padding: 0; line-height: 46px; cursor: pointer; }
-        input[type="file"]::file-selector-button { height: 100%; border: none; background: #333; color: white; padding: 0 15px; margin-right: 15px; cursor: pointer; font-weight: bold; }
+        /* Uniform Form Grid matching heights */
+        .form-grid { display: flex; flex-direction: column; gap: 12px; width: 100%; }
+        .dropdown-row { display: flex; gap: 10px; width: 100%; }
+        .dropdown-row select { flex: 1; padding: 0 10px; height: 48px; font-size: 16px; border-radius: 4px; background: #222; border: 1px solid #444; color: #fff; -webkit-appearance: none; appearance: none; }
+        .file-label { display: flex; align-items: center; justify-content: center; height: 48px; background: #2a2a2a; border: 1px dashed #555; border-radius: 4px; color: #fff; font-size: 16px; cursor: pointer; text-align: center; overflow: hidden; padding: 0 10px; white-space: nowrap; text-overflow: ellipsis; }
         
-        .sub-controls { display: flex; gap: 10px; width: 100%; }
-        select.expire-drop { flex: 1; background: #222; border-color: #444; }
-        
-        .btn-submit { background-color: #ff8c00; color: #fff; border: none; border-radius: 4px; font-weight: bold; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 16px; height: 48px; padding: 0 24px; flex: 1; }
+        .btn-submit { background-color: #ff8c00; color: #fff; border: none; border-radius: 4px; font-weight: bold; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 16px; height: 48px; width: 100%; }
         .btn-submit:hover { opacity: 0.8; }
 
-        /* Responsive Mobile Layout Fix for iPhone */
         @media (max-width: 600px) {
             .controls { padding: 15px; }
-            .input-group { flex-direction: column; }
-            .sub-controls { flex-direction: row; }
-            select.expire-drop { font-size: 13px; padding: 0 5px; }
-            .segment-btn { font-size: 0.85rem; padding: 12px 5px; }
+            .segment-btn { font-size: 0.95rem; }
         }
+        
+        .mode-toggle { text-align: right; margin-bottom: 15px; }
+        .mode-btn { background: #333; color: #fff; border: 1px solid #555; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-weight: bold; font-size: 14px;}
+        .mode-btn.active { background: #ff8c00; border-color: #ff8c00; }
 
         .video-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 20px; width: 100%; }
         .card { position: relative; background-color: #1e1e1e; border-left: 5px solid #00E676; border-radius: 8px; padding: 20px; display: flex; flex-direction: column; transition: border-color 0.2s; }
@@ -57,9 +54,12 @@
         .card.working { border-left-color: #ff8c00 !important; }
         .card.article-card { border-left-color: #ffffff !important; }
 
-        /* Hover-To-Select Checkbox Logic */
-        .card-checkbox { display: none; position: absolute; top: 12px; right: 12px; width: 22px; height: 22px; z-index: 10; cursor: pointer; accent-color: #ff8c00; }
-        .card:hover .card-checkbox, .card-checkbox:checked { display: block; }
+        /* Expanded Hitbox for Checkbox */
+        .checkbox-wrapper { position: absolute; top: 0; right: 0; width: 48px; height: 48px; z-index: 10; cursor: pointer; display: none; align-items: center; justify-content: center; background: rgba(0,0,0,0.5); border-radius: 0 8px 0 8px; }
+        body.select-mode .checkbox-wrapper { display: flex; }
+        .card-checkbox { width: 22px; height: 22px; cursor: pointer; pointer-events: none; margin: 0; }
+        
+        body.select-mode .btn-group a, body.select-mode .btn-group button { opacity: 0.3; pointer-events: none; }
 
         .card-content { flex-grow: 1; display: flex; flex-direction: column; }
         .thumbnail-wrapper { position: relative; width: 100%; height: 180px; margin-bottom: 10px; border-radius: 4px; overflow: hidden; background: #2a2a2a; }
@@ -74,7 +74,7 @@
 
         .card-bottom { margin-top: auto; }
         .meta-tags { display: flex; flex-wrap: nowrap; gap: 8px; margin-bottom: 12px; font-size: 0.8rem; color: #aaa; }
-        .meta-tag { background: #2a2a2a; padding: 4px 8px; border-radius: 4px; display: flex; align-items: center; gap: 4px; }
+        .meta-tag { background: #2a2a2a; padding: 4px 8px; border-radius: 4px; }
 
         .btn-group { display: flex; flex-wrap: nowrap; gap: 6px; }
         .btn { flex: 1; padding: 10px 2px; border: none; border-radius: 4px; font-weight: bold; cursor: pointer; text-align: center; transition: opacity 0.2s ease; text-decoration: none; display: flex; align-items: center; justify-content: center; }
@@ -101,7 +101,6 @@
         .admin-group[open] summary::after { content: "-"; }
 
         #editor-modal .dialog-box { max-width: 800px; }
-        
         input[type=range] { -webkit-appearance: none; background: transparent; width: 100%; margin: 5px 0 15px 0;}
         input[type=range]:focus { outline: none; }
         input[type=range]::-webkit-slider-runnable-track { width: 100%; height: 6px; cursor: pointer; background: #333; border-radius: 3px; }
@@ -115,31 +114,32 @@
     <div class="container">
         <div class="header-bar">
             <h1 id="app-title" onclick="handleTitleClick()">upShareMedia</h1>
-            <p class="subtitle">Upload, Convert, & Share</p>
         </div>
+        <p class="subtitle">Upload, Convert, & Share</p>
 
         <div id="login-screen">
             <h3 style="margin-top:0;">Authentication</h3>
             <form onsubmit="handleLogin(event)">
                 <input type="text" id="username" placeholder="Username" required>
                 <input type="password" id="password" placeholder="Password" required>
-                <button type="submit" class="btn-submit" style="width: 100%;">Login ➔</button>
+                <button type="submit" class="btn-submit">Login ➔</button>
             </form>
         </div>
 
         <div id="app-screen">
+            <!-- Segmented Control Bar -->
             <div class="segmented-control">
                 <button id="segFetchBtn" class="segment-btn active" onclick="switchSegment('fetch')">🔍 Fetch Link</button>
                 <button id="segUploadBtn" class="segment-btn" onclick="switchSegment('upload')">⬆️ Upload File</button>
             </div>
 
             <div class="controls">
-                <form id="fetchForm" onsubmit="submitUrl(event)" class="input-group">
-                    <input type="text" id="videoUrl" placeholder="Paste link here..." required>
-                    <div class="sub-controls">
+                <form id="fetchForm" onsubmit="submitUrl(event)" class="form-grid">
+                    <input type="text" id="videoUrl" placeholder="Paste link here..." required style="height: 48px; font-size: 16px; border-radius: 4px; background: #2a2a2a; color: #fff; border: 1px solid #333; padding: 0 15px;">
+                    <div class="dropdown-row">
                         <select id="fetchMode" class="expire-drop">
-                            <option value="media">Media (Auto)</option>
-                            <option value="article">Article (Reader)</option>
+                            <option value="media">Mode: Media</option>
+                            <option value="article">Mode: Reader</option>
                         </select>
                         <select id="urlExpire" class="expire-drop">
                             <option value="0">Keep Forever</option>
@@ -147,22 +147,28 @@
                             <option value="7">Expire 7d</option>
                             <option value="30">Expire 30d</option>
                         </select>
-                        <button type="submit" class="btn-submit">Fetch</button>
                     </div>
+                    <button type="submit" class="btn-submit">Fetch</button>
                 </form>
 
-                <form id="uploadForm" onsubmit="uploadFile(event)" class="input-group" style="display:none;">
-                    <input type="file" id="localFile" accept="video/*" required>
-                    <div class="sub-controls">
-                        <select id="fileExpire" class="expire-drop">
+                <form id="uploadForm" onsubmit="uploadFile(event)" class="form-grid" style="display:none;">
+                    <label for="localFile" class="file-label">Select Local File...</label>
+                    <input type="file" id="localFile" accept="video/*, image/*" required style="display:none;" onchange="document.querySelector('.file-label').innerText = this.files[0].name">
+                    <div class="dropdown-row">
+                        <select id="fileExpire" class="expire-drop" style="width: 100%;">
                             <option value="0">Keep Forever</option>
                             <option value="1">Expire 24h</option>
+                            <option value="7">Expire 7d</option>
+                            <option value="30">Expire 30d</option>
                         </select>
-                        <button type="submit" class="btn-submit">Upload</button>
                     </div>
+                    <button type="submit" class="btn-submit">Upload</button>
                 </form>
             </div>
             
+            <div class="mode-toggle">
+                <button id="selectModeBtn" class="mode-btn" onclick="toggleSelectMode()">Select Mode</button>
+            </div>
             <div class="video-grid" id="videoGrid"></div>
         </div>
     </div>
@@ -210,7 +216,7 @@
                 
                 <div id="passwordSection" style="display:none; margin-top:20px; background:#222; padding:15px; border-radius:6px;">
                     <h4 style="margin-top:0; color:#fff;">Account Settings</h4>
-                    <input type="password" id="newPass" placeholder="New Password" style="width:100%; padding:10px; margin-bottom:10px; border-radius:4px; background:#111; color:#fff; border:1px solid #444;">
+                    <input type="password" id="newPass" placeholder="New Password" style="width:100%; padding:10px; margin-bottom:10px; border-radius:4px; background:#111; color:#fff; border:1px solid #444; font-size: 16px;">
                     <button class="btn" style="background:#ff8c00; color:#fff; width:100%; margin-bottom:10px;" onclick="changePass()">Save Password</button>
                     <button class="btn" style="background:#ff3333; color:#fff; width:100%;" onclick="logoutApp()">Logout</button>
                 </div>
@@ -221,19 +227,19 @@
                 <details class="admin-group">
                     <summary>Login Message</summary>
                     <div class="form-section">
-                        <input type="text" id="loginMsgInput" placeholder="Leave blank to disable...">
+                        <input type="text" id="loginMsgInput" placeholder="Leave blank to disable..." style="width:100%; padding:10px; font-size:16px;">
                         <button class="btn" style="background:#00E676; color:#000; width:100%; margin-top:10px;" onclick="saveLoginMsg()">Save</button>
                     </div>
                 </details>
                 <details class="admin-group">
                     <summary>User Management</summary>
                     <div class="form-section">
-                        <input type="text" id="newUsername" placeholder="New User" style="margin-bottom:10px;">
-                        <input type="text" id="newUserPass" placeholder="Password" style="margin-bottom:10px;">
+                        <input type="text" id="newUsername" placeholder="New User" style="width:100%; padding:10px; font-size:16px; margin-bottom:10px;">
+                        <input type="text" id="newUserPass" placeholder="Password" style="width:100%; padding:10px; font-size:16px; margin-bottom:10px;">
                         <button class="btn" style="background:#ff8c00; color:#fff; width:100%;" onclick="createUser()">Create Account</button>
                         <hr style="border-color:#333; margin:15px 0;">
-                        <input type="text" id="resetUsername" placeholder="Target User" style="margin-bottom:10px;">
-                        <input type="text" id="resetPass" placeholder="New Password" style="margin-bottom:10px;">
+                        <input type="text" id="resetUsername" placeholder="Target User" style="width:100%; padding:10px; font-size:16px; margin-bottom:10px;">
+                        <input type="text" id="resetPass" placeholder="New Password" style="width:100%; padding:10px; font-size:16px; margin-bottom:10px;">
                         <button class="btn" style="background:#ff3333; color:#fff; width:100%;" onclick="resetUserPass()">Force Reset</button>
                     </div>
                 </details>
@@ -336,7 +342,7 @@
             if (!fi.files.length) return;
             currentTasks["temp_up_" + Date.now()] = "Uploading..."; renderUnifiedGrid();
             const fd = new FormData(); fd.append('file', fi.files[0]); fd.append('expire_days', exp);
-            await fetch('/api/upload', { method: 'POST', body: fd }); fi.value = '';
+            await fetch('/api/upload', { method: 'POST', body: fd }); fi.value = ''; document.querySelector('.file-label').innerText = "Select Local File...";
         }
 
         function triggerDelete(videoId, btnElement) {
@@ -367,6 +373,12 @@
             };
         }
 
+        function toggleSelectMode() {
+            document.body.classList.toggle('select-mode');
+            document.getElementById('selectModeBtn').classList.toggle('active');
+            updateBulkCounter();
+        }
+
         function updateBulkCounter() {
             const c = document.querySelectorAll('.card-checkbox:checked').length;
             const b = document.getElementById('bulk-action-bar');
@@ -380,7 +392,7 @@
             const ids = Array.from(boxes).map(cb => cb.value);
             const fd = new FormData(); fd.append("video_ids", JSON.stringify(ids));
             await fetch('/api/videos/bulk_delete', { method: 'POST', body: fd });
-            checkAuthAndLoad();
+            toggleSelectMode(); checkAuthAndLoad();
         }
 
         function renderUnifiedGrid() {
@@ -393,31 +405,39 @@
             }
             activeVideosData.forEach(v => {
                 const url = window.location.origin + '/videos/' + v.filename;
-                const isArticle = v.type === 'article';
+                const isArticle = v.ext === '.html';
+                const isImage = ['.jpg', '.jpeg', '.png', '.webp'].includes(v.ext.toLowerCase());
+                
                 const cardClass = isArticle ? 'card article-card' : 'card';
-                const thumb = v.thumbnail ? `<img src="/videos/${v.thumbnail}" class="thumbnail">` : `<div class="thumbnail" style="font-size:1.5rem;">${isArticle ? '📝<br>Article' : 'No Thumb'}</div>`;
+                
+                let thumbHtml = '';
+                if (isImage) {
+                    thumbHtml = `<img src="${url}" class="thumbnail">`;
+                } else if (v.thumbnail) {
+                    thumbHtml = `<img src="/videos/${v.thumbnail}" class="thumbnail">`;
+                } else {
+                    thumbHtml = `<div class="thumbnail" style="font-size:1.5rem;">${isArticle ? '📝<br>Article' : 'No Thumb'}</div>`;
+                }
+                
                 const favicon = v.domain !== 'unknown' ? `<a href="${v.original_url}" target="_blank"><img src="https://www.google.com/s2/favicons?domain=${v.domain}&sz=32" class="favicon" onerror="this.style.display='none'"></a>` : '';
                 const safeTitle = v.title.replace(/"/g, '&quot;'), promptTitle = safeTitle.replace(/'/g, "\\'");
                 
                 let expBadge = v.expires_at > 0 ? `<div class="expire-badge">Expires</div>` : '';
-                let editBtn = !isArticle ? `<button class="btn btn-edit" onclick="openEditorModal('${v.id}', '${url}')">✂️</button>` : '';
+                let editBtn = (v.ext === '.mp4') ? `<button class="btn btn-edit" onclick="openEditorModal('${v.id}', '${url}')">✂️</button>` : '';
 
-                let modelBadgeText = "⏱️ " + v.duration;
-                if (isArticle) {
-                    const m = v.ai_model || "Readability";
-                    const badgeIcon = m === "Gemini" ? "✨" : m === "Ollama" ? "🦙" : "📖";
-                    modelBadgeText = `${badgeIcon} ${m}`;
-                }
+                let displayDuration = isArticle ? "Reader" : (isImage ? "Image" : (v.duration_raw > 0 ? `${Math.floor(v.duration_raw/60)}:${('0'+Math.floor(v.duration_raw%60)).slice(-2)}` : "0:00"));
 
                 htmlBuffer += `
                     <div class="${cardClass}">
-                        <input type="checkbox" class="card-checkbox" value="${v.id}" onchange="updateBulkCounter()">
+                        <label class="checkbox-wrapper">
+                            <input type="checkbox" class="card-checkbox" value="${v.id}" onchange="updateBulkCounter()">
+                        </label>
                         <div class="card-content">
-                            <div class="thumbnail-wrapper">${thumb}${expBadge}<div class="date-badge">${v.date_badge}</div></div>
+                            <div class="thumbnail-wrapper">${thumbHtml}${expBadge}<div class="date-badge">${v.date_badge}</div></div>
                             <div class="card-header">${favicon}<div class="video-title" title="${safeTitle}" ondblclick="makeEditable('${v.id}', '${promptTitle}')">${v.title}</div></div>
                         </div>
                         <div class="card-bottom">
-                            <div class="meta-tags"><div class="meta-tag">👁️ ${v.views}</div><div class="meta-tag">${modelBadgeText}</div><div class="meta-tag">💾 ${formatBytes(v.size_bytes)}</div></div>
+                            <div class="meta-tags"><div class="meta-tag">👁️ ${v.views}</div><div class="meta-tag">⏱️ ${displayDuration}</div><div class="meta-tag">💾 ${formatBytes(v.size_bytes)}</div></div>
                             <div class="btn-group">
                                 <button class="btn btn-copy" onclick="copyLink('${url}')">Copy</button>
                                 <a href="${url}" target="_blank" class="btn btn-view">View</a>

@@ -56,7 +56,7 @@ def get_cookie_file_for_url(url: str):
 
 def is_social_media_url(url: str) -> bool:
     domain = urlparse(url).netloc.lower()
-    social_domains = ["instagram.com", "tiktok.com", "youtube.com", "youtu.be", "twitter.com", "x.com"]
+    social_domains = ["instagram.com", "tiktok.com", "youtube.com", "youtu.be", "twitter.com", "x.com", "reddit.com", "facebook.com", "fb.watch", "vimeo.com"]
     return any(d in domain for d in social_domains)
 
 def load_db():
@@ -76,7 +76,8 @@ def load_db():
                 "token": secrets.token_urlsafe(32),
                 "role": "admin",
                 "max_space_mb": 0,
-                "warning_mb": int(os.getenv("MAX_DOWNLOAD_MB", "150"))
+                "warning_mb": int(os.getenv("MAX_DOWNLOAD_MB", "150")),
+                "bandwidth": 0
             }
         },
         "videos": {},
@@ -103,6 +104,7 @@ def verify_auth(request: Request):
     if auth_header and auth_header.startswith("Bearer "): token = auth_header.split(" ", 1)[1]
     for username, user_data in users.items():
         if secrets.compare_digest(user_data.get("token", ""), str(token)):
+            user_data["username"] = username
             return {"username": username, "role": user_data["role"], "config": user_data}
     raise StarletteHTTPException(status_code=401, detail="Unauthorized")
 
@@ -117,7 +119,12 @@ def increment_view_counter(video_id: str, file_path: str):
             if video_id in db["videos"]:
                 db["videos"][video_id]["views"] = db["videos"][video_id].get("views", 0) + 1
                 if os.path.exists(file_path):
-                    db["server_bandwidth"] = db.get("server_bandwidth", 0) + os.path.getsize(file_path)
+                    file_size = os.path.getsize(file_path)
+                    db["server_bandwidth"] = db.get("server_bandwidth", 0) + file_size
+                    
+                    owner = db["videos"][video_id].get("owner")
+                    if owner and owner in db["users"]:
+                        db["users"][owner]["bandwidth"] = db["users"][owner].get("bandwidth", 0) + file_size
                 save_db(db)
     except Exception:
         pass
@@ -177,13 +184,12 @@ def my_hook(d, task_id, user_id):
         active_downloads[task_id] = "Processing..."
 
 def clean_html_with_ai(raw_html: str) -> tuple:
-    prompt = f"You are an HTML cleaner. Strip all promotional links, 'Read More' callouts, ad captions, and social widgets from this HTML. RETURN ONLY CLEAN HTML. YOU MUST KEEP ALL <img src=...> and <video> tags intact. Do not remove media. Here is the HTML:\n\n{raw_html[:30000]}"
+    prompt = f"You are an expert HTML cleaner. Your goal is to return a clean, highly readable, and aesthetically pleasing article. You MUST KEEP ALL relevant informational links (<a href=...>), inline photos (<img src=...>), and videos (<video>). Strip out ONLY promotional links, 'Read More' callouts, ads, and social widgets. Retain all semantic HTML (headings, paragraphs, lists, bold/italic text, blockquotes) to ensure the article looks pretty and well-formatted. DO NOT REMOVE the main content or media. RETURN ONLY CLEAN HTML. Here is the raw HTML:\n\n{raw_html[:30000]}"
     
     bt = "`" * 3
 
     if GEMINI_API_KEY:
         try:
-            # Using the floating "latest" alias for flash-lite
             url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-lite-latest:generateContent?key={GEMINI_API_KEY}"
             headers = {'Content-Type': 'application/json'}
             payload = {"contents": [{"parts": [{"text": prompt}]}]}
@@ -267,7 +273,14 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
         clean_page = f"""
         <html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'>
         <title>{title}</title>
-        <style>body{{font-family: system-ui, sans-serif; line-height: 1.6; max-width: 800px; margin: 0 auto; padding: 20px; background:#121212; color:#fff;}} h1{{color:#ff8c00; border-bottom:2px solid #333; padding-bottom:10px; margin-bottom:30px;}}</style>
+        <style>
+            body{{font-family: system-ui, sans-serif; line-height: 1.6; max-width: 800px; margin: 0 auto; padding: 20px; background:#121212; color:#fff;}} 
+            h1, h2, h3 {{color:#ff8c00;}}
+            h1 {{border-bottom:2px solid #333; padding-bottom:10px; margin-bottom:30px;}}
+            a {{color: #00E676; text-decoration: none;}}
+            a:hover {{text-decoration: underline;}}
+            blockquote {{border-left: 4px solid #ff8c00; margin-left: 0; padding-left: 15px; color: #ccc; font-style: italic;}}
+        </style>
         </head><body>
             {logo_html}
             <h1>{title}</h1>
@@ -289,11 +302,9 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
     finally:
         if task_id in active_downloads: del active_downloads[task_id]
 
-def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int, force_article: bool = False):
-    if is_social_media_url(url):
-        force_article = False
-
-    if force_article:
+def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
+    # Auto-detection overrides everything
+    if not is_social_media_url(url):
         extract_article(url, user_id, task_id, expire_days)
         return
 
@@ -304,24 +315,38 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int, force
         'writeinfojson': True,
         'writethumbnail': True,
         'noplaylist': False,
-        'ignoreerrors': True, # Bypasses the hard crash when Instagram carousels have zero video formats
+        'ignoreerrors': True,
         'progress_hooks': [lambda d: my_hook(d, task_id, user_id)],
         'postprocessors': [{'key': 'FFmpegVideoConvertor', 'preferedformat': 'mp4'}],
     }
     cookie_path = get_cookie_file_for_url(url)
     if cookie_path: ydl_opts['cookiefile'] = cookie_path
 
-    success = False
+    info = None
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl: 
             info = ydl.extract_info(url, download=True)
-            if info: success = True
     except Exception as e: 
         logger.error(f"yt-dlp download failed: {e}")
-        
-    if not success and not is_social_media_url(url):
-        extract_article(url, user_id, task_id, expire_days)
-        return
+
+    # Manual Carousel Extraction Fix for Instagram missing formats
+    if info:
+        entries = info.get('entries', [info])
+        for idx, entry in enumerate(entries):
+            if not entry: continue
+            # If yt-dlp threw a "no video format" error, manually grab the thumbnail url directly
+            if not entry.get('formats'):
+                thumbs = entry.get('thumbnails', [])
+                if thumbs:
+                    img_url = thumbs[-1]['url']
+                    try:
+                        r = requests.get(img_url, timeout=10)
+                        if r.status_code == 200:
+                            img_path = os.path.join(DOWNLOAD_DIR, f"temp_yt_{task_id}_{idx}.jpg")
+                            with open(img_path, "wb") as f:
+                                f.write(r.content)
+                    except Exception as e:
+                        logger.error(f"Manual thumbnail grab failed: {e}")
 
     try:
         media_files = []
@@ -486,18 +511,21 @@ def get_stats(user: dict = Depends(verify_auth)):
                 total_videos += 1
                 total_disk += os.path.getsize(os.path.join(DOWNLOAD_DIR, f))
                 
+    user_bandwidth = db.get("users", {}).get(user["username"], {}).get("bandwidth", 0)
+                
     return {
         "role": user["role"],
         "used_disk": total_disk,
+        "user_bandwidth": user_bandwidth,
         "bandwidth": db.get("server_bandwidth", 0) if user["role"] == "admin" else 0,
         "video_count": total_videos,
         "deleted_count": db.get("deleted_count", 0) if user["role"] == "admin" else 0
     }
 
 @app.post("/api/download_form")
-async def form_download(background_tasks: BackgroundTasks, url: str = Form(...), fetch_mode: str = Form("media"), expire_days: int = Form(0), confirm_override: str = Form(None), user: dict = Depends(verify_auth)):
+async def form_download(background_tasks: BackgroundTasks, url: str = Form(...), expire_days: int = Form(0), confirm_override: str = Form(None), user: dict = Depends(verify_auth)):
     warning_mb = user["config"].get("warning_mb", 150)
-    force_article = (fetch_mode == "article") and not is_social_media_url(url)
+    force_article = not is_social_media_url(url)
 
     if not force_article and confirm_override != "true":
         try:
@@ -511,7 +539,7 @@ async def form_download(background_tasks: BackgroundTasks, url: str = Form(...),
             
     task_id = generate_secure_id()
     active_downloads[task_id] = "Starting up..."
-    background_tasks.add_task(process_yt_dlp, url, user["username"], task_id, expire_days, force_article)
+    background_tasks.add_task(process_yt_dlp, url, user["username"], task_id, expire_days)
     return {"status": "processing"}
 
 @app.post("/api/upload")
@@ -682,7 +710,8 @@ def create_user(new_username: str = Form(...), new_password: str = Form(...), us
             "token": secrets.token_urlsafe(32),
             "role": "user",
             "max_space_mb": 0,
-            "warning_mb": 150
+            "warning_mb": 150,
+            "bandwidth": 0
         }
         save_db(db)
     return {"status": "success"}
@@ -733,20 +762,6 @@ async def cleanup_expired_media():
 @app.on_event("startup")
 async def startup_event():
     asyncio.create_task(cleanup_expired_media())
-    
-    # Gemini API Verification Check
-    if GEMINI_API_KEY:
-        try:
-            url = f"https://generativelanguage.googleapis.com/v1beta/models?key={GEMINI_API_KEY}"
-            res = requests.get(url, timeout=5)
-            if res.status_code == 200:
-                logger.info("Gemini API Key verified successfully on startup.")
-            else:
-                logger.error(f"Gemini API Key verification failed! Code: {res.status_code}")
-        except Exception as e:
-            logger.error(f"Gemini API startup verification error: {e}")
-    else:
-        logger.info("No Gemini API key provided. Using local fallback parsers.")
 
 if __name__ == "__main__":
     import uvicorn

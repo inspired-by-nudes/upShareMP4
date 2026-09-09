@@ -1,4 +1,4 @@
-import os, secrets, json, hashlib, subprocess, threading, logging, time, asyncio, shutil, re, glob
+import os, secrets, json, hashlib, subprocess, threading, logging, time, asyncio, shutil, re, glob, html
 from urllib.parse import urlparse, urljoin
 from fastapi import FastAPI, BackgroundTasks, UploadFile, File, Form, Depends, Request, Response
 from fastapi.staticfiles import StaticFiles
@@ -188,7 +188,7 @@ def format_tokens(count):
     return str(count)
 
 def clean_html_with_ai(raw_html: str) -> tuple:
-    prompt = f"You are an expert HTML formatter and editor. Upscale this article by formatting it with professional typography (semantic HTML: headings like h2/h3, blockquotes, bolding, italics, lists). You MUST PRESERVE ALL relevant informational links (<a href=...>), inline photos/images (<img src=...>), and video elements. Strip out promotional links, ads, boilerplate 'Read More' text, and social widgets. DO NOT inject a duplicate main title headline (the page title is rendered separately). DO NOT alter the story or facts. RETURN ONLY CLEAN HTML. Here is the raw HTML:\n\n{raw_html[:30000]}"
+    prompt = f"You are an expert HTML formatter and editor. Upscale this article by formatting it with professional typography (semantic HTML: headings like h2/h3, blockquotes, bolding, italics, lists). You MUST PRESERVE ALL relevant informational links (<a href=...>), inline photos/images (<img src=...>), and video elements. Strip out promotional links, ads, boilerplate 'Read More' text, and social widgets. DO NOT inject a duplicate main title headline. DO NOT alter the story or facts. RETURN ONLY CLEAN HTML. Here is the raw HTML:\n\n{raw_html[:30000]}"
     
     bt = "`" * 3
 
@@ -227,25 +227,20 @@ def clean_html_with_ai(raw_html: str) -> tuple:
 def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
     try:
         active_downloads[task_id] = "Parsing Article..."
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
         r = requests.get(url, headers=headers, timeout=10)
         
         orig_soup = BeautifulSoup(r.content, 'html.parser')
         og_img = orig_soup.find('meta', property='og:image')
-        article_img_url = None
+        article_img_url = og_img.get('content') if og_img and og_img.get('content') else None
         
-        if og_img and og_img.get('content'):
-            article_img_url = og_img['content']
-        else:
-            first_img = orig_soup.find('img')
-            if first_img and first_img.get('src'):
-                article_img_url = urljoin(url, first_img.get('src'))
-        
-        for img in orig_soup.find_all('img'):
+        # Pre-process lazy-loaded images across standard structures (NY Post, etc.)
+        for img in orig_soup.find_all(['img', 'source']):
             src = img.get('data-src') or img.get('data-lazy-src') or img.get('data-original') or img.get('src')
             if not src and img.get('srcset'):
                 src = img.get('srcset').split(',')[0].split(' ')[0]
-            if src: img['src'] = src
+            if src:
+                img['src'] = src
                 
         doc = Document(str(orig_soup))
         title = doc.title()
@@ -253,7 +248,14 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
         
         soup = BeautifulSoup(readable_html, 'html.parser')
         
-        # Prevent double headline: remove any H1 matching the document title
+        # Fallback safeguard: If Readability missed inline figures, extract article body containers directly
+        if len(soup.find_all('img')) == 0:
+            content_div = orig_soup.find('article') or orig_soup.find('div', class_=re.compile(r'(article|content|story|body)', re.I))
+            if content_div:
+                for tag in content_div.find_all(['script', 'style', 'nav', 'header', 'footer']):
+                    tag.decompose()
+                soup = content_div
+
         for h1 in soup.find_all('h1'):
             if title.lower() in h1.get_text().lower() or h1.get_text().lower() in title.lower():
                 h1.decompose()
@@ -264,12 +266,12 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
                 p.decompose()
 
         for img in soup.find_all('img'):
-            src = img.get('src')
-            if src: img['src'] = urljoin(url, src)
-            img['style'] = "max-width:100%; height:auto; border-radius:8px; margin:20px auto; display:block;"
-            
-        for vid in soup.find_all('video'):
-            vid['style'] = "max-width:100%; height:auto; border-radius:8px; margin:20px auto; display:block; background:#000;"
+            src = img.get('data-src') or img.get('data-lazy-src') or img.get('data-original') or img.get('src')
+            if src:
+                img['src'] = urljoin(url, src)
+                img['style'] = "max-width:100%; height:auto; border-radius:8px; margin:20px auto; display:block;"
+            else:
+                img.decompose()
 
         raw_html_str = str(soup)
         if GEMINI_API_KEY or INFERENCE_TEXT_MODEL:
@@ -302,6 +304,7 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
             a:hover {{text-decoration: underline;}}
             blockquote {{border-left: 4px solid #ff8c00; margin: 25px 0; padding-left: 20px; color: #fff; font-style: italic; font-size: 1.1rem; background: #1a1a1a; padding-top: 10px; padding-bottom: 10px; border-radius: 0 6px 6px 0;}}
             p {{margin-bottom: 18px;}}
+            img {{max-width: 100%; height: auto; border-radius: 8px; margin: 20px auto; display: block;}}
         </style>
         </head><body>
             {logo_html}
@@ -325,59 +328,50 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
         if task_id in active_downloads: del active_downloads[task_id]
 
 def process_instagram_carousel(url: str, user_id: str, task_id: str, expire_days: int) -> bool:
-    """Direct Instagram JSON scraper fallback for carousels to bypass yt-dlp video errors"""
+    """Robust Instagram Meta Scraper Fallback for Carousels & Reels"""
     try:
-        active_downloads[task_id] = "Fetching Instagram Carousel..."
-        # Clean URL to get base post URL
-        parsed_url = urlparse(url)
-        clean_base = f"{parsed_url.scheme}://{parsed_url.netloc}{parsed_url.path}"
-        json_url = f"{clean_base.rstrip('/')}/?__a=1&__d=dis"
-        
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
-        cookie_path = get_cookie_file_for_url(url)
-        cookies = {}
-        if cookie_path and os.path.exists(cookie_path):
-            with open(cookie_path, 'r') as cf:
-                for line in cf:
-                    if line.strip() and not line.startswith('#'):
-                        parts = line.strip().split('\t')
-                        if len(parts) >= 7:
-                            cookies[parts[5]] = parts[6]
-
-        r = requests.get(json_url, headers=headers, cookies=cookies, timeout=10)
+        active_downloads[task_id] = "Extracting Instagram Post..."
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'}
+        r = requests.get(url, headers=headers, timeout=12)
         if r.status_code != 200: return False
-        
-        data = r.json()
-        items = []
-        # Parse standard Instagram graphql / JSON payload structures
-        media_node = data.get('graphql', {}).get('shortcode_media') or data.get('items', [{}])[0]
-        if not media_node: return False
-        
-        edge_sidecar = media_node.get('edge_sidecar_to_children', {}).get('edges', [])
-        if edge_sidecar:
-            for edge in edge_sidecar:
-                node = edge.get('node', {})
-                img_url = node.get('display_url')
-                if img_url: items.append(img_url)
-        else:
-            img_url = media_node.get('display_url') or media_node.get('image_versions2', {}).get('candidates', [{}])[0].get('url')
-            if img_url: items.append(img_url)
 
-        if not items: return False
+        soup = BeautifulSoup(r.text, 'html.parser')
+        image_urls = []
+
+        # 1. Check OpenGraph meta tags
+        og_image = soup.find('meta', property='og:image')
+        if og_image and og_image.get('content'):
+            image_urls.append(og_image.get('content'))
+
+        # 2. Extract sharedData / JSON payloads embedded in page scripts
+        for script in soup.find_all('script'):
+            text = script.string or ''
+            if 'display_url' in text or 'edge_sidecar_to_children' in text:
+                matches = re.findall(r'"display_url"\s*:\s*"([^"]+)"', text)
+                for m in matches:
+                    decoded = html.unescape(m).replace('\\u0026', '&')
+                    if decoded not in image_urls:
+                        image_urls.append(decoded)
+
+        if not image_urls: return False
 
         new_id = generate_secure_id()
         html_path = os.path.join(DOWNLOAD_DIR, f"{new_id}.html")
         img_tags = ""
-        
-        for idx, img_url in enumerate(items):
-            img_data = requests.get(img_url, headers=headers, timeout=10).content
-            img_name = f"{new_id}_{idx}.jpg"
-            with open(os.path.join(DOWNLOAD_DIR, img_name), "wb") as img_f:
-                img_f.write(img_data)
-            img_tags += f"<img src='/videos/{img_name}'>"
 
-        if idx == 0:
-            shutil.copy(os.path.join(DOWNLOAD_DIR, f"{new_id}_0.jpg"), os.path.join(DOWNLOAD_DIR, f"{new_id}.jpg"))
+        for idx, img_url in enumerate(image_urls[:10]): # cap at 10 items max
+            try:
+                img_data = requests.get(img_url, headers=headers, timeout=10).content
+                img_name = f"{new_id}_{idx}.jpg"
+                with open(os.path.join(DOWNLOAD_DIR, img_name), "wb") as img_f:
+                    img_f.write(img_data)
+                img_tags += f"<img src='/videos/{img_name}'>"
+            except: pass
+
+        if not img_tags: return False
+
+        # Set poster thumbnail
+        shutil.copy(os.path.join(DOWNLOAD_DIR, f"{new_id}_0.jpg"), os.path.join(DOWNLOAD_DIR, f"{new_id}.jpg"))
 
         gallery_html = f"""
         <html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'>
@@ -432,7 +426,7 @@ def process_instagram_carousel(url: str, user_id: str, task_id: str, expire_days
         extract_true_duration(new_id, user_id, url, "Instagram Carousel", ".html", expire_days, engine="🖼️ Carousel")
         return True
     except Exception as e:
-        logger.error(f"Instagram direct carousel scrape failed: {e}")
+        logger.error(f"Instagram meta scraper failed: {e}")
         return False
 
 def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
@@ -440,7 +434,6 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
         extract_article(url, user_id, task_id, expire_days)
         return
 
-    # Direct Instagram Carousel bypass attempt first
     if "instagram.com" in url.lower():
         if process_instagram_carousel(url, user_id, task_id, expire_days):
             if task_id in active_downloads: del active_downloads[task_id]

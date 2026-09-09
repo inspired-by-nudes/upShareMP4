@@ -179,12 +179,12 @@ def my_hook(d, task_id, user_id):
 def clean_html_with_ai(raw_html: str) -> tuple:
     prompt = f"You are an HTML cleaner. Strip all promotional links, 'Read More' callouts, ad captions, and social widgets from this HTML. RETURN ONLY CLEAN HTML. YOU MUST KEEP ALL <img src=...> and <video> tags intact. Do not remove media. Here is the HTML:\n\n{raw_html[:30000]}"
     
-    # Generate backticks dynamically to prevent markdown rendering errors during copy-paste
     bt = "`" * 3
 
     if GEMINI_API_KEY:
         try:
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
+            # Using the floating "latest" alias for flash-lite
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-lite-latest:generateContent?key={GEMINI_API_KEY}"
             headers = {'Content-Type': 'application/json'}
             payload = {"contents": [{"parts": [{"text": prompt}]}]}
             res = requests.post(url, headers=headers, json=payload, timeout=20)
@@ -304,6 +304,7 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int, force
         'writeinfojson': True,
         'writethumbnail': True,
         'noplaylist': False,
+        'ignoreerrors': True, # Bypasses the hard crash when Instagram carousels have zero video formats
         'progress_hooks': [lambda d: my_hook(d, task_id, user_id)],
         'postprocessors': [{'key': 'FFmpegVideoConvertor', 'preferedformat': 'mp4'}],
     }

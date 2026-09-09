@@ -1,4 +1,4 @@
-import os, secrets, json, hashlib, subprocess, threading, logging, time, asyncio, shutil, re
+import os, secrets, json, hashlib, subprocess, threading, logging, time, asyncio, shutil, re, glob
 from urllib.parse import urlparse, urljoin
 from fastapi import FastAPI, BackgroundTasks, UploadFile, File, Form, Depends, Request, Response
 from fastapi.staticfiles import StaticFiles
@@ -197,7 +197,8 @@ def clean_html_with_ai(raw_html: str) -> tuple:
             url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-lite-latest:generateContent?key={GEMINI_API_KEY}"
             headers = {'Content-Type': 'application/json'}
             payload = {"contents": [{"parts": [{"text": prompt}]}]}
-            res = requests.post(url, headers=headers, json=payload, timeout=20)
+            # Timeout increased to 90 seconds
+            res = requests.post(url, headers=headers, json=payload, timeout=90)
             if res.status_code == 200:
                 json_res = res.json()
                 result = json_res['candidates'][0]['content']['parts'][0]['text']
@@ -213,7 +214,7 @@ def clean_html_with_ai(raw_html: str) -> tuple:
         try:
             url = f"{OLLAMA_HOST}/api/generate"
             payload = {"model": INFERENCE_TEXT_MODEL, "prompt": prompt, "stream": False}
-            res = requests.post(url, json=payload, timeout=20)
+            res = requests.post(url, json=payload, timeout=90)
             if res.status_code == 200:
                 json_res = res.json()
                 result = json_res.get('response', raw_html)
@@ -241,7 +242,6 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
             if first_img and first_img.get('src'):
                 article_img_url = urljoin(url, first_img.get('src'))
         
-        # Pre-process lazy-loaded images to standard 'src' so Readability doesn't delete them
         for img in orig_soup.find_all('img'):
             src = img.get('data-src') or img.get('data-lazy-src') or img.get('data-original') or img.get('src')
             if not src and img.get('srcset'):
@@ -320,7 +320,6 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
         if task_id in active_downloads: del active_downloads[task_id]
 
 def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
-    # Auto-detection overrides everything
     if not is_social_media_url(url):
         extract_article(url, user_id, task_id, expire_days)
         return
@@ -339,34 +338,38 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
     cookie_path = get_cookie_file_for_url(url)
     if cookie_path: ydl_opts['cookiefile'] = cookie_path
 
-    info = None
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl: 
-            info = ydl.extract_info(url, download=True)
+            ydl.extract_info(url, download=True)
     except Exception as e: 
         logger.error(f"yt-dlp download failed: {e}")
 
-    # Manual Carousel Extraction Fix for Instagram missing formats
-    if info:
-        entries = info.get('entries', [info])
-        for idx, entry in enumerate(entries):
-            if not entry: continue
+    # Manual file-system json parsing for Instagram carousels
+    try:
+        for info_path in glob.glob(f"{DOWNLOAD_DIR}/temp_yt_{task_id}_*.info.json"):
+            with open(info_path, 'r', encoding='utf-8') as f:
+                meta = json.load(f)
             
-            # If yt-dlp threw a "no video format" error, manually grab the thumbnail url directly
-            if not entry.get('formats'):
-                img_url = entry.get('url')
-                if not img_url and entry.get('thumbnails'):
-                    img_url = entry.get('thumbnails')[-1]['url']
-                
-                if img_url:
-                    try:
-                        r = requests.get(img_url, timeout=10)
-                        if r.status_code == 200:
-                            img_path = os.path.join(DOWNLOAD_DIR, f"temp_yt_{task_id}_{idx}.jpg")
-                            with open(img_path, "wb") as f:
-                                f.write(r.content)
-                    except Exception as e:
-                        logger.error(f"Manual thumbnail grab failed: {e}")
+            entries = meta.get('entries', [meta])
+            for idx, entry in enumerate(entries):
+                if not entry: continue
+                # If yt-dlp threw a "no video format" error, grab the thumbnail URL directly from the saved JSON
+                if not entry.get('formats'):
+                    img_url = entry.get('url')
+                    if not img_url and entry.get('thumbnails'):
+                        img_url = entry.get('thumbnails')[-1]['url']
+                    
+                    if img_url:
+                        try:
+                            r = requests.get(img_url, timeout=15)
+                            if r.status_code == 200:
+                                img_file = os.path.join(DOWNLOAD_DIR, f"temp_yt_{task_id}_{idx}_fallback.jpg")
+                                with open(img_file, "wb") as img_f:
+                                    img_f.write(r.content)
+                        except Exception as e:
+                            logger.error(f"Manual thumbnail grab failed: {e}")
+    except Exception as e:
+        logger.error(f"Fallback info.json parsing failed: {e}")
 
     try:
         media_files = []
@@ -478,7 +481,6 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
             shutil.copy(os.path.join(DOWNLOAD_DIR, f"{new_id}_0.{first_ext}"), os.path.join(DOWNLOAD_DIR, f"{new_id}.jpg"))
             extract_true_duration(new_id, user_id, url, "Image Carousel", ".html", expire_days, engine="🖼️ Carousel")
 
-        # Cleanup temp
         for f in os.listdir(DOWNLOAD_DIR):
             if f.startswith(f"temp_yt_{task_id}_"):
                 try: os.remove(os.path.join(DOWNLOAD_DIR, f))

@@ -205,21 +205,20 @@
         <div class="dialog-box">
             <div class="tabs-header">
                 <div class="tabs" id="settings-tabs">
-                    <div class="tab active" onclick="switchTab('mystats')">Statistics</div>
-                </div>
-                <div style="position:relative;">
-                    <div style="cursor:pointer; font-size:1.5rem; transition: transform 0.2s;" onclick="togglePasswordSection()" title="Account Settings">⚙️</div>
-                    <div id="passwordSection" style="display:none; position:absolute; right:0; top:35px; width:220px; background:#222; padding:15px; border-radius:6px; box-shadow: 0 4px 12px rgba(0,0,0,0.5); z-index:2000;">
-                        <h4 style="margin-top:0; color:#fff; font-size:0.9rem;">Account Settings</h4>
-                        <input type="password" id="newPass" placeholder="New Password" style="width:100%; padding:10px; margin-bottom:10px; border-radius:4px; background:#111; color:#fff; border:1px solid #444;">
-                        <button class="btn" style="background:#ff8c00; color:#fff; width:100%; margin-bottom:10px;" onclick="changePass()">Save Password</button>
-                        <button class="btn" style="background:#ff3333; color:#fff; width:100%;" onclick="logoutApp()">Logout</button>
-                    </div>
+                    <!-- Tabs are dynamically generated in openSettings() -->
                 </div>
             </div>
             
             <div id="tab-mystats">
                 <div id="myStatsContent">Loading...</div>
+            </div>
+            
+            <!-- Standardized Account Settings Tab -->
+            <div id="tab-account" style="display:none;">
+                <h4 style="margin-top:0; color:#fff;">Account Actions</h4>
+                <input type="password" id="newPass" placeholder="New Password" style="width:100%; padding:10px; margin-bottom:10px; border-radius:4px; background:#111; color:#fff; border:1px solid #444;">
+                <button class="btn" style="background:#ff8c00; color:#fff; width:100%; margin-bottom:10px;" onclick="changePass()">Save Password</button>
+                <button class="btn" style="background:#ff3333; color:#fff; width:100%;" onclick="logoutApp()">Logout</button>
             </div>
 
             <div id="tab-serverstats" style="display:none;"><div id="serverStatsContent">Loading...</div></div>
@@ -500,11 +499,6 @@
         }
 
         // --- SETTINGS MODAL ---
-        function togglePasswordSection() {
-            const p = document.getElementById('passwordSection');
-            p.style.display = p.style.display === 'none' ? 'block' : 'none';
-        }
-
         async function openSettings() {
             const res = await fetch('/api/stats');
             if (res.ok) {
@@ -512,21 +506,22 @@
                 document.getElementById('myStatsContent').innerHTML = `<p style="color:#ccc;">Media Count: <strong style="color:#fff;">${s.video_count}</strong></p><p style="color:#ccc;">Disk Usage: <strong style="color:#fff;">${formatBytes(s.used_disk)}</strong></p>`;
                 
                 const tabs = document.getElementById('settings-tabs');
-                tabs.innerHTML = `<div class="tab active" onclick="switchTab('mystats')">Statistics</div>`;
+                tabs.innerHTML = `<div class="tab active" onclick="switchTab('mystats')">Statistics</div><div class="tab" onclick="switchTab('account')">Account ⚙️</div>`;
                 if (s.role === 'admin') {
                     tabs.innerHTML += `<div class="tab" onclick="switchTab('serverstats')">Server</div><div class="tab" onclick="switchTab('admin')">Admin</div>`;
                     document.getElementById('serverStatsContent').innerHTML = `<p style="color:#ccc;">Total Media: <strong style="color:#fff;">${s.video_count}</strong></p><p style="color:#ccc;">Total Disk: <strong style="color:#fff;">${formatBytes(s.used_disk)}</strong></p><p style="color:#ccc;">Bandwidth: <strong style="color:#fff;">${formatBytes(s.bandwidth)}</strong></p>`;
                 }
                 document.getElementById('settingsModal').style.display = 'flex';
                 document.body.classList.add('modal-open'); switchTab('mystats');
-                document.getElementById('passwordSection').style.display = 'none';
             }
         }
         function closeSettingsModal(e) { if(e.target.id === 'settingsModal') { e.target.style.display = 'none'; document.body.classList.remove('modal-open'); } }
+        
         function switchTab(tab) {
-            ['mystats','serverstats','admin'].forEach(t => { const el = document.getElementById('tab-'+t); if(el) el.style.display = t===tab ? 'block':'none'; });
+            ['mystats','account','serverstats','admin'].forEach(t => { const el = document.getElementById('tab-'+t); if(el) el.style.display = t===tab ? 'block':'none'; });
             document.querySelectorAll('.tab').forEach(t => t.classList.remove('active')); event.target.classList.add('active');
         }
+        
         async function changePass() { const np = document.getElementById('newPass').value; if(np){ const fd = new FormData(); fd.append("password", np); await fetch('/api/stats'); alert("Password updated."); document.getElementById('newPass').value = ''; } }
         async function createUser() { const un = document.getElementById('newUsername').value, pw = document.getElementById('newUserPass').value; if(un&&pw){ const fd = new FormData(); fd.append("new_username", un); fd.append("new_password", pw); const r = await fetch(`/api/users`, {method:'POST', body:fd}); if(r.ok) alert("Created."); else alert("Error.");} }
         async function resetUserPass() { const un = document.getElementById('resetUsername').value, pw = document.getElementById('resetPass').value; if(un&&pw){ const fd = new FormData(); fd.append("password", pw); const r = await fetch(`/api/users/${un}/password`, {method:'POST', body:fd}); if(r.ok) alert("Reset."); else alert("Not found.");} }

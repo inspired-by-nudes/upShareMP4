@@ -183,8 +183,12 @@ def my_hook(d, task_id, user_id):
     elif d['status'] == 'finished':
         active_downloads[task_id] = "Processing..."
 
+def format_tokens(count):
+    if count >= 1000: return f"{count/1000:.1f}k".replace('.0k', 'k')
+    return str(count)
+
 def clean_html_with_ai(raw_html: str) -> tuple:
-    prompt = f"You are an expert HTML cleaner. Your goal is to return a clean, highly readable, and aesthetically pleasing article. You MUST KEEP ALL relevant informational links (<a href=...>), inline photos (<img src=...>), and videos (<video>). Strip out ONLY promotional links, 'Read More' callouts, ads, and social widgets. Retain all semantic HTML (headings, paragraphs, lists, bold/italic text, blockquotes) to ensure the article looks pretty and well-formatted. DO NOT REMOVE the main content or media. RETURN ONLY CLEAN HTML. Here is the raw HTML:\n\n{raw_html[:30000]}"
+    prompt = f"You are an expert HTML formatter and editor. Your task is to 'upscale' this article by wrapping it in beautiful, highly readable, and semantic HTML (use headings, blockquotes, bolding, italics, and lists where appropriate to make it look professional). You MUST KEEP ALL relevant informational links (<a href=...>), inline photos (<img src=...>), and videos (<video>). Strip out ONLY promotional links, ads, 'Read More' injected text, and social widgets. DO NOT alter the story, change facts, or remove the main content and media. RETURN ONLY CLEAN HTML. Here is the raw HTML:\n\n{raw_html[:30000]}"
     
     bt = "`" * 3
 
@@ -195,8 +199,11 @@ def clean_html_with_ai(raw_html: str) -> tuple:
             payload = {"contents": [{"parts": [{"text": prompt}]}]}
             res = requests.post(url, headers=headers, json=payload, timeout=20)
             if res.status_code == 200:
-                result = res.json()['candidates'][0]['content']['parts'][0]['text']
-                return result.replace(f'{bt}html', '').replace(bt, '').strip(), "🤖 Gemini"
+                json_res = res.json()
+                result = json_res['candidates'][0]['content']['parts'][0]['text']
+                token_count = json_res.get('usageMetadata', {}).get('totalTokenCount', 0)
+                engine_str = f"📄 Gemini (🤖 {format_tokens(token_count)} tokens)" if token_count else "📄 Gemini"
+                return result.replace(f'{bt}html', '').replace(bt, '').strip(), engine_str
             else:
                 logger.error(f"Gemini API returned error code {res.status_code}: {res.text}")
         except Exception as e:
@@ -208,8 +215,11 @@ def clean_html_with_ai(raw_html: str) -> tuple:
             payload = {"model": INFERENCE_TEXT_MODEL, "prompt": prompt, "stream": False}
             res = requests.post(url, json=payload, timeout=20)
             if res.status_code == 200:
-                result = res.json().get('response', raw_html)
-                return result.replace(f'{bt}html', '').replace(bt, '').strip(), "🤖 Ollama"
+                json_res = res.json()
+                result = json_res.get('response', raw_html)
+                tokens = json_res.get('prompt_eval_count', 0) + json_res.get('eval_count', 0)
+                engine_str = f"📄 Ollama (🤖 {format_tokens(tokens)} tokens)" if tokens else "📄 Ollama"
+                return result.replace(f'{bt}html', '').replace(bt, '').strip(), engine_str
         except Exception: pass
 
     return raw_html, "📄 Readability"
@@ -231,7 +241,14 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
             if first_img and first_img.get('src'):
                 article_img_url = urljoin(url, first_img.get('src'))
         
-        doc = Document(r.content)
+        # Pre-process lazy-loaded images to standard 'src' so Readability doesn't delete them
+        for img in orig_soup.find_all('img'):
+            src = img.get('data-src') or img.get('data-lazy-src') or img.get('data-original') or img.get('src')
+            if not src and img.get('srcset'):
+                src = img.get('srcset').split(',')[0].split(' ')[0]
+            if src: img['src'] = src
+                
+        doc = Document(str(orig_soup))
         title = doc.title()
         readable_html = doc.summary()
         
@@ -243,7 +260,7 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
                 p.decompose()
 
         for img in soup.find_all('img'):
-            src = img.get('src') or img.get('data-src')
+            src = img.get('src')
             if src: img['src'] = urljoin(url, src)
             img['style'] = "max-width:100%; height:auto; border-radius:8px; margin:15px 0; display:block;"
             
@@ -334,11 +351,14 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
         entries = info.get('entries', [info])
         for idx, entry in enumerate(entries):
             if not entry: continue
+            
             # If yt-dlp threw a "no video format" error, manually grab the thumbnail url directly
             if not entry.get('formats'):
-                thumbs = entry.get('thumbnails', [])
-                if thumbs:
-                    img_url = thumbs[-1]['url']
+                img_url = entry.get('url')
+                if not img_url and entry.get('thumbnails'):
+                    img_url = entry.get('thumbnails')[-1]['url']
+                
+                if img_url:
                     try:
                         r = requests.get(img_url, timeout=10)
                         if r.status_code == 200:

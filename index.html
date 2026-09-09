@@ -95,6 +95,7 @@
         .tab.active { color: #ff8c00; border-bottom: 2px solid #ff8c00; opacity: 1; }
         
         .tab-pane { min-height: 200px; display: none; }
+        .tab-pane.active-pane { display: block; }
         
         .form-section { padding: 0 15px 15px 15px; margin-bottom: 10px; }
         .admin-group { background: #222; border-radius: 6px; margin-bottom: 10px; }
@@ -111,6 +112,9 @@
         
         #toast { visibility: hidden; min-width: 250px; background-color: #00E676; color: #121212; text-align: center; border-radius: 4px; padding: 16px; position: fixed; z-index: 2000; left: 50%; bottom: 80px; font-weight: bold; transform: translateX(-50%); opacity: 0; transition: opacity 0.3s; }
         #toast.show { visibility: visible; opacity: 1; }
+        
+        #backToTop { display: none; position: fixed; bottom: 30px; right: 30px; z-index: 99; border: none; outline: none; background-color: #ff8c00; color: white; cursor: pointer; padding: 15px; border-radius: 50%; font-size: 18px; box-shadow: 0 4px 8px rgba(0,0,0,0.3); transition: opacity 0.3s; }
+        #backToTop:hover { background-color: #e07b00; }
     </style>
 </head>
 <body>
@@ -169,6 +173,7 @@
         </div>
     </div>
 
+    <button id="backToTop" onclick="window.scrollTo({top: 0, behavior: 'smooth'})">⬆️</button>
     <div id="toast">copied to clipboard!</div>
     <div id="bulk-action-bar" onclick="processBulkDelete()">Delete Selected Items (0)</div>
 
@@ -558,6 +563,15 @@
             } catch (err) {}
             document.body.removeChild(textArea);
         }
+        
+        window.onscroll = function() {
+            const btn = document.getElementById("backToTop");
+            if (document.body.scrollTop > 200 || document.documentElement.scrollTop > 200) {
+                btn.style.display = "block";
+            } else {
+                btn.style.display = "none";
+            }
+        };
 
         setInterval(() => { if (document.getElementById('app-screen').style.display === 'block') checkAuthAndLoad(); }, 5000);
         window.onload = checkAuthAndLoad;

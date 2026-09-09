@@ -188,7 +188,7 @@ def format_tokens(count):
     return str(count)
 
 def clean_html_with_ai(raw_html: str) -> tuple:
-    prompt = f"You are an expert HTML formatter and editor. Your task is to 'upscale' this article by wrapping it in beautiful, highly readable, and semantic HTML (use headings, blockquotes, bolding, italics, and lists where appropriate to make it look professional). You MUST KEEP ALL relevant informational links (<a href=...>), inline photos (<img src=...>), and videos (<video>). Strip out ONLY promotional links, ads, 'Read More' injected text, and social widgets. DO NOT alter the story, change facts, or remove the main content and media. RETURN ONLY CLEAN HTML. Here is the raw HTML:\n\n{raw_html[:30000]}"
+    prompt = f"You are an expert HTML formatter and editor. Upscale this article by formatting it with professional typography (semantic HTML: headings like h2/h3, blockquotes, bolding, italics, lists). You MUST PRESERVE ALL relevant informational links (<a href=...>), inline photos/images (<img src=...>), and video elements. Strip out promotional links, ads, boilerplate 'Read More' text, and social widgets. DO NOT inject a duplicate main title headline (the page title is rendered separately). DO NOT alter the story or facts. RETURN ONLY CLEAN HTML. Here is the raw HTML:\n\n{raw_html[:30000]}"
     
     bt = "`" * 3
 
@@ -197,7 +197,6 @@ def clean_html_with_ai(raw_html: str) -> tuple:
             url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-lite-latest:generateContent?key={GEMINI_API_KEY}"
             headers = {'Content-Type': 'application/json'}
             payload = {"contents": [{"parts": [{"text": prompt}]}]}
-            # Timeout increased to 90 seconds
             res = requests.post(url, headers=headers, json=payload, timeout=90)
             if res.status_code == 200:
                 json_res = res.json()
@@ -254,7 +253,12 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
         
         soup = BeautifulSoup(readable_html, 'html.parser')
         
-        for p in soup.find_all(['p', 'h1', 'h2', 'h3']):
+        # Prevent double headline: remove any H1 matching the document title
+        for h1 in soup.find_all('h1'):
+            if title.lower() in h1.get_text().lower() or h1.get_text().lower() in title.lower():
+                h1.decompose()
+
+        for p in soup.find_all(['p', 'h2', 'h3']):
             txt = p.get_text()
             if re.search(r'(Read More|SEE ALSO|Follow us|Photo:|Subscribe|Newsletter)', txt, re.IGNORECASE):
                 p.decompose()
@@ -262,10 +266,10 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
         for img in soup.find_all('img'):
             src = img.get('src')
             if src: img['src'] = urljoin(url, src)
-            img['style'] = "max-width:100%; height:auto; border-radius:8px; margin:15px 0; display:block;"
+            img['style'] = "max-width:100%; height:auto; border-radius:8px; margin:20px auto; display:block;"
             
         for vid in soup.find_all('video'):
-            vid['style'] = "max-width:100%; height:auto; border-radius:8px; margin:15px 0; display:block; background:#000;"
+            vid['style'] = "max-width:100%; height:auto; border-radius:8px; margin:20px auto; display:block; background:#000;"
 
         raw_html_str = str(soup)
         if GEMINI_API_KEY or INFERENCE_TEXT_MODEL:
@@ -291,12 +295,13 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
         <html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'>
         <title>{title}</title>
         <style>
-            body{{font-family: system-ui, sans-serif; line-height: 1.6; max-width: 800px; margin: 0 auto; padding: 20px; background:#121212; color:#fff;}} 
-            h1, h2, h3 {{color:#ff8c00;}}
-            h1 {{border-bottom:2px solid #333; padding-bottom:10px; margin-bottom:30px;}}
+            body{{font-family: system-ui, sans-serif; line-height: 1.7; max-width: 800px; margin: 0 auto; padding: 20px; background:#121212; color:#e0e0e0;}} 
+            h2, h3 {{color:#ff8c00; margin-top: 40px;}}
+            h1 {{color:#ff8c00; border-bottom:2px solid #333; padding-bottom:12px; margin-bottom:30px; font-size: 2rem;}}
             a {{color: #00E676; text-decoration: none;}}
             a:hover {{text-decoration: underline;}}
-            blockquote {{border-left: 4px solid #ff8c00; margin-left: 0; padding-left: 15px; color: #ccc; font-style: italic;}}
+            blockquote {{border-left: 4px solid #ff8c00; margin: 25px 0; padding-left: 20px; color: #fff; font-style: italic; font-size: 1.1rem; background: #1a1a1a; padding-top: 10px; padding-bottom: 10px; border-radius: 0 6px 6px 0;}}
+            p {{margin-bottom: 18px;}}
         </style>
         </head><body>
             {logo_html}
@@ -319,10 +324,127 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
     finally:
         if task_id in active_downloads: del active_downloads[task_id]
 
+def process_instagram_carousel(url: str, user_id: str, task_id: str, expire_days: int) -> bool:
+    """Direct Instagram JSON scraper fallback for carousels to bypass yt-dlp video errors"""
+    try:
+        active_downloads[task_id] = "Fetching Instagram Carousel..."
+        # Clean URL to get base post URL
+        parsed_url = urlparse(url)
+        clean_base = f"{parsed_url.scheme}://{parsed_url.netloc}{parsed_url.path}"
+        json_url = f"{clean_base.rstrip('/')}/?__a=1&__d=dis"
+        
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
+        cookie_path = get_cookie_file_for_url(url)
+        cookies = {}
+        if cookie_path and os.path.exists(cookie_path):
+            with open(cookie_path, 'r') as cf:
+                for line in cf:
+                    if line.strip() and not line.startswith('#'):
+                        parts = line.strip().split('\t')
+                        if len(parts) >= 7:
+                            cookies[parts[5]] = parts[6]
+
+        r = requests.get(json_url, headers=headers, cookies=cookies, timeout=10)
+        if r.status_code != 200: return False
+        
+        data = r.json()
+        items = []
+        # Parse standard Instagram graphql / JSON payload structures
+        media_node = data.get('graphql', {}).get('shortcode_media') or data.get('items', [{}])[0]
+        if not media_node: return False
+        
+        edge_sidecar = media_node.get('edge_sidecar_to_children', {}).get('edges', [])
+        if edge_sidecar:
+            for edge in edge_sidecar:
+                node = edge.get('node', {})
+                img_url = node.get('display_url')
+                if img_url: items.append(img_url)
+        else:
+            img_url = media_node.get('display_url') or media_node.get('image_versions2', {}).get('candidates', [{}])[0].get('url')
+            if img_url: items.append(img_url)
+
+        if not items: return False
+
+        new_id = generate_secure_id()
+        html_path = os.path.join(DOWNLOAD_DIR, f"{new_id}.html")
+        img_tags = ""
+        
+        for idx, img_url in enumerate(items):
+            img_data = requests.get(img_url, headers=headers, timeout=10).content
+            img_name = f"{new_id}_{idx}.jpg"
+            with open(os.path.join(DOWNLOAD_DIR, img_name), "wb") as img_f:
+                img_f.write(img_data)
+            img_tags += f"<img src='/videos/{img_name}'>"
+
+        if idx == 0:
+            shutil.copy(os.path.join(DOWNLOAD_DIR, f"{new_id}_0.jpg"), os.path.join(DOWNLOAD_DIR, f"{new_id}.jpg"))
+
+        gallery_html = f"""
+        <html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'>
+        <title>Instagram Carousel</title>
+        <style>
+            body {{ margin: 0; background: #000; display: flex; align-items: center; justify-content: center; height: 100vh; overflow: hidden; font-family: sans-serif; }}
+            .carousel-container {{ position: relative; width: 100%; max-width: 800px; height: 100vh; overflow: hidden; }}
+            .carousel-track {{ display: flex; transition: transform 0.3s ease-in-out; height: 100%; }}
+            .carousel-track img {{ width: 100%; height: 100%; object-fit: contain; flex-shrink: 0; }}
+            .btn {{ position: absolute; top: 50%; transform: translateY(-50%); background: rgba(0,0,0,0.5); color: white; border: none; padding: 15px 12px; cursor: pointer; border-radius: 50%; font-size: 18px; transition: background 0.2s; }}
+            .btn:hover {{ background: rgba(0,0,0,0.8); }}
+            .btn-prev {{ left: 15px; }}
+            .btn-next {{ right: 15px; }}
+            .dots {{ position: absolute; bottom: 20px; width: 100%; display: flex; justify-content: center; gap: 8px; }}
+            .dot {{ width: 8px; height: 8px; background: rgba(255,255,255,0.4); border-radius: 50%; transition: background 0.2s; }}
+            .dot.active {{ background: #fff; }}
+        </style>
+        </head><body>
+            <div class="carousel-container" id="carousel">
+                <div class="carousel-track" id="track">{img_tags}</div>
+                <button class="btn btn-prev" onclick="window.move(-1)">❮</button>
+                <button class="btn btn-next" onclick="window.move(1)">❯</button>
+                <div class="dots" id="dots"></div>
+            </div>
+            <script>
+                const track = document.getElementById('track');
+                const items = track.children.length;
+                const dotsContainer = document.getElementById('dots');
+                let index = 0;
+                if (items > 1) {{
+                    for(let i=0; i<items; i++) {{
+                        let d = document.createElement('div');
+                        d.className = 'dot' + (i===0 ? ' active' : '');
+                        dotsContainer.appendChild(d);
+                    }}
+                    const dots = dotsContainer.children;
+                    window.move = function(dir) {{
+                        index += dir;
+                        if(index < 0) index = items - 1;
+                        if(index >= items) index = 0;
+                        track.style.transform = `translateX(-${{index * 100}}%)`;
+                        for(let d of dots) d.className = 'dot';
+                        dots[index].className = 'dot active';
+                    }}
+                }} else {{
+                    document.querySelectorAll('.btn').forEach(b => b.style.display = 'none');
+                }}
+            </script>
+        </body></html>
+        """
+        with open(html_path, "w", encoding="utf-8") as f: f.write(gallery_html)
+        extract_true_duration(new_id, user_id, url, "Instagram Carousel", ".html", expire_days, engine="🖼️ Carousel")
+        return True
+    except Exception as e:
+        logger.error(f"Instagram direct carousel scrape failed: {e}")
+        return False
+
 def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
     if not is_social_media_url(url):
         extract_article(url, user_id, task_id, expire_days)
         return
+
+    # Direct Instagram Carousel bypass attempt first
+    if "instagram.com" in url.lower():
+        if process_instagram_carousel(url, user_id, task_id, expire_days):
+            if task_id in active_downloads: del active_downloads[task_id]
+            return
 
     ydl_opts = {
         'outtmpl': f'{DOWNLOAD_DIR}/temp_yt_{task_id}_%(id)s.%(ext)s',
@@ -344,7 +466,6 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
     except Exception as e: 
         logger.error(f"yt-dlp download failed: {e}")
 
-    # Manual file-system json parsing for Instagram carousels
     try:
         for info_path in glob.glob(f"{DOWNLOAD_DIR}/temp_yt_{task_id}_*.info.json"):
             with open(info_path, 'r', encoding='utf-8') as f:
@@ -353,23 +474,16 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
             entries = meta.get('entries', [meta])
             for idx, entry in enumerate(entries):
                 if not entry: continue
-                # If yt-dlp threw a "no video format" error, grab the thumbnail URL directly from the saved JSON
                 if not entry.get('formats'):
-                    img_url = entry.get('url')
-                    if not img_url and entry.get('thumbnails'):
-                        img_url = entry.get('thumbnails')[-1]['url']
-                    
+                    img_url = entry.get('url') or (entry.get('thumbnails')[-1]['url'] if entry.get('thumbnails') else None)
                     if img_url:
                         try:
                             r = requests.get(img_url, timeout=15)
                             if r.status_code == 200:
-                                img_file = os.path.join(DOWNLOAD_DIR, f"temp_yt_{task_id}_{idx}_fallback.jpg")
-                                with open(img_file, "wb") as img_f:
+                                with open(os.path.join(DOWNLOAD_DIR, f"temp_yt_{task_id}_{idx}_fallback.jpg"), "wb") as img_f:
                                     img_f.write(r.content)
-                        except Exception as e:
-                            logger.error(f"Manual thumbnail grab failed: {e}")
-    except Exception as e:
-        logger.error(f"Fallback info.json parsing failed: {e}")
+                        except: pass
+    except: pass
 
     try:
         media_files = []
@@ -444,7 +558,6 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                     const items = track.children.length;
                     const dotsContainer = document.getElementById('dots');
                     let index = 0;
-                    
                     if (items > 1) {{
                         for(let i=0; i<items; i++) {{
                             let d = document.createElement('div');
@@ -452,7 +565,6 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                             dotsContainer.appendChild(d);
                         }}
                         const dots = dotsContainer.children;
-                        
                         window.move = function(dir) {{
                             index += dir;
                             if(index < 0) index = items - 1;
@@ -461,14 +573,6 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                             for(let d of dots) d.className = 'dot';
                             dots[index].className = 'dot active';
                         }}
-                        
-                        let startX = 0;
-                        document.getElementById('carousel').addEventListener('touchstart', e => startX = e.touches[0].clientX);
-                        document.getElementById('carousel').addEventListener('touchend', e => {{
-                            let diff = startX - e.changedTouches[0].clientX;
-                            if(diff > 50) window.move(1);
-                            else if(diff < -50) window.move(-1);
-                        }});
                     }} else {{
                         document.querySelectorAll('.btn').forEach(b => b.style.display = 'none');
                     }}

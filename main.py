@@ -191,7 +191,6 @@ def clean_html_with_ai(raw_html: str) -> tuple:
     prompt = f"You are an expert HTML formatter. Apply professional typography (semantic HTML: headings, blockquotes, bolding, italics, lists) to the provided article. You MUST output the ENTIRE article text word-for-word. DO NOT summarize, truncate, or omit any paragraphs. PRESERVE ALL informational links (<a href=...>), inline photos/images (<img src=...>), and video elements exactly where they appear. RETURN ONLY CLEAN HTML. Here is the raw HTML:\n\n{raw_html[:35000]}"
     
     bt = "`" * 3
-    logger.info("Sending parsed DOM to AI for typography cleanup...")
 
     if GEMINI_API_KEY:
         try:
@@ -204,8 +203,11 @@ def clean_html_with_ai(raw_html: str) -> tuple:
                 result = json_res['candidates'][0]['content']['parts'][0]['text']
                 token_count = json_res.get('usageMetadata', {}).get('totalTokenCount', 0)
                 engine_str = f"📄 Gemini ({format_tokens(token_count)})" if token_count else "📄 Gemini"
-                logger.info(f"Gemini successfully processed the article. Total tokens used: {token_count}")
-                return result.replace(f'{bt}html', '').replace(bt, '').strip(), engine_str
+                
+                clean_result = result.replace(f'{bt}html', '').replace(bt, '').strip()
+                # Fallback: if Gemini hallucinates or returns nothing, reject it and use raw HTML.
+                if len(clean_result) > 100:
+                    return clean_result, engine_str
             else:
                 logger.error(f"Gemini API returned error code {res.status_code}: {res.text}")
         except Exception as e:
@@ -221,33 +223,26 @@ def clean_html_with_ai(raw_html: str) -> tuple:
                 result = json_res.get('response', raw_html)
                 tokens = json_res.get('prompt_eval_count', 0) + json_res.get('eval_count', 0)
                 engine_str = f"📄 Ollama ({format_tokens(tokens)})" if tokens else "📄 Ollama"
-                logger.info(f"Ollama successfully processed the article. Total tokens used: {tokens}")
-                return result.replace(f'{bt}html', '').replace(bt, '').strip(), engine_str
+                
+                clean_result = result.replace(f'{bt}html', '').replace(bt, '').strip()
+                if len(clean_result) > 100:
+                    return clean_result, engine_str
         except Exception: pass
 
-    logger.info("AI processing skipped or failed, falling back to Readability standard output.")
     return raw_html, "📄 Readability"
 
 def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
     try:
         active_downloads[task_id] = "Parsing Article..."
-        logger.info(f"Extracting article from URL: {url}")
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
         r = requests.get(url, headers=headers, timeout=10)
         
         orig_soup = BeautifulSoup(r.content, 'html.parser')
         og_img = orig_soup.find('meta', property='og:image')
         article_img_url = og_img.get('content') if og_img and og_img.get('content') else None
-        
-        # PRE-SCRUBBING: Remove common sidebars, widgets, and 'Explore More' links before Readability sees them
-        for bad_el in orig_soup.find_all(['div', 'ul', 'aside', 'section'], class_=re.compile(r'(related|explore|read-more|social|share|promo|newsletter|recommend|sidebar)', re.I)):
-            bad_el.decompose()
-            
-        for bad_text in orig_soup.find_all(['h2', 'h3', 'strong']):
-            if re.search(r'(Explore More|Read More|SEE ALSO|Follow us|Subscribe|Related Articles|Newsletter)', bad_text.get_text(), re.IGNORECASE):
-                bad_text.decompose()
 
-        # PRE-PROCESS IMAGES: Force lazy-loaded images to use standard src and remove classes that trigger ad-block rules
+        # PRE-PROCESS IMAGES: Force lazy-loaded images to use standard src. 
+        # (Removed the aggressive pre-scrubbing that was destroying the article body)
         for img in orig_soup.find_all(['img', 'source']):
             src = img.get('data-src') or img.get('data-lazy-src') or img.get('data-original') or img.get('src')
             if not src and img.get('srcset'):
@@ -262,12 +257,12 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
         
         soup = BeautifulSoup(readable_html, 'html.parser')
         
-        # Strip duplicate headlines
+        # Strip duplicate headlines carefully
         for h1 in soup.find_all('h1'):
             if title.lower() in h1.get_text().lower() or h1.get_text().lower() in title.lower():
                 h1.decompose()
                 
-        # Strip share counts (stray digit anchors like '6')
+        # Strip share counts (stray digit anchors like '6') safely
         for a in soup.find_all('a'):
             txt = a.get_text(strip=True)
             if txt.isdigit() and len(txt) <= 3:
@@ -283,14 +278,15 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
 
         raw_html_str = str(soup)
         
-        if GEMINI_API_KEY or INFERENCE_TEXT_MODEL:
-            cleaned_html, engine = clean_html_with_ai(raw_html_str)
-        else:
-            cleaned_html, engine = raw_html_str, "📄 Readability"
+        # Fallback safeguard: if readability completely failed, don't pass an empty string to AI
+        if len(raw_html_str.strip()) < 100:
+            logger.warning("Readability parser failed to find main content. Falling back.")
+            raw_html_str = str(orig_soup.find('body'))
+
+        cleaned_html, engine = clean_html_with_ai(raw_html_str)
 
         new_id = generate_secure_id()
         html_path = os.path.join(DOWNLOAD_DIR, f"{new_id}.html")
-        
         domain = urlparse(url).netloc.replace('www.', '')
         
         logo_html = f"""
@@ -355,39 +351,41 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
     cookie_path = get_cookie_file_for_url(url)
     if cookie_path: ydl_opts['cookiefile'] = cookie_path
 
-    logger.info(f"Starting yt-dlp extraction for URL: {url}")
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl: 
             ydl.extract_info(url, download=True)
     except Exception as e: 
-        logger.error(f"yt-dlp download encountered an error (ignoring and proceeding): {e}")
+        pass # Ignore yt-dlp crashing out, we handle the cleanup below.
 
-    # JSON Image Extraction (Fixes Instagram Carousels that fail 'no video format' checks)
-    try:
-        for info_path in glob.glob(f"{DOWNLOAD_DIR}/temp_yt_{task_id}_*.info.json"):
+    # INSTAGRAM CAROUSEL INTERCEPTOR
+    # If yt-dlp generated the playlist manifest but failed on the individual image items, we manually parse the manifest to build the gallery.
+    for info_path in glob.glob(f"{DOWNLOAD_DIR}/temp_yt_{task_id}_*.info.json"):
+        try:
             with open(info_path, 'r', encoding='utf-8') as f:
                 meta = json.load(f)
             
-            entries = meta.get('entries', [meta])
-            for idx, entry in enumerate(entries):
-                if not entry: continue
-                # If there are no video formats available, grab the highest resolution thumbnail
-                if not entry.get('formats'):
-                    thumbs = entry.get('thumbnails', [])
-                    img_url = thumbs[-1].get('url') if thumbs else entry.get('url')
+            entries = meta.get('entries', [])
+            has_downloaded_media = any(f.endswith('.mp4') for f in os.listdir(DOWNLOAD_DIR) if f.startswith(f"temp_yt_{task_id}_"))
+            
+            if entries and not has_downloaded_media:
+                for idx, entry in enumerate(entries):
+                    if not entry: continue
                     
-                    if img_url:
+                    img_url = entry.get('url')
+                    if not img_url and entry.get('thumbnails'):
+                        img_url = entry.get('thumbnails')[-1].get('url')
+                        
+                    if img_url and 'n.jpg' in img_url or 'n.webp' in img_url or 'scontent' in img_url or 'fbcdn' in img_url:
                         try:
-                            logger.info(f"Recovering image {idx} from carousel JSON: {img_url[:60]}...")
                             r = requests.get(img_url, timeout=15)
                             if r.status_code == 200:
                                 with open(os.path.join(DOWNLOAD_DIR, f"temp_yt_{task_id}_{idx}_fallback.jpg"), "wb") as img_f:
                                     img_f.write(r.content)
-                        except Exception as e: 
-                            logger.error(f"Failed to recover image {idx} from JSON data: {e}")
-    except Exception as e: 
-        logger.error(f"Failed to parse yt-dlp .info.json file: {e}")
+                        except Exception: pass
+        except Exception as e:
+            logger.error(f"Failed intercepting JSON playlist: {e}")
 
+    # Standard File Processing and Cleanup
     try:
         media_files = []
         image_files = []

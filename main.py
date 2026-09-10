@@ -188,9 +188,10 @@ def format_tokens(count):
     return str(count)
 
 def clean_html_with_ai(raw_html: str) -> tuple:
-    prompt = f"You are an expert HTML formatter. Your task is to apply professional typography (semantic HTML: headings, blockquotes, bolding, italics, lists) to the provided article. You MUST output the ENTIRE article text word-for-word. DO NOT summarize, truncate, or omit any paragraphs. You MUST PRESERVE ALL relevant informational links (<a href=...>), inline photos/images (<img src=...>), and video elements exactly where they appear. Strip out promotional links, ads, and boilerplate 'Read More' text. DO NOT inject a duplicate main title headline. RETURN ONLY CLEAN HTML. Here is the raw HTML:\n\n{raw_html[:35000]}"
+    prompt = f"You are an expert HTML formatter. Apply professional typography (semantic HTML: headings, blockquotes, bolding, italics, lists) to the provided article. You MUST output the ENTIRE article text word-for-word. DO NOT summarize, truncate, or omit any paragraphs. PRESERVE ALL informational links (<a href=...>), inline photos/images (<img src=...>), and video elements exactly where they appear. RETURN ONLY CLEAN HTML. Here is the raw HTML:\n\n{raw_html[:35000]}"
     
     bt = "`" * 3
+    logger.info("Sending parsed DOM to AI for typography cleanup...")
 
     if GEMINI_API_KEY:
         try:
@@ -203,6 +204,7 @@ def clean_html_with_ai(raw_html: str) -> tuple:
                 result = json_res['candidates'][0]['content']['parts'][0]['text']
                 token_count = json_res.get('usageMetadata', {}).get('totalTokenCount', 0)
                 engine_str = f"📄 Gemini ({format_tokens(token_count)})" if token_count else "📄 Gemini"
+                logger.info(f"Gemini successfully processed the article. Total tokens used: {token_count}")
                 return result.replace(f'{bt}html', '').replace(bt, '').strip(), engine_str
             else:
                 logger.error(f"Gemini API returned error code {res.status_code}: {res.text}")
@@ -219,14 +221,17 @@ def clean_html_with_ai(raw_html: str) -> tuple:
                 result = json_res.get('response', raw_html)
                 tokens = json_res.get('prompt_eval_count', 0) + json_res.get('eval_count', 0)
                 engine_str = f"📄 Ollama ({format_tokens(tokens)})" if tokens else "📄 Ollama"
+                logger.info(f"Ollama successfully processed the article. Total tokens used: {tokens}")
                 return result.replace(f'{bt}html', '').replace(bt, '').strip(), engine_str
         except Exception: pass
 
+    logger.info("AI processing skipped or failed, falling back to Readability standard output.")
     return raw_html, "📄 Readability"
 
 def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
     try:
         active_downloads[task_id] = "Parsing Article..."
+        logger.info(f"Extracting article from URL: {url}")
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
         r = requests.get(url, headers=headers, timeout=10)
         
@@ -234,13 +239,22 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
         og_img = orig_soup.find('meta', property='og:image')
         article_img_url = og_img.get('content') if og_img and og_img.get('content') else None
         
-        # Pre-process lazy-loaded images
+        # PRE-SCRUBBING: Remove common sidebars, widgets, and 'Explore More' links before Readability sees them
+        for bad_el in orig_soup.find_all(['div', 'ul', 'aside', 'section'], class_=re.compile(r'(related|explore|read-more|social|share|promo|newsletter|recommend|sidebar)', re.I)):
+            bad_el.decompose()
+            
+        for bad_text in orig_soup.find_all(['h2', 'h3', 'strong']):
+            if re.search(r'(Explore More|Read More|SEE ALSO|Follow us|Subscribe|Related Articles|Newsletter)', bad_text.get_text(), re.IGNORECASE):
+                bad_text.decompose()
+
+        # PRE-PROCESS IMAGES: Force lazy-loaded images to use standard src and remove classes that trigger ad-block rules
         for img in orig_soup.find_all(['img', 'source']):
             src = img.get('data-src') or img.get('data-lazy-src') or img.get('data-original') or img.get('src')
             if not src and img.get('srcset'):
                 src = img.get('srcset').split(',')[0].split(' ')[0]
             if src:
                 img['src'] = src
+                img['class'] = [] 
                 
         doc = Document(str(orig_soup))
         title = doc.title()
@@ -248,14 +262,6 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
         
         soup = BeautifulSoup(readable_html, 'html.parser')
         
-        # Fallback safeguard: If Readability missed inline figures, extract article body containers directly
-        if len(soup.find_all('img')) == 0:
-            content_div = orig_soup.find('article') or orig_soup.find('div', class_=re.compile(r'(article|content|story|body)', re.I))
-            if content_div:
-                for tag in content_div.find_all(['script', 'style', 'nav', 'header', 'footer']):
-                    tag.decompose()
-                soup = content_div
-
         # Strip duplicate headlines
         for h1 in soup.find_all('h1'):
             if title.lower() in h1.get_text().lower() or h1.get_text().lower() in title.lower():
@@ -267,11 +273,6 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
             if txt.isdigit() and len(txt) <= 3:
                 a.decompose()
 
-        for p in soup.find_all(['p', 'h2', 'h3']):
-            txt = p.get_text()
-            if re.search(r'(Read More|SEE ALSO|Follow us|Photo:|Subscribe|Newsletter)', txt, re.IGNORECASE):
-                p.decompose()
-
         for img in soup.find_all('img'):
             src = img.get('src')
             if src:
@@ -281,6 +282,7 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
                 img.decompose()
 
         raw_html_str = str(soup)
+        
         if GEMINI_API_KEY or INFERENCE_TEXT_MODEL:
             cleaned_html, engine = clean_html_with_ai(raw_html_str)
         else:
@@ -291,7 +293,6 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
         
         domain = urlparse(url).netloc.replace('www.', '')
         
-        # Clean flexbox header layout
         logo_html = f"""
         <div style="display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; margin-bottom: 30px; padding: 20px; background: #1e1e1e; border-radius: 8px;">
             <a href="{url}" target="_blank" style="display: flex; align-items: center; justify-content: center;">
@@ -354,30 +355,38 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
     cookie_path = get_cookie_file_for_url(url)
     if cookie_path: ydl_opts['cookiefile'] = cookie_path
 
+    logger.info(f"Starting yt-dlp extraction for URL: {url}")
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl: 
             ydl.extract_info(url, download=True)
     except Exception as e: 
-        logger.error(f"yt-dlp download failed: {e}")
+        logger.error(f"yt-dlp download encountered an error (ignoring and proceeding): {e}")
 
-    # Aggressive Regex JSON Image Extraction (Fix for Instagram Carousels)
+    # JSON Image Extraction (Fixes Instagram Carousels that fail 'no video format' checks)
     try:
         for info_path in glob.glob(f"{DOWNLOAD_DIR}/temp_yt_{task_id}_*.info.json"):
             with open(info_path, 'r', encoding='utf-8') as f:
-                content = f.read()
+                meta = json.load(f)
             
-            # Use regex to find all thumbnail and display_url links in the JSON file
-            img_urls = re.findall(r'https?://[^"\']+\.(?:jpg|jpeg|webp|png)[^"\']*', content)
-            img_urls = list(dict.fromkeys(img_urls)) # deduplicate
-            
-            for idx, img_url in enumerate(img_urls[:10]): # cap at 10 items
-                try:
-                    r = requests.get(img_url, timeout=10)
-                    if r.status_code == 200:
-                        with open(os.path.join(DOWNLOAD_DIR, f"temp_yt_{task_id}_{idx}_fallback.jpg"), "wb") as img_f:
-                            img_f.write(r.content)
-                except: pass
-    except: pass
+            entries = meta.get('entries', [meta])
+            for idx, entry in enumerate(entries):
+                if not entry: continue
+                # If there are no video formats available, grab the highest resolution thumbnail
+                if not entry.get('formats'):
+                    thumbs = entry.get('thumbnails', [])
+                    img_url = thumbs[-1].get('url') if thumbs else entry.get('url')
+                    
+                    if img_url:
+                        try:
+                            logger.info(f"Recovering image {idx} from carousel JSON: {img_url[:60]}...")
+                            r = requests.get(img_url, timeout=15)
+                            if r.status_code == 200:
+                                with open(os.path.join(DOWNLOAD_DIR, f"temp_yt_{task_id}_{idx}_fallback.jpg"), "wb") as img_f:
+                                    img_f.write(r.content)
+                        except Exception as e: 
+                            logger.error(f"Failed to recover image {idx} from JSON data: {e}")
+    except Exception as e: 
+        logger.error(f"Failed to parse yt-dlp .info.json file: {e}")
 
     try:
         media_files = []

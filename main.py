@@ -1,4 +1,4 @@
-import os, secrets, json, hashlib, subprocess, threading, logging, time, asyncio, shutil, re, glob, html
+import os, secrets, json, hashlib, subprocess, threading, logging, time, asyncio, shutil, re, glob
 from urllib.parse import urlparse, urljoin
 from fastapi import FastAPI, BackgroundTasks, UploadFile, File, Form, Depends, Request, Response
 from fastapi.staticfiles import StaticFiles
@@ -17,7 +17,7 @@ ch = logging.StreamHandler()
 ch.setFormatter(logging.Formatter('%(asctime)s - %(message)s', "%Y-%m-%d %H:%M:%S"))
 logger.addHandler(ch)
 
-app = FastAPI(title="upShareMedia")
+app = FastAPI(title="upShareMedia 1.0")
 
 @app.exception_handler(404)
 async def custom_404_handler(request: Request, exc):
@@ -240,26 +240,26 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
         og_img = orig_soup.find('meta', property='og:image')
         article_img_url = og_img.get('content') if og_img and og_img.get('content') else None
 
-        # PRE-PROCESS IMAGES (NY Post fix): Force lazy-loaded images into standard tags before Readability deletes them
-        for picture in orig_soup.find_all('picture'):
-            src = None
-            img = picture.find('img')
-            if img and img.get('src'): src = img.get('src')
-            if not src:
-                source = picture.find('source')
-                if source and source.get('srcset'): 
-                    src = source.get('srcset').split(',')[0].split(' ')[0]
-            
-            if src:
-                new_img = orig_soup.new_tag('img', src=src)
-                picture.replace_with(new_img)
-
-        for img in orig_soup.find_all('img'):
-            src = img.get('data-src') or img.get('data-lazy-src') or img.get('data-url') or img.get('srcset', '').split(',')[0].split(' ')[0] or img.get('src')
-            if src:
-                new_img = orig_soup.new_tag('img', src=src)
-                img.replace_with(new_img)
+        # AGGRESSIVE IMAGE EXTRACTION (Fixes NY Post & complex galleries)
+        # Unwrap all pictures, figures, and sources into simple <img> tags before Readability sees them
+        for tag in orig_soup.find_all(['picture', 'figure', 'div']):
+            img = tag.find('img')
+            if img:
+                src = img.get('data-src') or img.get('data-lazy-src') or img.get('data-url') or img.get('src')
+                if not src:
+                    source = tag.find('source')
+                    if source and source.get('srcset'): 
+                        src = source.get('srcset').split(',')[0].split(' ')[0]
                 
+                if src and src.startswith('http'):
+                    new_img = orig_soup.new_tag('img', src=src)
+                    
+                    # If it is inside a <picture> or <figure>, replace the whole container to prevent Readability stripping it
+                    if tag.name in ['picture', 'figure']:
+                        tag.replace_with(new_img)
+                    else:
+                        img.replace_with(new_img)
+
         doc = Document(str(orig_soup))
         title = doc.title()
         readable_html = doc.summary()
@@ -363,18 +363,22 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
         with yt_dlp.YoutubeDL(ydl_opts) as ydl: 
             ydl.extract_info(url, download=True)
     except Exception: 
-        pass # Expected on some Instagram photo arrays
+        pass 
 
-    # INSTAGRAM CAROUSEL INTERCEPTOR
-    for info_path in glob.glob(f"{DOWNLOAD_DIR}/temp_yt_{task_id}_*.info.json"):
+    # INSTAGRAM CAROUSEL MEMORY INTERCEPTOR (Bypasses missing .info.json crash)
+    has_downloaded_media = any(f.endswith(('.mp4', '.webm')) for f in os.listdir(DOWNLOAD_DIR) if f.startswith(f"temp_yt_{task_id}_"))
+    if not has_downloaded_media and ("instagram.com" in url or "tiktok.com" in url):
         try:
-            with open(info_path, 'r', encoding='utf-8') as f:
-                meta = json.load(f)
+            logger.info("Media payload failed to write; attempting direct JSON subprocess dump.")
+            cmd = ["yt-dlp", "-J", "--flat-playlist"]
+            if cookie_path: cmd.extend(["--cookies", cookie_path])
+            cmd.append(url)
             
-            entries = meta.get('entries') or [meta]
-            has_downloaded_media = any(f.endswith(('.mp4', '.webm')) for f in os.listdir(DOWNLOAD_DIR) if f.startswith(f"temp_yt_{task_id}_"))
-            
-            if not has_downloaded_media:
+            res = subprocess.run(cmd, capture_output=True, text=True)
+            if res.returncode == 0:
+                meta = json.loads(res.stdout)
+                entries = meta.get('entries') or [meta]
+                
                 fallback_count = 0
                 for entry in entries:
                     if not entry: continue
@@ -393,7 +397,7 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                                 fallback_count += 1
                         except Exception: pass
         except Exception as e:
-            logger.error(f"Failed intercepting JSON playlist: {e}")
+            logger.error(f"Failed JSON subprocess fallback: {e}")
 
     try:
         media_files = []
@@ -549,7 +553,7 @@ def get_stats(user: dict = Depends(verify_auth)):
     for f in os.listdir(DOWNLOAD_DIR):
         if f.endswith(('.mp4', '.webm', '.mkv', '.html')):
             if f.startswith('temp_'): continue
-            vid_id = f.split('.')[0]
+            vid_id = os.path.basename(f).split('.')[0]
             owner = db["videos"].get(vid_id, {}).get("owner", "")
             if user["role"] == "admin" or owner == user["username"]:
                 total_videos += 1
@@ -659,7 +663,6 @@ def list_videos(user: dict = Depends(verify_auth)):
                 
             media_file = os.path.join(DOWNLOAD_DIR, f)
             try:
-                # Catch race conditions where files are deleted mid-scan
                 added_timestamp = vid_info.get("added", os.path.getmtime(media_file))
                 size_bytes = os.path.getsize(media_file)
             except FileNotFoundError:

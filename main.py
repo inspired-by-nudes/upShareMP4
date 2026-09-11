@@ -136,7 +136,7 @@ async def track_video_views(request: Request, call_next):
         path = request.url.path
         range_header = request.headers.get("range", "")
         if path.startswith("/videos/") and (path.endswith(".mp4") or path.endswith(".html")) and (not range_header or "bytes=0-" in range_header):
-            filename = path.split("/")[-1]
+            filename = os.path.basename(path)
             video_id = filename.split(".")[0]
             file_path = os.path.join(DOWNLOAD_DIR, filename)
             asyncio.create_task(asyncio.to_thread(increment_view_counter, video_id, file_path))
@@ -188,7 +188,7 @@ def format_tokens(count):
     return str(count)
 
 def clean_html_with_ai(raw_html: str) -> tuple:
-    prompt = f"You are an expert HTML typographer. Enhance the typography of the following article text (use h2, h3, blockquotes, bolding, italics). \nCRITICAL RULES:\n1. You MUST output the ENTIRE article exactly as provided. DO NOT summarize.\n2. You MUST PRESERVE EVERY SINGLE <figure> and <img> tag exactly where it appears.\n3. Return ONLY valid HTML.\n\nHere is the article:\n\n{raw_html[:35000]}"
+    prompt = f"You are an expert HTML typographer. Enhance the typography of the following article text (use h2, h3, blockquotes, bolding, italics). \nCRITICAL RULES:\n1. Output the ENTIRE article exactly as provided. DO NOT summarize.\n2. PRESERVE EVERY SINGLE <figure>, <img>, and <figcaption> tag exactly where it appears.\n3. For quotes containing an attribution (e.g., '\"Quote\" — Person'), force the attribution ('— Person') onto a NEW LINE within the blockquote using a <br> or a nested <footer> tag.\n4. Return ONLY valid HTML.\n\nHere is the article:\n\n{raw_html[:35000]}"
     
     bt = "`" * 3
 
@@ -240,25 +240,24 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
         og_img = orig_soup.find('meta', property='og:image')
         article_img_url = og_img.get('content') if og_img and og_img.get('content') else None
 
-        # AGGRESSIVE IMAGE EXTRACTION (Fixes NY Post & complex galleries)
-        # Unwrap all pictures, figures, and sources into simple <img> tags before Readability sees them
-        for tag in orig_soup.find_all(['picture', 'figure', 'div']):
-            img = tag.find('img')
-            if img:
-                src = img.get('data-src') or img.get('data-lazy-src') or img.get('data-url') or img.get('src')
-                if not src:
-                    source = tag.find('source')
-                    if source and source.get('srcset'): 
-                        src = source.get('srcset').split(',')[0].split(' ')[0]
-                
-                if src and src.startswith('http'):
-                    new_img = orig_soup.new_tag('img', src=src)
-                    
-                    # If it is inside a <picture> or <figure>, replace the whole container to prevent Readability stripping it
-                    if tag.name in ['picture', 'figure']:
-                        tag.replace_with(new_img)
-                    else:
-                        img.replace_with(new_img)
+        # 1. Force lazy images into real images and strip ad-block classes
+        for img in orig_soup.find_all('img'):
+            src = img.get('data-src') or img.get('data-lazy-src') or img.get('data-url') or img.get('srcset', '').split(',')[0].split(' ')[0] or img.get('src')
+            if src:
+                img['src'] = src
+                img['class'] = [] 
+                img['loading'] = 'eager'
+
+        # 2. Gently unwrap <picture> containers while preserving <figcaption>
+        for pic in orig_soup.find_all('picture'):
+            img = pic.find('img')
+            if img and img.get('src'):
+                pic.replace_with(img)
+            else:
+                source = pic.find('source')
+                if source and source.get('srcset'):
+                    new_img = orig_soup.new_tag('img', src=source.get('srcset').split(',')[0].split(' ')[0])
+                    pic.replace_with(new_img)
 
         doc = Document(str(orig_soup))
         title = doc.title()
@@ -276,15 +275,23 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
             if txt.isdigit() and len(txt) <= 3:
                 a.decompose()
 
-        # Wrap preserved images beautifully
+        # Format preserved <figcaption> elements beautifully
+        for figcaption in soup.find_all(['figcaption', 'cite']):
+            figcaption['style'] = "font-size: 0.85rem; color: #aaa; text-align: center; margin-top: 8px; font-style: italic; display: block;"
+
+        # Wrap naked images into figures, or style existing figures
         for img in soup.find_all('img'):
             src = img.get('src')
             if src:
                 img['src'] = urljoin(url, src)
-                figure = soup.new_tag('figure')
-                figure['style'] = "margin: 30px 0; display: flex; justify-content: center;"
-                img['style'] = "max-width:100%; height:auto; border-radius:8px; box-shadow: 0 4px 12px rgba(0,0,0,0.2);"
-                img.wrap(figure)
+                if not img.find_parent('figure'):
+                    figure = soup.new_tag('figure')
+                    figure['style'] = "margin: 30px 0; display: flex; flex-direction: column; align-items: center;"
+                    img['style'] = "max-width:100%; height:auto; border-radius:8px; box-shadow: 0 4px 12px rgba(0,0,0,0.2);"
+                    img.wrap(figure)
+                else:
+                    img['style'] = "max-width:100%; height:auto; border-radius:8px; box-shadow: 0 4px 12px rgba(0,0,0,0.2);"
+                    img.parent['style'] = "margin: 30px 0; display: flex; flex-direction: column; align-items: center;"
             else:
                 img.decompose()
 
@@ -365,39 +372,52 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
     except Exception: 
         pass 
 
-    # INSTAGRAM CAROUSEL MEMORY INTERCEPTOR (Bypasses missing .info.json crash)
-    has_downloaded_media = any(f.endswith(('.mp4', '.webm')) for f in os.listdir(DOWNLOAD_DIR) if f.startswith(f"temp_yt_{task_id}_"))
-    if not has_downloaded_media and ("instagram.com" in url or "tiktok.com" in url):
-        try:
-            logger.info("Media payload failed to write; attempting direct JSON subprocess dump.")
-            cmd = ["yt-dlp", "-J", "--flat-playlist"]
-            if cookie_path: cmd.extend(["--cookies", cookie_path])
-            cmd.append(url)
-            
-            res = subprocess.run(cmd, capture_output=True, text=True)
-            if res.returncode == 0:
-                meta = json.loads(res.stdout)
-                entries = meta.get('entries') or [meta]
+    # CAROUSEL & GALLERY IMAGE INTERCEPTOR (Bypasses 403 Forbidden & "No Video Formats")
+    has_downloaded_media = any(f.endswith(('.mp4', '.webm', '.mkv')) for f in os.listdir(DOWNLOAD_DIR) if f.startswith(f"temp_yt_{task_id}_"))
+    
+    if not has_downloaded_media:
+        entries = []
+        
+        # 1. Look for the JSON file yt-dlp dropped on disk before crashing
+        for info_path in glob.glob(f"{DOWNLOAD_DIR}/temp_yt_{task_id}_*.info.json"):
+            try:
+                with open(info_path, 'r', encoding='utf-8') as f: meta = json.load(f)
+                if 'entries' in meta: entries.extend(meta['entries'])
+                else: entries.append(meta)
+            except: pass
+
+        # 2. If no JSON file, run a silent subprocess dump
+        if not entries and ("instagram.com" in url or "tiktok.com" in url):
+            try:
+                cmd = ["yt-dlp", "-J", "--flat-playlist", "--ignore-errors"]
+                if cookie_path: cmd.extend(["--cookies", cookie_path])
+                cmd.append(url)
+                res = subprocess.run(cmd, capture_output=True, text=True)
+                for line in res.stdout.strip().split('\n'):
+                    if line.startswith('{'):
+                        meta = json.loads(line)
+                        if 'entries' in meta: entries.extend(meta['entries'])
+                        else: entries.append(meta)
+            except: pass
+
+        # 3. Download the images securely using browser headers
+        if entries:
+            fallback_count = 0
+            headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
+            for entry in entries:
+                if not entry: continue
+                img_url = None
+                if entry.get('thumbnails'): img_url = entry.get('thumbnails')[-1].get('url')
+                if not img_url: img_url = entry.get('url')
                 
-                fallback_count = 0
-                for entry in entries:
-                    if not entry: continue
-                    img_url = None
-                    if entry.get('thumbnails'):
-                        img_url = entry.get('thumbnails')[-1].get('url')
-                    if not img_url:
-                        img_url = entry.get('url')
-                        
-                    if img_url and isinstance(img_url, str):
-                        try:
-                            r = requests.get(img_url, timeout=15)
-                            if r.status_code == 200:
-                                with open(os.path.join(DOWNLOAD_DIR, f"temp_yt_{task_id}_{fallback_count}_fallback.jpg"), "wb") as img_f:
-                                    img_f.write(r.content)
-                                fallback_count += 1
-                        except Exception: pass
-        except Exception as e:
-            logger.error(f"Failed JSON subprocess fallback: {e}")
+                if img_url and isinstance(img_url, str) and img_url.startswith('http'):
+                    try:
+                        r = requests.get(img_url, headers=headers, timeout=15)
+                        if r.status_code == 200:
+                            with open(os.path.join(DOWNLOAD_DIR, f"temp_yt_{task_id}_{fallback_count}_fallback.jpg"), "wb") as img_f:
+                                img_f.write(r.content)
+                            fallback_count += 1
+                    except: pass
 
     try:
         media_files = []

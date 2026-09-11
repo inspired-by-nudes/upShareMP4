@@ -188,7 +188,7 @@ def format_tokens(count):
     return str(count)
 
 def clean_html_with_ai(raw_html: str) -> tuple:
-    prompt = f"You are an expert HTML typographer. Enhance the typography of the following article text (use h2, h3, blockquotes, bolding, italics). \nCRITICAL RULES:\n1. Output the ENTIRE article exactly as provided. DO NOT summarize.\n2. PRESERVE EVERY SINGLE <figure>, <img>, and <figcaption> tag exactly where it appears.\n3. For quotes containing an attribution (e.g., '\"Quote\" — Person'), force the attribution ('— Person') onto a NEW LINE within the blockquote using a <br> or a nested <footer> tag.\n4. Return ONLY valid HTML.\n\nHere is the article:\n\n{raw_html[:35000]}"
+    prompt = f"You are an expert HTML typographer. Enhance the typography of the following article text (use h2, h3, blockquotes, bolding, italics). \nCRITICAL RULES:\n1. Output the ENTIRE article exactly as provided. DO NOT summarize or truncate.\n2. PRESERVE EVERY SINGLE <img> tag and its attributes exactly where it appears.\n3. For quotes containing an attribution (e.g., '\"Quote\" — Person' or '\"Quote\" - Person'), force the attribution ('— Person') onto a NEW LINE within the blockquote using a <br> tag.\n4. Return ONLY valid HTML.\n\nHere is the article:\n\n{raw_html[:35000]}"
     
     bt = "`" * 3
 
@@ -240,24 +240,25 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
         og_img = orig_soup.find('meta', property='og:image')
         article_img_url = og_img.get('content') if og_img and og_img.get('content') else None
 
-        # 1. Force lazy images into real images and strip ad-block classes
-        for img in orig_soup.find_all('img'):
-            src = img.get('data-src') or img.get('data-lazy-src') or img.get('data-url') or img.get('srcset', '').split(',')[0].split(' ')[0] or img.get('src')
-            if src:
-                img['src'] = src
-                img['class'] = [] 
-                img['loading'] = 'eager'
+        # PRE-PROCESS: Store captions inside the <img> data attribute and flatten <figure>/<picture> tags
+        for fig in orig_soup.find_all(['figure', 'div'], class_=re.compile(r'(image|caption|media|figure)', re.I)):
+            img = fig.find('img')
+            caption_elem = fig.find(['figcaption', 'span', 'p'], class_=re.compile(r'(caption|credit)', re.I)) or fig.find('figcaption')
+            if img:
+                src = img.get('data-src') or img.get('data-lazy-src') or img.get('data-url') or img.get('srcset', '').split(',')[0].split(' ')[0] or img.get('src')
+                if src:
+                    img['src'] = src
+                    if caption_elem:
+                        caption_text = caption_elem.get_text(strip=True)
+                        if caption_text:
+                            img['data-caption'] = caption_text
+                    fig.replace_with(img)
 
-        # 2. Gently unwrap <picture> containers while preserving <figcaption>
+        # Flatten remaining standalone pictures
         for pic in orig_soup.find_all('picture'):
             img = pic.find('img')
             if img and img.get('src'):
                 pic.replace_with(img)
-            else:
-                source = pic.find('source')
-                if source and source.get('srcset'):
-                    new_img = orig_soup.new_tag('img', src=source.get('srcset').split(',')[0].split(' ')[0])
-                    pic.replace_with(new_img)
 
         doc = Document(str(orig_soup))
         title = doc.title()
@@ -265,7 +266,7 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
         
         soup = BeautifulSoup(readable_html, 'html.parser')
         
-        # Post-Processing Cleanup
+        # Strip duplicate titles and orphaned share counts
         for h1 in soup.find_all('h1'):
             if title.lower() in h1.get_text().lower() or h1.get_text().lower() in title.lower():
                 h1.decompose()
@@ -275,31 +276,47 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
             if txt.isdigit() and len(txt) <= 3:
                 a.decompose()
 
-        # Format preserved <figcaption> elements beautifully
-        for figcaption in soup.find_all(['figcaption', 'cite']):
-            figcaption['style'] = "font-size: 0.85rem; color: #aaa; text-align: center; margin-top: 8px; font-style: italic; display: block;"
-
-        # Wrap naked images into figures, or style existing figures
+        # RECONSTRUCT FIGURES: Wrap images cleanly and insert unique single captions
+        seen_captions = set()
         for img in soup.find_all('img'):
             src = img.get('src')
             if src:
                 img['src'] = urljoin(url, src)
-                if not img.find_parent('figure'):
-                    figure = soup.new_tag('figure')
-                    figure['style'] = "margin: 30px 0; display: flex; flex-direction: column; align-items: center;"
-                    img['style'] = "max-width:100%; height:auto; border-radius:8px; box-shadow: 0 4px 12px rgba(0,0,0,0.2);"
-                    img.wrap(figure)
-                else:
-                    img['style'] = "max-width:100%; height:auto; border-radius:8px; box-shadow: 0 4px 12px rgba(0,0,0,0.2);"
-                    img.parent['style'] = "margin: 30px 0; display: flex; flex-direction: column; align-items: center;"
+                caption = img.get('data-caption', '').strip()
+                
+                figure = soup.new_tag('figure')
+                figure['style'] = "margin: 30px 0; display: flex; flex-direction: column; align-items: center;"
+                img['style'] = "max-width:100%; height:auto; border-radius:8px; box-shadow: 0 4px 12px rgba(0,0,0,0.2);"
+                
+                img.wrap(figure)
+                
+                if caption and caption not in seen_captions:
+                    seen_captions.add(caption)
+                    figcaption = soup.new_tag('figcaption')
+                    figcaption['style'] = "font-size: 0.85rem; color: #aaa; text-align: center; margin-top: 8px; font-style: italic; max-width: 90%;"
+                    figcaption.string = caption
+                    figure.append(figcaption)
             else:
                 img.decompose()
+
+        # Strip remaining orphaned duplicate caption spans (e.g., Ars Technica duplicate text)
+        for elem in soup.find_all(['figcaption', 'span', 'p'], class_=re.compile(r'(caption|credit)', re.I)):
+            txt = elem.get_text(strip=True)
+            if txt in seen_captions and elem.parent.name != 'figure':
+                elem.decompose()
 
         raw_html_str = str(soup)
         if len(raw_html_str.strip()) < 100:
             raw_html_str = str(orig_soup.find('body'))
 
         cleaned_html, engine = clean_html_with_ai(raw_html_str)
+
+        # POST-PROCESS QUOTE LINE BREAKS: Guarantee attributions inside blockquotes are on a new line
+        cleaned_html = re.sub(
+            r'(<blockquote>[\s\S]*?)([\s—–-]{1,3}\s*[A-Z][^<]{3,80})(</blockquote>)',
+            r'\1<br><span style="display:block; margin-top:8px; font-style:normal; color:#ff8c00;">\2</span>\3',
+            cleaned_html
+        )
 
         new_id = generate_secure_id()
         html_path = os.path.join(DOWNLOAD_DIR, f"{new_id}.html")
@@ -347,6 +364,53 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
     finally:
         if task_id in active_downloads: del active_downloads[task_id]
 
+def fetch_instagram_carousel_direct(url: str, task_id: str) -> bool:
+    """Dedicated scraper for Instagram photo carousels using public embed API."""
+    try:
+        shortcode = None
+        m = re.search(r'/(?:p|reel)/([^/?#&]+)', url)
+        if m: shortcode = m.group(1)
+        if not shortcode: return False
+
+        embed_url = f"https://www.instagram.com/p/{shortcode}/embed/captioned/"
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept-Language': 'en-US,en;q=0.9'
+        }
+        res = requests.get(embed_url, headers=headers, timeout=10)
+        if res.status_code != 200: return False
+
+        soup = BeautifulSoup(res.text, 'html.parser')
+        image_urls = []
+
+        for img in soup.find_all('img', class_='EmbeddedMediaImage'):
+            src = img.get('src')
+            if src and src not in image_urls: image_urls.append(src)
+
+        if not image_urls:
+            # Check script blocks for direct high-res CDN links
+            for script in soup.find_all('script'):
+                if script.string and 'scontent' in script.string:
+                    matches = re.findall(r'https://scontent[^\s"\'\\]+', script.string)
+                    for m_url in matches:
+                        clean_u = m_url.replace('\\u0026', '&')
+                        if clean_u not in image_urls: image_urls.append(clean_u)
+
+        if image_urls:
+            downloaded = 0
+            for idx, img_u in enumerate(image_urls[:10]):
+                try:
+                    r = requests.get(img_u, headers=headers, timeout=10)
+                    if r.status_code == 200:
+                        with open(os.path.join(DOWNLOAD_DIR, f"temp_yt_{task_id}_{idx}_fallback.jpg"), "wb") as f:
+                            f.write(r.content)
+                        downloaded += 1
+                except: pass
+            return downloaded > 0
+    except Exception as e:
+        logger.error(f"Instagram direct scraper failed: {e}")
+    return False
+
 def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
     if not is_social_media_url(url):
         extract_article(url, user_id, task_id, expire_days)
@@ -372,52 +436,12 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
     except Exception: 
         pass 
 
-    # CAROUSEL & GALLERY IMAGE INTERCEPTOR (Bypasses 403 Forbidden & "No Video Formats")
     has_downloaded_media = any(f.endswith(('.mp4', '.webm', '.mkv')) for f in os.listdir(DOWNLOAD_DIR) if f.startswith(f"temp_yt_{task_id}_"))
     
-    if not has_downloaded_media:
-        entries = []
-        
-        # 1. Look for the JSON file yt-dlp dropped on disk before crashing
-        for info_path in glob.glob(f"{DOWNLOAD_DIR}/temp_yt_{task_id}_*.info.json"):
-            try:
-                with open(info_path, 'r', encoding='utf-8') as f: meta = json.load(f)
-                if 'entries' in meta: entries.extend(meta['entries'])
-                else: entries.append(meta)
-            except: pass
-
-        # 2. If no JSON file, run a silent subprocess dump
-        if not entries and ("instagram.com" in url or "tiktok.com" in url):
-            try:
-                cmd = ["yt-dlp", "-J", "--flat-playlist", "--ignore-errors"]
-                if cookie_path: cmd.extend(["--cookies", cookie_path])
-                cmd.append(url)
-                res = subprocess.run(cmd, capture_output=True, text=True)
-                for line in res.stdout.strip().split('\n'):
-                    if line.startswith('{'):
-                        meta = json.loads(line)
-                        if 'entries' in meta: entries.extend(meta['entries'])
-                        else: entries.append(meta)
-            except: pass
-
-        # 3. Download the images securely using browser headers
-        if entries:
-            fallback_count = 0
-            headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
-            for entry in entries:
-                if not entry: continue
-                img_url = None
-                if entry.get('thumbnails'): img_url = entry.get('thumbnails')[-1].get('url')
-                if not img_url: img_url = entry.get('url')
-                
-                if img_url and isinstance(img_url, str) and img_url.startswith('http'):
-                    try:
-                        r = requests.get(img_url, headers=headers, timeout=15)
-                        if r.status_code == 200:
-                            with open(os.path.join(DOWNLOAD_DIR, f"temp_yt_{task_id}_{fallback_count}_fallback.jpg"), "wb") as img_f:
-                                img_f.write(r.content)
-                            fallback_count += 1
-                    except: pass
+    # Instagram Direct Extraction Fallback
+    if not has_downloaded_media and "instagram.com" in url:
+        logger.info("yt-dlp video extractor returned no video formats for Instagram post. Launching Instagram Carousel direct scraper...")
+        fetch_instagram_carousel_direct(url, task_id)
 
     try:
         media_files = []

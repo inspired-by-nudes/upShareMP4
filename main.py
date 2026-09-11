@@ -188,7 +188,7 @@ def format_tokens(count):
     return str(count)
 
 def clean_html_with_ai(raw_html: str) -> tuple:
-    prompt = f"You are an expert HTML formatter. Apply professional typography (semantic HTML: headings, blockquotes, bolding, italics, lists) to the provided article. You MUST output the ENTIRE article text word-for-word. DO NOT summarize, truncate, or omit any paragraphs. PRESERVE ALL informational links (<a href=...>), inline photos/images (<img src=...>), and video elements exactly where they appear. RETURN ONLY CLEAN HTML. Here is the raw HTML:\n\n{raw_html[:35000]}"
+    prompt = f"You are an expert HTML typographer. Enhance the typography of the following article text (use h2, h3, blockquotes, bolding, italics). \nCRITICAL RULES:\n1. You MUST output the ENTIRE article exactly as provided. DO NOT summarize.\n2. You MUST PRESERVE EVERY SINGLE <figure> and <img> tag exactly where it appears.\n3. Return ONLY valid HTML.\n\nHere is the article:\n\n{raw_html[:35000]}"
     
     bt = "`" * 3
 
@@ -205,7 +205,6 @@ def clean_html_with_ai(raw_html: str) -> tuple:
                 engine_str = f"📄 Gemini ({format_tokens(token_count)})" if token_count else "📄 Gemini"
                 
                 clean_result = result.replace(f'{bt}html', '').replace(bt, '').strip()
-                # Fallback: if Gemini hallucinates or returns nothing, reject it and use raw HTML.
                 if len(clean_result) > 100:
                     return clean_result, engine_str
             else:
@@ -241,15 +240,25 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
         og_img = orig_soup.find('meta', property='og:image')
         article_img_url = og_img.get('content') if og_img and og_img.get('content') else None
 
-        # PRE-PROCESS IMAGES: Force lazy-loaded images to use standard src. 
-        # (Removed the aggressive pre-scrubbing that was destroying the article body)
-        for img in orig_soup.find_all(['img', 'source']):
-            src = img.get('data-src') or img.get('data-lazy-src') or img.get('data-original') or img.get('src')
-            if not src and img.get('srcset'):
-                src = img.get('srcset').split(',')[0].split(' ')[0]
+        # PRE-PROCESS IMAGES (NY Post fix): Force lazy-loaded images into standard tags before Readability deletes them
+        for picture in orig_soup.find_all('picture'):
+            src = None
+            img = picture.find('img')
+            if img and img.get('src'): src = img.get('src')
+            if not src:
+                source = picture.find('source')
+                if source and source.get('srcset'): 
+                    src = source.get('srcset').split(',')[0].split(' ')[0]
+            
             if src:
-                img['src'] = src
-                img['class'] = [] 
+                new_img = orig_soup.new_tag('img', src=src)
+                picture.replace_with(new_img)
+
+        for img in orig_soup.find_all('img'):
+            src = img.get('data-src') or img.get('data-lazy-src') or img.get('data-url') or img.get('srcset', '').split(',')[0].split(' ')[0] or img.get('src')
+            if src:
+                new_img = orig_soup.new_tag('img', src=src)
+                img.replace_with(new_img)
                 
         doc = Document(str(orig_soup))
         title = doc.title()
@@ -257,30 +266,30 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
         
         soup = BeautifulSoup(readable_html, 'html.parser')
         
-        # Strip duplicate headlines carefully
+        # Post-Processing Cleanup
         for h1 in soup.find_all('h1'):
             if title.lower() in h1.get_text().lower() or h1.get_text().lower() in title.lower():
                 h1.decompose()
                 
-        # Strip share counts (stray digit anchors like '6') safely
         for a in soup.find_all('a'):
             txt = a.get_text(strip=True)
             if txt.isdigit() and len(txt) <= 3:
                 a.decompose()
 
+        # Wrap preserved images beautifully
         for img in soup.find_all('img'):
             src = img.get('src')
             if src:
                 img['src'] = urljoin(url, src)
-                img['style'] = "max-width:100%; height:auto; border-radius:8px; margin:20px auto; display:block;"
+                figure = soup.new_tag('figure')
+                figure['style'] = "margin: 30px 0; display: flex; justify-content: center;"
+                img['style'] = "max-width:100%; height:auto; border-radius:8px; box-shadow: 0 4px 12px rgba(0,0,0,0.2);"
+                img.wrap(figure)
             else:
                 img.decompose()
 
         raw_html_str = str(soup)
-        
-        # Fallback safeguard: if readability completely failed, don't pass an empty string to AI
         if len(raw_html_str.strip()) < 100:
-            logger.warning("Readability parser failed to find main content. Falling back.")
             raw_html_str = str(orig_soup.find('body'))
 
         cleaned_html, engine = clean_html_with_ai(raw_html_str)
@@ -309,7 +318,6 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
             a:hover {{text-decoration: underline;}}
             blockquote {{border-left: 4px solid #ff8c00; margin: 25px 0; padding-left: 20px; color: #fff; font-style: italic; font-size: 1.1rem; background: #1a1a1a; padding-top: 10px; padding-bottom: 10px; border-radius: 0 6px 6px 0;}}
             p {{margin-bottom: 18px;}}
-            img {{max-width: 100%; height: auto; border-radius: 8px; margin: 20px auto; display: block;}}
         </style>
         </head><body>
             {logo_html}
@@ -354,38 +362,39 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl: 
             ydl.extract_info(url, download=True)
-    except Exception as e: 
-        pass # Ignore yt-dlp crashing out, we handle the cleanup below.
+    except Exception: 
+        pass # Expected on some Instagram photo arrays
 
     # INSTAGRAM CAROUSEL INTERCEPTOR
-    # If yt-dlp generated the playlist manifest but failed on the individual image items, we manually parse the manifest to build the gallery.
     for info_path in glob.glob(f"{DOWNLOAD_DIR}/temp_yt_{task_id}_*.info.json"):
         try:
             with open(info_path, 'r', encoding='utf-8') as f:
                 meta = json.load(f)
             
-            entries = meta.get('entries', [])
-            has_downloaded_media = any(f.endswith('.mp4') for f in os.listdir(DOWNLOAD_DIR) if f.startswith(f"temp_yt_{task_id}_"))
+            entries = meta.get('entries') or [meta]
+            has_downloaded_media = any(f.endswith(('.mp4', '.webm')) for f in os.listdir(DOWNLOAD_DIR) if f.startswith(f"temp_yt_{task_id}_"))
             
-            if entries and not has_downloaded_media:
-                for idx, entry in enumerate(entries):
+            if not has_downloaded_media:
+                fallback_count = 0
+                for entry in entries:
                     if not entry: continue
-                    
-                    img_url = entry.get('url')
-                    if not img_url and entry.get('thumbnails'):
+                    img_url = None
+                    if entry.get('thumbnails'):
                         img_url = entry.get('thumbnails')[-1].get('url')
+                    if not img_url:
+                        img_url = entry.get('url')
                         
-                    if img_url and 'n.jpg' in img_url or 'n.webp' in img_url or 'scontent' in img_url or 'fbcdn' in img_url:
+                    if img_url and isinstance(img_url, str):
                         try:
                             r = requests.get(img_url, timeout=15)
                             if r.status_code == 200:
-                                with open(os.path.join(DOWNLOAD_DIR, f"temp_yt_{task_id}_{idx}_fallback.jpg"), "wb") as img_f:
+                                with open(os.path.join(DOWNLOAD_DIR, f"temp_yt_{task_id}_{fallback_count}_fallback.jpg"), "wb") as img_f:
                                     img_f.write(r.content)
+                                fallback_count += 1
                         except Exception: pass
         except Exception as e:
             logger.error(f"Failed intercepting JSON playlist: {e}")
 
-    # Standard File Processing and Cleanup
     try:
         media_files = []
         image_files = []
@@ -544,7 +553,8 @@ def get_stats(user: dict = Depends(verify_auth)):
             owner = db["videos"].get(vid_id, {}).get("owner", "")
             if user["role"] == "admin" or owner == user["username"]:
                 total_videos += 1
-                total_disk += os.path.getsize(os.path.join(DOWNLOAD_DIR, f))
+                try: total_disk += os.path.getsize(os.path.join(DOWNLOAD_DIR, f))
+                except FileNotFoundError: pass
                 
     user_bandwidth = db.get("users", {}).get(user["username"], {}).get("bandwidth", 0)
                 
@@ -648,10 +658,15 @@ def list_videos(user: dict = Depends(verify_auth)):
             if user["role"] != "admin" and vid_info.get("owner") != user["username"]: continue
                 
             media_file = os.path.join(DOWNLOAD_DIR, f)
+            try:
+                # Catch race conditions where files are deleted mid-scan
+                added_timestamp = vid_info.get("added", os.path.getmtime(media_file))
+                size_bytes = os.path.getsize(media_file)
+            except FileNotFoundError:
+                continue
+
             thumb = next((f"{base_name}{e}" for e in ['.jpg', '.webp', '.png'] if os.path.exists(os.path.join(DOWNLOAD_DIR, f"{base_name}{e}"))), None)
             mins, secs = divmod(int(vid_info.get("duration", 0)), 60)
-            
-            added_timestamp = vid_info.get("added", os.path.getmtime(media_file))
             date_str = time.strftime("%b %d", time.localtime(added_timestamp))
             
             videos_data.append({
@@ -664,7 +679,7 @@ def list_videos(user: dict = Depends(verify_auth)):
                 "thumbnail": thumb,
                 "duration": f"{mins}:{secs:02d}",
                 "engine": vid_info.get("engine"),
-                "size_bytes": os.path.getsize(media_file),
+                "size_bytes": size_bytes,
                 "date": added_timestamp,
                 "date_badge": date_str,
                 "views": vid_info.get("views", 0),

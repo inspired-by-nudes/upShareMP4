@@ -188,7 +188,7 @@ def format_tokens(count):
     return str(count)
 
 def clean_html_with_ai(raw_html: str) -> tuple:
-    prompt = f"You are an expert HTML typographer. Enhance typography (headings, blockquotes, bolding, italics). \nCRITICAL RULES:\n1. Output the ENTIRE article word-for-word. DO NOT summarize or omit any quotes, text, or paragraphs.\n2. PRESERVE EVERY <img> tag (including class='upshare-iframe') exactly where it appears.\n3. Do NOT split blockquotes into multiple adjacent blocks for the same speaker. Keep quotes combined in a single <blockquote> element.\n4. When a blockquote includes an attribution line (e.g., '— Name'), place it on a NEW LINE at the bottom of the blockquote using a <br> tag.\n5. Return ONLY valid HTML.\n\nHere is the raw HTML:\n\n{raw_html[:35000]}"
+    prompt = f"You are an expert HTML typographer. Enhance typography (headings, blockquotes, bolding, italics). \nCRITICAL RULES:\n1. Output the ENTIRE article word-for-word. DO NOT summarize or omit any quotes, text, paragraphs, or [[UPSHARE_EMBED:...]] markers.\n2. PRESERVE EVERY <img> tag exactly where it appears.\n3. Do NOT split blockquotes into multiple adjacent blocks for the same speaker. Keep quotes combined in a single <blockquote> element.\n4. When a blockquote includes an attribution line (e.g., '— Name'), place it on a NEW LINE at the bottom of the blockquote using a <br> tag.\n5. Return ONLY valid HTML.\n\nHere is the raw HTML:\n\n{raw_html[:35000]}"
     
     bt = "`" * 3
 
@@ -240,44 +240,43 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
         og_img = orig_soup.find('meta', property='og:image')
         article_img_url = og_img.get('content') if og_img and og_img.get('content') else None
 
-        # 1. EMBEDDED IFRAMES: Convert iframes to safe placeholder <img> tags to survive Readability
-        for iframe in orig_soup.find_all(['iframe', 'embed', 'video']):
-            src = iframe.get('src') or iframe.get('data-src')
-            if src and ('youtube.com' in src or 'youtu.be' in src or 'vimeo' in src):
-                placeholder = orig_soup.new_tag('img', src=src, **{'class': 'upshare-iframe', 'data-src': src})
-                iframe.replace_with(placeholder)
+        # 1. EMBEDDED VIDEOS: Convert YouTube/Vimeo iframes to persistent text markers so Readability & AI preserve them
+        for iframe in orig_soup.find_all(['iframe', 'embed']):
+            src = iframe.get('src') or iframe.get('data-src') or ''
+            if not src.startswith('http') and src.startswith('//'): src = f"https:{src}"
+            if 'youtube' in src or 'youtu.be' in src or 'vimeo' in src:
+                marker = orig_soup.new_tag('p')
+                marker.string = f"[[UPSHARE_EMBED:{src}]]"
+                iframe.replace_with(marker)
             else:
                 iframe.decompose()
 
-        # 2. BULLETPROOF CAPTIONS: Hunt, save, and destroy original HTML tags to prevent duplication
-        for container in orig_soup.find_all(['figure', 'div', 'picture'], class_=re.compile(r'(image|caption|media|figure|wp-caption|photo)', re.I)):
+        # 2. CAPTION DE-DUPLICATION: Target ONLY specific figure/picture containers to avoid breaking body content
+        figures = list(orig_soup.find_all(['figure', 'picture']))
+        # Add specific WordPress caption divs without capturing main content divs
+        for div in orig_soup.find_all('div', class_=re.compile(r'^(wp-caption|figure|image-container)$', re.I)):
+            if div not in figures: figures.append(div)
+
+        for container in figures:
             img = container.find('img')
             if img:
                 src = img.get('data-src') or img.get('data-lazy-src') or img.get('data-url') or img.get('srcset', '').split(',')[0].split(' ')[0] or img.get('src')
                 if src:
                     img['src'] = src
                     
-                    caption_texts = []
-                    # Find all possible caption elements
-                    for cap in container.find_all(['figcaption', 'div', 'span', 'p']):
-                        class_str = str(cap.get('class', ''))
-                        if cap.name == 'figcaption' or re.search(r'(caption|credit|source|desc)', class_str, re.I):
+                    captions = []
+                    # Search inside container for caption/credit elements
+                    for cap in list(container.find_all(['figcaption', 'span', 'p', 'div'])):
+                        class_str = " ".join(cap.get('class', [])) if isinstance(cap.get('class'), list) else str(cap.get('class', ''))
+                        if cap.name == 'figcaption' or re.search(r'(caption|credit|byline)', class_str, re.I):
                             t = cap.get_text(strip=True)
-                            if t and t not in caption_texts:
-                                caption_texts.append(t)
-                            cap.decompose() # Destroy element completely
+                            if t and t not in captions:
+                                captions.append(t)
+                            cap.decompose() # Remove from DOM to prevent duplication
                     
-                    if not caption_texts:
-                        fc = container.find('figcaption')
-                        if fc:
-                            t = fc.get_text(strip=True)
-                            if t: caption_texts.append(t)
-                            fc.decompose() # Destroy element completely
-
-                    if caption_texts:
-                        img['data-caption'] = ' | '.join(caption_texts)
+                    if captions:
+                        img['data-caption'] = ' — '.join(captions)
                     
-                    # Extract the raw <img> tag from its messy container and replace the whole block
                     container.replace_with(img)
 
         doc = Document(str(orig_soup))
@@ -301,20 +300,24 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
 
         cleaned_html, engine = clean_html_with_ai(raw_html_str)
 
-        # 3. RECONSTRUCT THE DOM
+        # 3. DOM RECONSTRUCTION & POST-PROCESSING
         ai_soup = BeautifulSoup(cleaned_html, 'html.parser')
 
-        # Restore iFrames
-        for placeholder in ai_soup.find_all('img', class_='upshare-iframe'):
-            src = placeholder.get('data-src') or placeholder.get('src')
-            if src:
-                iframe = ai_soup.new_tag('iframe', src=src, style="width:100%; aspect-ratio:16/9; border:none; border-radius:8px; margin:20px 0;", allowfullscreen="true")
-                placeholder.replace_with(iframe)
+        # Convert text markers back into responsive YouTube embed containers
+        for p_tag in ai_soup.find_all(['p', 'div']):
+            txt = p_tag.get_text(strip=True)
+            if '[[UPSHARE_EMBED:' in txt:
+                m = re.search(r'\[\[UPSHARE_EMBED:(.*?)\]\]', txt)
+                if m:
+                    embed_url = m.group(1)
+                    wrapper = ai_soup.new_tag('div', style="position:relative; padding-bottom:56.25%; height:0; overflow:hidden; margin:30px 0; border-radius:8px; box-shadow:0 4px 12px rgba(0,0,0,0.3);")
+                    iframe = ai_soup.new_tag('iframe', src=embed_url, style="position:absolute; top:0; left:0; width:100%; height:100%; border:0;", allowfullscreen="true")
+                    wrapper.append(iframe)
+                    p_tag.replace_with(wrapper)
 
-        # Restore Images & Captions (100% deduplicated)
+        # Reconstruct clean media figures with deduplicated captions
         seen_captions = set()
         for img in ai_soup.find_all('img'):
-            if 'upshare-iframe' in img.get('class', []): continue
             src = img.get('src')
             if src:
                 img['src'] = urljoin(url, src)
@@ -333,7 +336,14 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
             else:
                 img.decompose()
 
-        # Merge fragmented blockquotes
+        # Remove duplicate text nodes matching active captions
+        for cap_text in seen_captions:
+            for elem in ai_soup.find_all(['p', 'span', 'div']):
+                if elem.parent and elem.parent.name != 'figure':
+                    if elem.get_text(strip=True) == cap_text:
+                        elem.decompose()
+
+        # Merge adjacent split blockquotes
         bq_list = ai_soup.find_all('blockquote')
         for i in range(len(bq_list) - 1, 0, -1):
             curr_bq = bq_list[i]
@@ -393,34 +403,38 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
         if task_id in active_downloads: del active_downloads[task_id]
 
 def fetch_instagram_carousel_direct(url: str, task_id: str) -> bool:
-    """Dedicated dual-scraper for Instagram photo/video carousels bypassing 403 Forbidden checks."""
+    """Scrapes Instagram carousels via public embed and CDN endpoints."""
     try:
+        shortcode = None
+        m = re.search(r'/(?:p|reel|reels|tv)/([^/?#&]+)', url)
+        if m: shortcode = m.group(1)
+        if not shortcode: return False
+
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.9'
         }
-        cookie_path = get_cookie_file_for_url(url)
         
         image_urls = []
-        
-        # Method 1: Dump raw JSON memory tree using yt-dlp to bypass video format crash
-        cmd = ["yt-dlp", "-J", "--flat-playlist", "--ignore-errors", url]
-        if cookie_path: cmd.extend(["--cookies", cookie_path])
-        res = subprocess.run(cmd, capture_output=True, text=True)
-        
-        for line in res.stdout.strip().split('\n'):
-            if line.startswith('{'):
-                try:
-                    meta = json.loads(line)
-                    entries = meta.get('entries', [meta])
-                    for entry in entries:
-                        if not entry: continue
-                        url_val = entry.get('url')
-                        if not url_val and entry.get('thumbnails'): url_val = entry.get('thumbnails')[-1].get('url')
-                        if url_val and url_val.startswith('http') and url_val not in image_urls: image_urls.append(url_val)
-                except: pass
 
-        # Method 2: Raw HTML Regex sweep (Catches scontent CDN links directly if JSON is blocked)
+        # 1. Fetch Instagram Embed page
+        embed_url = f"https://www.instagram.com/p/{shortcode}/embed/captioned/"
+        res = requests.get(embed_url, headers=headers, timeout=10)
+        if res.status_code == 200:
+            soup = BeautifulSoup(res.text, 'html.parser')
+            for img in soup.find_all('img', class_='EmbeddedMediaImage'):
+                s = img.get('src')
+                if s and s not in image_urls: image_urls.append(s)
+            
+            # Extract raw CDN URLs from embed JS payloads
+            for script in soup.find_all('script'):
+                if script.string and 'scontent' in script.string:
+                    matches = re.findall(r'https://scontent[^\s"\'\\]+', script.string)
+                    for m_url in matches:
+                        clean_u = m_url.replace('\\u0026', '&').replace('\\/', '/')
+                        if clean_u not in image_urls: image_urls.append(clean_u)
+
+        # 2. Fallback to direct page Regex if embed yields no media
         if not image_urls:
             r = requests.get(url, headers=headers, timeout=10)
             urls = re.findall(r'"(https://scontent[^\"]+?\.jpg[^\"]*?)"', r.text)
@@ -471,7 +485,7 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
     has_downloaded_media = any(f.endswith(('.mp4', '.webm', '.mkv')) for f in os.listdir(DOWNLOAD_DIR) if f.startswith(f"temp_yt_{task_id}_"))
     
     if not has_downloaded_media and "instagram.com" in url:
-        logger.info("Executing direct Instagram scraper to bypass video format constraints...")
+        logger.info("Executing Instagram carousel fallback scraper...")
         fetch_instagram_carousel_direct(url, task_id)
 
     try:

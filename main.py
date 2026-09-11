@@ -188,7 +188,7 @@ def format_tokens(count):
     return str(count)
 
 def clean_html_with_ai(raw_html: str) -> tuple:
-    prompt = f"You are an expert HTML typographer. Enhance the typography of the following article text (use h2, h3, blockquotes, bolding, italics). \nCRITICAL RULES:\n1. Output the ENTIRE article exactly as provided. DO NOT summarize or truncate.\n2. PRESERVE EVERY SINGLE <img> tag and its attributes exactly where it appears.\n3. For quotes containing an attribution (e.g., '\"Quote\" — Person' or '\"Quote\" - Person'), force the attribution ('— Person') onto a NEW LINE within the blockquote using a <br> tag.\n4. Return ONLY valid HTML.\n\nHere is the article:\n\n{raw_html[:35000]}"
+    prompt = f"You are an expert HTML typographer. Enhance the typography of the provided article (headings, blockquotes, bolding, italics). \nCRITICAL RULES:\n1. Output the ENTIRE article word-for-word. DO NOT summarize, omit, or truncate text.\n2. PRESERVE ALL <img>, <figure>, and <figcaption> tags exactly where they appear.\n3. Do NOT split quotes into multiple separate blockquotes if they belong to the same continuous statement or speaker sentence. Keep full quotes together in a single <blockquote> block.\n4. When a blockquote ends with an explicit speaker attribution line (e.g. '— Tom Suozzi'), ensure the attribution is on its own line at the bottom of the blockquote using a <br> tag.\n5. Return ONLY clean HTML.\n\nHere is the raw HTML:\n\n{raw_html[:35000]}"
     
     bt = "`" * 3
 
@@ -240,21 +240,33 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
         og_img = orig_soup.find('meta', property='og:image')
         article_img_url = og_img.get('content') if og_img and og_img.get('content') else None
 
-        # PRE-PROCESS: Store captions inside the <img> data attribute and flatten <figure>/<picture> tags
-        for fig in orig_soup.find_all(['figure', 'div'], class_=re.compile(r'(image|caption|media|figure)', re.I)):
+        # 1. PRE-PROCESS CAPTIONS AND MEDIA CONTAINERS (Fixes NY Post & Ars Technica duplicate/missing captions)
+        for fig in orig_soup.find_all(['figure', 'div', 'section'], class_=re.compile(r'(image|caption|media|figure|wp-caption)', re.I)):
             img = fig.find('img')
-            caption_elem = fig.find(['figcaption', 'span', 'p'], class_=re.compile(r'(caption|credit)', re.I)) or fig.find('figcaption')
             if img:
                 src = img.get('data-src') or img.get('data-lazy-src') or img.get('data-url') or img.get('srcset', '').split(',')[0].split(' ')[0] or img.get('src')
                 if src:
                     img['src'] = src
-                    if caption_elem:
-                        caption_text = caption_elem.get_text(strip=True)
-                        if caption_text:
-                            img['data-caption'] = caption_text
+                    
+                    # Consolidate all inner caption/credit elements into a single clean string
+                    caption_texts = []
+                    for cap_node in fig.find_all(['figcaption', 'span', 'p', 'div'], class_=re.compile(r'(caption|credit)', re.I)):
+                        t = cap_node.get_text(strip=True)
+                        if t and t not in caption_texts:
+                            caption_texts.append(t)
+                    
+                    if not caption_texts:
+                        fc = fig.find('figcaption')
+                        if fc:
+                            t = fc.get_text(strip=True)
+                            if t: caption_texts.append(t)
+
+                    if caption_texts:
+                        img['data-caption'] = ' — '.join(caption_texts)
+                    
                     fig.replace_with(img)
 
-        # Flatten remaining standalone pictures
+        # Flatten remaining standalone picture tags
         for pic in orig_soup.find_all('picture'):
             img = pic.find('img')
             if img and img.get('src'):
@@ -266,7 +278,7 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
         
         soup = BeautifulSoup(readable_html, 'html.parser')
         
-        # Strip duplicate titles and orphaned share counts
+        # Post-Processing: Strip duplicate headlines and share widgets
         for h1 in soup.find_all('h1'):
             if title.lower() in h1.get_text().lower() or h1.get_text().lower() in title.lower():
                 h1.decompose()
@@ -276,7 +288,7 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
             if txt.isdigit() and len(txt) <= 3:
                 a.decompose()
 
-        # RECONSTRUCT FIGURES: Wrap images cleanly and insert unique single captions
+        # RECONSTRUCT MEDIA FIGURES (Ensures single unique caption per image)
         seen_captions = set()
         for img in soup.find_all('img'):
             src = img.get('src')
@@ -299,11 +311,11 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
             else:
                 img.decompose()
 
-        # Strip remaining orphaned duplicate caption spans (e.g., Ars Technica duplicate text)
-        for elem in soup.find_all(['figcaption', 'span', 'p'], class_=re.compile(r'(caption|credit)', re.I)):
-            txt = elem.get_text(strip=True)
-            if txt in seen_captions and elem.parent.name != 'figure':
-                elem.decompose()
+        # Deduplicate stray caption elements left over from site layout templates
+        for cap_node in soup.find_all(['figcaption', 'span', 'p'], class_=re.compile(r'(caption|credit)', re.I)):
+            if cap_node.parent and cap_node.parent.name != 'figure':
+                if cap_node.get_text(strip=True) in seen_captions:
+                    cap_node.decompose()
 
         raw_html_str = str(soup)
         if len(raw_html_str.strip()) < 100:
@@ -311,12 +323,22 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
 
         cleaned_html, engine = clean_html_with_ai(raw_html_str)
 
-        # POST-PROCESS QUOTE LINE BREAKS: Guarantee attributions inside blockquotes are on a new line
-        cleaned_html = re.sub(
-            r'(<blockquote>[\s\S]*?)([\s—–-]{1,3}\s*[A-Z][^<]{3,80})(</blockquote>)',
-            r'\1<br><span style="display:block; margin-top:8px; font-style:normal; color:#ff8c00;">\2</span>\3',
-            cleaned_html
-        )
+        # POST-PROCESS ADJACENT BLOCKQUOTES: Merge back-to-back blockquotes if split erroneously
+        ai_soup = BeautifulSoup(cleaned_html, 'html.parser')
+        bq_list = ai_soup.find_all('blockquote')
+        for i in range(len(bq_list) - 1, 0, -1):
+            curr_bq = bq_list[i]
+            prev_bq = bq_list[i - 1]
+            
+            # Check if they are immediately adjacent sibling elements
+            if prev_bq.find_next_sibling() == curr_bq:
+                # Merge current blockquote content into previous blockquote
+                prev_bq.append(ai_soup.new_tag('br'))
+                for child in list(curr_bq.contents):
+                    prev_bq.append(child)
+                curr_bq.decompose()
+
+        cleaned_html = str(ai_soup)
 
         new_id = generate_secure_id()
         html_path = os.path.join(DOWNLOAD_DIR, f"{new_id}.html")

@@ -188,7 +188,7 @@ def format_tokens(count):
     return str(count)
 
 def clean_html_with_ai(raw_html: str) -> tuple:
-    prompt = f"You are an expert HTML typographer. Enhance typography (headings, blockquotes, bolding, italics). \nCRITICAL RULES:\n1. Output the ENTIRE article word-for-word. DO NOT summarize or omit any quotes, text, paragraphs, or [[UPSHARE_EMBED:...]] markers.\n2. PRESERVE EVERY <img> tag exactly where it appears.\n3. Do NOT split blockquotes into multiple adjacent blocks for the same speaker. Keep quotes combined in a single <blockquote> element.\n4. When a blockquote includes an attribution line (e.g., '— Name'), place it on a NEW LINE at the bottom of the blockquote using a <br> tag.\n5. Return ONLY valid HTML.\n\nHere is the raw HTML:\n\n{raw_html[:35000]}"
+    prompt = f"You are an expert HTML typographer. Enhance typography (headings, blockquotes, bolding, italics). \nCRITICAL RULES:\n1. Output the ENTIRE article word-for-word. DO NOT summarize or omit any text.\n2. Format images: Wrap every <img> and its adjacent caption text (if any) into a proper <figure> and <figcaption> structure. DEDUPLICATE caption text if the exact same caption appears twice sequentially.\n3. Do NOT split blockquotes into multiple adjacent blocks for the same speaker. Keep quotes combined in a single <blockquote> element.\n4. When a blockquote includes an attribution line (e.g., '— Name'), place it on a NEW LINE at the bottom of the blockquote using a <br> tag.\n5. Preserve [[UPSHARE_EMBED:...]] markers exactly as they are.\n6. Return ONLY valid HTML.\n\nHere is the raw HTML:\n\n{raw_html[:35000]}"
     
     bt = "`" * 3
 
@@ -233,15 +233,30 @@ def clean_html_with_ai(raw_html: str) -> tuple:
 def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
     try:
         active_downloads[task_id] = "Parsing Article..."
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8'
+        }
         r = requests.get(url, headers=headers, timeout=10)
         
-        orig_soup = BeautifulSoup(r.content, 'html.parser')
-        og_img = orig_soup.find('meta', property='og:image')
-        article_img_url = og_img.get('content') if og_img and og_img.get('content') else None
+        # Intercept direct image links (e.g., CAPTCHAs, hotlinked PNGs) to prevent binary parsing crashes
+        if 'image' in r.headers.get('Content-Type', '').lower():
+            new_id = generate_secure_id()
+            ext = '.' + urlparse(url).path.split('/')[-1].split('.')[-1]
+            if not ext or len(ext) > 5 or not ext[1:].isalpha(): ext = '.jpg'
+            with open(os.path.join(DOWNLOAD_DIR, f"{new_id}{ext}"), "wb") as f: f.write(r.content)
+            extract_true_duration(new_id, user_id, url, f"Direct Image - {ext[1:].upper()}", ext, expire_days, engine="🖼️ Direct")
+            return
 
-        # 1. EMBEDDED VIDEOS: Convert YouTube/Vimeo iframes to persistent text markers so Readability & AI preserve them
-        for iframe in orig_soup.find_all(['iframe', 'embed']):
+        orig_soup = BeautifulSoup(r.content, 'html.parser')
+        
+        og_img = orig_soup.find('meta', property='og:image')
+        article_img_url = None
+        if og_img and isinstance(og_img, type(orig_soup.new_tag('meta'))):
+            article_img_url = og_img.get('content')
+
+        # 1. EMBEDDED VIDEOS: Disguise iframes so Readability ignores them instead of deleting them
+        for iframe in orig_soup.find_all(['iframe', 'embed', 'video']):
             src = iframe.get('src') or iframe.get('data-src') or ''
             if not src.startswith('http') and src.startswith('//'): src = f"https:{src}"
             if 'youtube' in src or 'youtu.be' in src or 'vimeo' in src:
@@ -251,33 +266,16 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
             else:
                 iframe.decompose()
 
-        # 2. CAPTION DE-DUPLICATION: Target ONLY specific figure/picture containers to avoid breaking body content
-        figures = list(orig_soup.find_all(['figure', 'picture']))
-        # Add specific WordPress caption divs without capturing main content divs
-        for div in orig_soup.find_all('div', class_=re.compile(r'^(wp-caption|figure|image-container)$', re.I)):
-            if div not in figures: figures.append(div)
+        # 2. IMAGE PRE-PROCESS: Standardize lazy loading attributes
+        for img in orig_soup.find_all('img'):
+            src = img.get('data-src') or img.get('data-lazy-src') or img.get('src')
+            if src: img['src'] = src
 
-        for container in figures:
-            img = container.find('img')
-            if img:
-                src = img.get('data-src') or img.get('data-lazy-src') or img.get('data-url') or img.get('srcset', '').split(',')[0].split(' ')[0] or img.get('src')
-                if src:
-                    img['src'] = src
-                    
-                    captions = []
-                    # Search inside container for caption/credit elements
-                    for cap in list(container.find_all(['figcaption', 'span', 'p', 'div'])):
-                        class_str = " ".join(cap.get('class', [])) if isinstance(cap.get('class'), list) else str(cap.get('class', ''))
-                        if cap.name == 'figcaption' or re.search(r'(caption|credit|byline)', class_str, re.I):
-                            t = cap.get_text(strip=True)
-                            if t and t not in captions:
-                                captions.append(t)
-                            cap.decompose() # Remove from DOM to prevent duplication
-                    
-                    if captions:
-                        img['data-caption'] = ' — '.join(captions)
-                    
-                    container.replace_with(img)
+        # 3. FIGURE UNWRAPPING: Temporarily rename <figure> and <picture> so Readability accepts their text
+        for fig in orig_soup.find_all(['figure', 'picture']):
+            fig.name = 'div'
+        for cap in orig_soup.find_all('figcaption'):
+            cap.name = 'p'
 
         doc = Document(str(orig_soup))
         title = doc.title()
@@ -300,10 +298,10 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
 
         cleaned_html, engine = clean_html_with_ai(raw_html_str)
 
-        # 3. DOM RECONSTRUCTION & POST-PROCESSING
+        # 4. POST-PROCESSING: Restore Embeds and rebuild clean Figures
         ai_soup = BeautifulSoup(cleaned_html, 'html.parser')
 
-        # Convert text markers back into responsive YouTube embed containers
+        # Revive YouTube Embeds
         for p_tag in ai_soup.find_all(['p', 'div']):
             txt = p_tag.get_text(strip=True)
             if '[[UPSHARE_EMBED:' in txt:
@@ -315,35 +313,22 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
                     wrapper.append(iframe)
                     p_tag.replace_with(wrapper)
 
-        # Reconstruct clean media figures with deduplicated captions
-        seen_captions = set()
+        # Apply robust styles to Figures & Images
+        for figure in ai_soup.find_all('figure'):
+            figure['style'] = "margin: 30px 0; display: flex; flex-direction: column; align-items: center;"
         for img in ai_soup.find_all('img'):
-            src = img.get('src')
-            if src:
-                img['src'] = urljoin(url, src)
-                caption = img.get('data-caption', '').strip()
-                
-                figure = ai_soup.new_tag('figure', style="margin: 30px 0; display: flex; flex-direction: column; align-items: center;")
-                img['style'] = "max-width:100%; height:auto; border-radius:8px; box-shadow: 0 4px 12px rgba(0,0,0,0.2);"
-                
-                img.wrap(figure)
-                
-                if caption and caption not in seen_captions:
-                    seen_captions.add(caption)
-                    figcaption = ai_soup.new_tag('figcaption', style="font-size: 0.85rem; color: #aaa; text-align: center; margin-top: 8px; font-style: italic; max-width: 90%;")
-                    figcaption.string = caption
-                    figure.append(figcaption)
-            else:
+            if not img.get('src'):
                 img.decompose()
+                continue
+            img['src'] = urljoin(url, img['src'])
+            img['style'] = "max-width:100%; height:auto; border-radius:8px; box-shadow: 0 4px 12px rgba(0,0,0,0.2);"
+            if not img.parent or img.parent.name != 'figure':
+                fig = ai_soup.new_tag('figure', style="margin: 30px 0; display: flex; flex-direction: column; align-items: center;")
+                img.wrap(fig)
+        for figcap in ai_soup.find_all('figcaption'):
+            figcap['style'] = "font-size: 0.85rem; color: #aaa; text-align: center; margin-top: 8px; font-style: italic; max-width: 90%;"
 
-        # Remove duplicate text nodes matching active captions
-        for cap_text in seen_captions:
-            for elem in ai_soup.find_all(['p', 'span', 'div']):
-                if elem.parent and elem.parent.name != 'figure':
-                    if elem.get_text(strip=True) == cap_text:
-                        elem.decompose()
-
-        # Merge adjacent split blockquotes
+        # Merge adjacent split blockquotes securely
         bq_list = ai_soup.find_all('blockquote')
         for i in range(len(bq_list) - 1, 0, -1):
             curr_bq = bq_list[i]
@@ -403,7 +388,7 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
         if task_id in active_downloads: del active_downloads[task_id]
 
 def fetch_instagram_carousel_direct(url: str, task_id: str) -> bool:
-    """Scrapes Instagram carousels via public embed and CDN endpoints."""
+    """Scrapes Instagram carousels via public embed and CDN endpoints when direct video formats fail."""
     try:
         shortcode = None
         m = re.search(r'/(?:p|reel|reels|tv)/([^/?#&]+)', url)
@@ -417,7 +402,7 @@ def fetch_instagram_carousel_direct(url: str, task_id: str) -> bool:
         
         image_urls = []
 
-        # 1. Fetch Instagram Embed page
+        # 1. Fetch Instagram Embed page directly
         embed_url = f"https://www.instagram.com/p/{shortcode}/embed/captioned/"
         res = requests.get(embed_url, headers=headers, timeout=10)
         if res.status_code == 200:
@@ -426,18 +411,18 @@ def fetch_instagram_carousel_direct(url: str, task_id: str) -> bool:
                 s = img.get('src')
                 if s and s not in image_urls: image_urls.append(s)
             
-            # Extract raw CDN URLs from embed JS payloads
+            # Extract raw CDN URLs hidden inside the embed JS payloads
             for script in soup.find_all('script'):
                 if script.string and 'scontent' in script.string:
-                    matches = re.findall(r'https://scontent[^\s"\'\\]+', script.string)
+                    matches = re.findall(r'https://[a-zA-Z0-9_.-]*scontent[^\s"\'\\]+\.fbcdn\.net/[^\s"\'\\]+\.jpg[^\s"\'\\]*', script.string)
                     for m_url in matches:
                         clean_u = m_url.replace('\\u0026', '&').replace('\\/', '/')
                         if clean_u not in image_urls: image_urls.append(clean_u)
 
-        # 2. Fallback to direct page Regex if embed yields no media
+        # 2. Fallback to basic HTML regex if embed yields no media
         if not image_urls:
             r = requests.get(url, headers=headers, timeout=10)
-            urls = re.findall(r'"(https://scontent[^\"]+?\.jpg[^\"]*?)"', r.text)
+            urls = re.findall(r'"(https://[a-zA-Z0-9_.-]*scontent[^\"]+?\.jpg[^\"]*?)"', r.text)
             for u in urls:
                 clean_u = u.replace('\\u0026', '&').replace('\\/', '/')
                 if clean_u not in image_urls: image_urls.append(clean_u)
@@ -463,7 +448,7 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
         return
 
     ydl_opts = {
-        'outtmpl': f'{DOWNLOAD_DIR}/temp_yt_{task_id}_%(id)s.%(ext)s',
+        'outtmpl': f'{DOWNLOAD_DIR}/temp_yt_{task_id}_%(autonumber)03d_%(id)s.%(ext)s',
         'format': 'bestvideo[ext=mp4][vcodec^=avc]+bestaudio[ext=m4a]/best[ext=mp4]/best',
         'merge_output_format': 'mp4',
         'writeinfojson': True,

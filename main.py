@@ -139,7 +139,7 @@ async def track_video_views(request: Request, call_next):
     if request.method == "GET" and response.status_code in (200, 206):
         path = request.url.path
         range_header = request.headers.get("range", "")
-        if path.startswith("/videos/") and (path.endswith(".mp4") or path.endswith(".html")) and (not range_header or "bytes=0-" in range_header):
+        if path.startswith("/videos/") and (path.endswith(('.mp4', '.html', '.jpg', '.png', '.webp'))) and (not range_header or "bytes=0-" in range_header):
             filename = os.path.basename(path)
             video_id = filename.split(".")[0]
             file_path = os.path.join(DOWNLOAD_DIR, filename)
@@ -384,9 +384,25 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
         """
 
         safe_title = html.escape(title)
+
+        if article_img_url:
+            try:
+                img_data = requests.get(article_img_url, headers=headers, timeout=5).content
+                with open(os.path.join(DOWNLOAD_DIR, f"{new_id}.jpg"), "wb") as img_f:
+                    img_f.write(img_data)
+            except: pass
+
+        og_image_meta = f'<meta property="og:image" content="/videos/{new_id}.jpg"><meta name="twitter:image" content="/videos/{new_id}.jpg">' if os.path.exists(os.path.join(DOWNLOAD_DIR, f"{new_id}.jpg")) else ''
+
         clean_page = f"""
         <html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'>
         <title>{safe_title}</title>
+        <meta property="og:title" content="{safe_title}">
+        <meta property="og:type" content="article">
+        <meta property="og:description" content="View article on upShareMedia">
+        {og_image_meta}
+        <meta name="twitter:card" content="summary_large_image">
+        <meta name="twitter:title" content="{safe_title}">
         <style>
             body{{font-family: system-ui, sans-serif; line-height: 1.7; max-width: 800px; margin: 0 auto; padding: 20px; background:#121212; color:#e0e0e0;}} 
             h2, h3 {{color:#ff8c00; margin-top: 40px;}}
@@ -404,13 +420,6 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
         """
         with open(html_path, "w", encoding="utf-8") as f: f.write(clean_page)
 
-        if article_img_url:
-            try:
-                img_data = requests.get(article_img_url, headers=headers, timeout=5).content
-                with open(os.path.join(DOWNLOAD_DIR, f"{new_id}.jpg"), "wb") as img_f:
-                    img_f.write(img_data)
-            except: pass
-
         extract_true_duration(new_id, user_id, url, title, ".html", expire_days, engine=engine)
     except Exception as e:
         logger.error(f"Article parse failed: {e}")
@@ -426,7 +435,7 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
 
     if "instagram.com" in url:
         logger.info("Executing native Instagram extraction hook...")
-        ydl_opts = {'quiet': True, 'extract_flat': 'in_playlist'}
+        ydl_opts = {'quiet': True}
         if cookie_path: ydl_opts['cookiefile'] = cookie_path
 
         entries = []
@@ -438,7 +447,6 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
         except Exception as e:
             logger.error(f"IG yt-dlp metadata extract failed: {e}")
 
-        media_files = []
         for idx, e in enumerate(entries):
             if not e: continue
             is_vid = e.get('ext') == 'mp4' or (e.get('url') and '.mp4' in e.get('url'))
@@ -468,7 +476,7 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                         except: pass
                 except: pass
             else:
-                img_url = e.get('url')
+                img_url = e.get('display_url') or e.get('url')
                 if not img_url and e.get('thumbnails'): img_url = e.get('thumbnails')[-1].get('url')
                 if img_url:
                     out = os.path.join(DOWNLOAD_DIR, f"{base_name}.jpg")
@@ -679,7 +687,7 @@ def get_stats(user: dict = Depends(verify_auth)):
     total_videos, total_disk = 0, 0
 
     for f in os.listdir(DOWNLOAD_DIR):
-        if f.endswith(('.mp4', '.webm', '.mkv', '.html')):
+        if f.endswith(('.mp4', '.webm', '.mkv', '.html', '.jpg', '.png', '.webp')):
             if f.startswith('temp_'): continue
             vid_id = os.path.basename(f).split('.')[0]
             owner = db["videos"].get(vid_id, {}).get("owner", "")
@@ -789,7 +797,7 @@ def list_videos(user: dict = Depends(verify_auth)):
     videos_data = []
 
     for f in os.listdir(DOWNLOAD_DIR):
-        if f.endswith(('.mp4', '.webm', '.mkv', '.html')) and not f.startswith('temp_'):
+        if f.endswith(('.mp4', '.webm', '.mkv', '.html', '.jpg', '.png', '.webp')) and not f.startswith('temp_'):
             base_name = f.rsplit('.', 1)[0]
             vid_info = db["videos"].get(base_name, {})
             if user["role"] != "admin" and vid_info.get("owner") != user["username"]: continue
@@ -808,7 +816,7 @@ def list_videos(user: dict = Depends(verify_auth)):
             videos_data.append({
                 "id": base_name,
                 "filename": f,
-                "type": "article" if f.endswith('.html') else "video",
+                "type": "article" if f.endswith('.html') else ("image" if f.endswith(('.jpg', '.png', '.webp')) else "video"),
                 "title": vid_info.get("title", f),
                 "original_url": vid_info.get("url", "#"),
                 "domain": vid_info.get("domain", "unknown"),

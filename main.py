@@ -1,4 +1,4 @@
-import os, secrets, json, hashlib, subprocess, threading, logging, time, asyncio, shutil, re, glob
+import os, secrets, json, hashlib, subprocess, threading, logging, time, asyncio, shutil, re
 from urllib.parse import urlparse, urljoin
 from fastapi import FastAPI, BackgroundTasks, UploadFile, File, Form, Depends, Request, Response
 from fastapi.staticfiles import StaticFiles
@@ -17,7 +17,7 @@ ch = logging.StreamHandler()
 ch.setFormatter(logging.Formatter('%(asctime)s - %(message)s', "%Y-%m-%d %H:%M:%S"))
 logger.addHandler(ch)
 
-app = FastAPI(title="upShareMedia 1.0")
+app = FastAPI(title="upShareMedia")
 
 @app.exception_handler(404)
 async def custom_404_handler(request: Request, exc):
@@ -29,14 +29,12 @@ CONFIG_DIR = os.getenv("CONFIG_DIR", "/config")
 SESSION_DAYS = int(os.getenv("SESSION_DAYS", "30"))
 YTDLP_COOKIES = os.getenv("YTDLP_COOKIES", "")
 TIKTOK_COOKIES = os.getenv("TIKTOK_COOKIES", "")
-
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 INFERENCE_TEXT_MODEL = os.getenv("INFERENCE_TEXT_MODEL", "qwen2.5:14b")
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
 
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 os.makedirs(CONFIG_DIR, exist_ok=True)
-DB_V2 = os.path.join(CONFIG_DIR, "v2_db.json")
 DB_FILE = os.path.join(CONFIG_DIR, "v3_db.json")
 COOKIE_FILE = os.path.join(CONFIG_DIR, "cookies.txt")
 TIKTOK_COOKIE_FILE = os.path.join(CONFIG_DIR, "tiktok_cookies.txt")
@@ -62,11 +60,6 @@ def is_social_media_url(url: str) -> bool:
 def load_db():
     if os.path.exists(DB_FILE):
         with open(DB_FILE, "r") as f: return json.load(f)
-    elif os.path.exists(DB_V2):
-        with open(DB_V2, "r") as f: 
-            data = json.load(f)
-            save_db(data)
-            return data
     
     initial_username = os.getenv("APP_USERNAME", "admin")
     default_db = {
@@ -121,13 +114,11 @@ def increment_view_counter(video_id: str, file_path: str):
                 if os.path.exists(file_path):
                     file_size = os.path.getsize(file_path)
                     db["server_bandwidth"] = db.get("server_bandwidth", 0) + file_size
-                    
                     owner = db["videos"][video_id].get("owner")
                     if owner and owner in db["users"]:
                         db["users"][owner]["bandwidth"] = db["users"][owner].get("bandwidth", 0) + file_size
                 save_db(db)
-    except Exception:
-        pass
+    except Exception: pass
 
 @app.middleware("http")
 async def track_video_views(request: Request, call_next):
@@ -206,8 +197,7 @@ def clean_html_with_ai(raw_html: str) -> tuple:
                 engine_str = f"📄 Gemini ({format_tokens(token_count)})" if token_count else "📄 Gemini"
                 
                 clean_result = result.replace(f'{bt}html', '').replace(bt, '').strip()
-                if len(clean_result) > 100:
-                    return clean_result, engine_str
+                if len(clean_result) > 100: return clean_result, engine_str
             else:
                 logger.error(f"Gemini API returned error code {res.status_code}: {res.text}")
         except Exception as e:
@@ -225,8 +215,7 @@ def clean_html_with_ai(raw_html: str) -> tuple:
                 engine_str = f"📄 Ollama ({format_tokens(tokens)})" if tokens else "📄 Ollama"
                 
                 clean_result = result.replace(f'{bt}html', '').replace(bt, '').strip()
-                if len(clean_result) > 100:
-                    return clean_result, engine_str
+                if len(clean_result) > 100: return clean_result, engine_str
         except Exception: pass
 
     return raw_html, "📄 Readability"
@@ -240,7 +229,6 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
         }
         r = requests.get(url, headers=headers, timeout=10)
         
-        # Intercept direct binary images to avoid decoding crashes
         if 'image' in r.headers.get('Content-Type', '').lower():
             new_id = generate_secure_id()
             ext = '.' + urlparse(url).path.split('/')[-1].split('.')[-1]
@@ -250,13 +238,10 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
             return
 
         orig_soup = BeautifulSoup(r.content, 'html.parser')
-        
         og_img = orig_soup.find('meta', property='og:image')
-        article_img_url = None
-        if og_img and isinstance(og_img, type(orig_soup.new_tag('meta'))):
-            article_img_url = og_img.get('content')
+        article_img_url = og_img.get('content') if og_img and isinstance(og_img, type(orig_soup.new_tag('meta'))) else None
 
-        # 1. MEDIA TEXT-IFICATION: Protect Embedded IFrames by converting them to plain text paragraphs
+        # 1. ISOLATE EMBEDDED MEDIA
         for iframe in list(orig_soup.find_all(['iframe', 'embed', 'video'])):
             src = iframe.get('src') or iframe.get('data-src') or ''
             if not src.startswith('http') and src.startswith('//'): src = f"https:{src}"
@@ -267,7 +252,6 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
             else:
                 iframe.decompose()
 
-        # 2. IMAGE TEXT-IFICATION: Unbind images from complex figure tags to bypass Readability deletion
         seen_srcs = set()
         for img in list(orig_soup.find_all('img')):
             src = img.get('data-src') or img.get('data-lazy-src') or img.get('src')
@@ -278,24 +262,30 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
                 img.decompose()
                 continue
             
-            # Global deduplication across page
             if src in seen_srcs:
                 img.decompose()
                 continue
             seen_srcs.add(src)
 
             cap_text = ""
-            container = img.find_parent(['figure', 'div', 'picture', 'section'], class_=re.compile(r'(caption|figure|media|photo|wp-caption)', re.I))
-            if not container: container = img.find_parent(['figure', 'picture'])
+            container = img.find_parent(['figure', 'picture'])
+            if not container:
+                container = img.find_parent(['div', 'section'], class_=re.compile(r'(caption|figure|media|photo|wp-caption)', re.I))
             
             if container and container.name != 'body':
-                caps = []
-                for cap in container.find_all(['figcaption', 'span', 'p', 'div']):
-                    cls = str(cap.get('class', ''))
-                    if cap.name == 'figcaption' or re.search(r'(caption|credit|byline)', cls, re.I):
-                        t = cap.get_text(strip=True)
-                        if t and t not in caps and len(t) < 200: caps.append(t)
-                cap_text = " — ".join(caps).replace('___', ' - ')
+                fc = container.find('figcaption')
+                if fc:
+                    cap_text = " ".join(fc.get_text(separator=' ', strip=True).split())
+                else:
+                    caps = []
+                    for cap in container.find_all(['span', 'p', 'div']):
+                        cls = str(cap.get('class', ''))
+                        if re.search(r'(caption|credit|byline)', cls, re.I):
+                            t = " ".join(cap.get_text(separator=' ', strip=True).split())
+                            if t and len(t) < 200:
+                                if not any(t in existing or existing in t for existing in caps):
+                                    caps.append(t)
+                    cap_text = " | ".join(caps)
                 target_to_replace = container
             else:
                 target_to_replace = img
@@ -304,19 +294,17 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
             marker.string = f"___UPSHARE_IMAGE___SRC:{src}___CAPTION:{cap_text}___"
             target_to_replace.replace_with(marker)
 
-        # 3. RUN READABILITY ALGORITHM
+        # 2. RUN READABILITY ALGORITHM
         doc = Document(str(orig_soup))
         title = doc.title()
         readable_html = doc.summary()
         
         soup = BeautifulSoup(readable_html, 'html.parser')
         for h1 in soup.find_all('h1'):
-            if title.lower() in h1.get_text().lower() or h1.get_text().lower() in title.lower():
-                h1.decompose()
+            if title.lower() in h1.get_text().lower() or h1.get_text().lower() in title.lower(): h1.decompose()
         for a in soup.find_all('a'):
             txt = a.get_text(strip=True)
-            if txt.isdigit() and len(txt) <= 3:
-                a.decompose()
+            if txt.isdigit() and len(txt) <= 3: a.decompose()
 
         raw_html_str = str(soup)
         if len(raw_html_str.strip()) < 100:
@@ -325,23 +313,21 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
 
         cleaned_html, engine = clean_html_with_ai(raw_html_str)
 
-        # 4. POST-PROCESSING: Transform text markers back into stunning HTML UI elements
+        # 3. DOM RECONSTRUCTION
         final_html = cleaned_html
         
         def vid_repl(match):
             src = match.group(1).strip()
             return f'<div style="position:relative; padding-bottom:56.25%; height:0; overflow:hidden; margin:30px 0; border-radius:8px; box-shadow:0 4px 12px rgba(0,0,0,0.3);"><iframe src="{src}" style="position:absolute; top:0; left:0; width:100%; height:100%; border:0;" allowfullscreen="true"></iframe></div>'
         
-        # Regex for both encapsulated and raw text markers
         final_html = re.sub(r'<p[^>]*>\s*___UPSHARE_VIDEO___SRC:(.*?)___\s*</p>', vid_repl, final_html)
         final_html = re.sub(r'___UPSHARE_VIDEO___SRC:(.*?)___', vid_repl, final_html)
 
         def img_repl(match):
-            src = match.group(1).strip()
-            src = urljoin(url, src)
+            src = urljoin(url, match.group(1).strip())
             cap = match.group(2).strip()
             fig = f'<figure style="margin: 30px 0; display: flex; flex-direction: column; align-items: center;"><img src="{src}" style="max-width:100%; height:auto; border-radius:8px; box-shadow: 0 4px 12px rgba(0,0,0,0.2);">'
-            if cap:
+            if cap and cap != 'None':
                 fig += f'<figcaption style="font-size: 0.85rem; color: #aaa; text-align: center; margin-top: 8px; font-style: italic; max-width: 90%;">{cap}</figcaption>'
             fig += '</figure>'
             return fig
@@ -349,7 +335,6 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
         final_html = re.sub(r'<p[^>]*>\s*___UPSHARE_IMAGE___SRC:(.*?)___CAPTION:(.*?)___\s*</p>', img_repl, final_html)
         final_html = re.sub(r'___UPSHARE_IMAGE___SRC:(.*?)___CAPTION:(.*?)___', img_repl, final_html)
 
-        # Final DOM cleanup for blockquotes
         ai_soup = BeautifulSoup(final_html, 'html.parser')
         bq_list = ai_soup.find_all('blockquote')
         for i in range(len(bq_list) - 1, 0, -1):
@@ -361,7 +346,6 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
                 curr_bq.decompose()
 
         final_html = str(ai_soup)
-
         new_id = generate_secure_id()
         html_path = os.path.join(DOWNLOAD_DIR, f"{new_id}.html")
         domain = urlparse(url).netloc.replace('www.', '')
@@ -398,8 +382,7 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
         if article_img_url:
             try:
                 img_data = requests.get(article_img_url, headers=headers, timeout=5).content
-                with open(os.path.join(DOWNLOAD_DIR, f"{new_id}.jpg"), "wb") as img_f:
-                    img_f.write(img_data)
+                with open(os.path.join(DOWNLOAD_DIR, f"{new_id}.jpg"), "wb") as img_f: img_f.write(img_data)
             except: pass
             
         extract_true_duration(new_id, user_id, url, title, ".html", expire_days, engine=engine)
@@ -415,69 +398,37 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
 
     cookie_path = get_cookie_file_for_url(url)
 
-    # NATIVE INSTAGRAM SCRAPER: Bypasses video-only download formats for mixed Media Carousels
     if "instagram.com" in url:
-        logger.info("Executing native Instagram extraction hook...")
-        ydl_opts = {'quiet': True, 'extract_flat': 'in_playlist'}
-        if cookie_path: ydl_opts['cookiefile'] = cookie_path
-        
-        entries = []
+        logger.info("Executing native IG JSON extractor for mixed carousels...")
         try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl_opts_ig = {'quiet': True, 'extract_flat': False}
+            if cookie_path: ydl_opts_ig['cookiefile'] = cookie_path
+            
+            with yt_dlp.YoutubeDL(ydl_opts_ig) as ydl:
                 info = ydl.extract_info(url, download=False)
-                if 'entries' in info: entries = info['entries']
-                else: entries = [info]
-        except Exception as e:
-            logger.error(f"IG yt-dlp metadata extract failed: {e}")
-
-        media_files = []
-        for idx, e in enumerate(entries):
-            if not e: continue
-            is_vid = e.get('ext') == 'mp4' or (e.get('url') and '.mp4' in e.get('url'))
-            
-            if is_vid:
-                v_url = e.get('url') or e.get('id')
-                out = os.path.join(DOWNLOAD_DIR, f"temp_yt_{task_id}_{idx}.mp4")
-                dl_opts = {'outtmpl': out, 'quiet': True}
-                if cookie_path: dl_opts['cookiefile'] = cookie_path
-                try:
-                    with yt_dlp.YoutubeDL(dl_opts) as ydl_vid:
-                        ydl_vid.download([v_url if v_url.startswith('http') else url])
-                    if os.path.exists(out): media_files.append(out)
-                except: pass
-            else:
-                img_url = e.get('url')
-                if not img_url and e.get('thumbnails'): img_url = e.get('thumbnails')[-1].get('url')
-                if img_url:
-                    out = os.path.join(DOWNLOAD_DIR, f"temp_yt_{task_id}_{idx}.jpg")
-                    try:
-                        r = requests.get(img_url, timeout=10)
-                        if r.status_code == 200:
-                            with open(out, 'wb') as f: f.write(r.content)
-                            media_files.append(out)
-                    except: pass
-        
-        # HTML Regex Fallback if API blocked
-        if not media_files:
-            headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
-            try:
-                r = requests.get(url, headers=headers, timeout=10)
-                urls = re.findall(r'"(https://[a-zA-Z0-9_.-]*scontent[^\"]+?\.jpg[^\"]*?)"', r.text)
-                unique_urls = []
-                for u in urls:
-                    cu = u.replace('\\u0026', '&').replace('\\/', '/')
-                    if cu not in unique_urls: unique_urls.append(cu)
+                entries = info.get('entries', [info])
                 
-                for idx, u in enumerate(unique_urls[:15]):
-                    out = os.path.join(DOWNLOAD_DIR, f"temp_yt_{task_id}_fb_{idx}.jpg")
-                    ir = requests.get(u, headers=headers, timeout=10)
-                    if ir.status_code == 200:
-                        with open(out, 'wb') as f: f.write(ir.content)
-                        media_files.append(out)
-            except: pass
-            
+                for idx, entry in enumerate(entries):
+                    if not entry: continue
+                    vid_url = None
+                    if entry.get('ext') in ['mp4', 'webm']: vid_url = entry.get('url')
+                    if not vid_url and entry.get('formats'):
+                        vids = [f.get('url') for f in entry['formats'] if f.get('vcodec') != 'none']
+                        if vids: vid_url = vids[-1]
+                    
+                    img_url = entry.get('url') if not vid_url else None
+                    if not img_url and entry.get('thumbnails'): img_url = entry['thumbnails'][-1].get('url')
+                    
+                    target_url = vid_url or img_url
+                    if target_url:
+                        ext = 'mp4' if vid_url else 'jpg'
+                        out_path = os.path.join(DOWNLOAD_DIR, f"temp_yt_{task_id}_{idx}.{ext}")
+                        r = requests.get(target_url, timeout=15)
+                        if r.status_code == 200:
+                            with open(out_path, 'wb') as f: f.write(r.content)
+        except Exception as e:
+            logger.error(f"IG Extraction Error: {e}")
     else:
-        # Standard Universal Video Downloader
         ydl_opts = {
             'outtmpl': f'{DOWNLOAD_DIR}/temp_yt_{task_id}_%(autonumber)03d_%(id)s.%(ext)s',
             'format': 'bestvideo[ext=mp4][vcodec^=avc]+bestaudio[ext=m4a]/best[ext=mp4]/best',
@@ -494,28 +445,24 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                 ydl.extract_info(url, download=True)
         except Exception: pass 
 
-    # --- RENDER GALLERY UI OR SINGLE MEDIA ---
     try:
         media_files = []
         for f in os.listdir(DOWNLOAD_DIR):
-            if f.startswith(f"temp_yt_{task_id}_"):
-                if f.endswith(('.mp4', '.webm', '.mkv', '.jpg', '.png', '.webp')): 
-                    if 'thumbnail' not in f and 'fb_' not in f: media_files.append(f)
-                elif 'fb_' in f: media_files.append(f)
+            if f.startswith(f"temp_yt_{task_id}_") and f.endswith(('.mp4', '.webm', '.mkv', '.jpg', '.png', '.webp')) and 'thumbnail' not in f:
+                media_files.append(f)
 
         if media_files:
             media_files.sort()
             
-            # Scenario A: Single Video Download
-            if len(media_files) == 1 and media_files[0].endswith(('.mp4', '.webm', '.mkv')):
-                f = media_files[0]
-                base = f.rsplit('.', 1)[0]
-                ext_found = f.rsplit('.', 1)[1]
+            if len(media_files) == 1:
+                mf = media_files[0]
+                base = mf.rsplit('.', 1)[0]
+                ext_found = mf.rsplit('.', 1)[1]
                 info_file = next((os.path.join(DOWNLOAD_DIR, jf) for jf in os.listdir(DOWNLOAD_DIR) if jf.startswith(f"temp_yt_{task_id}_") and jf.endswith(".info.json")), None)
                 
                 new_id = generate_secure_id()
                 new_media = os.path.join(DOWNLOAD_DIR, f"{new_id}.{ext_found}")
-                os.rename(os.path.join(DOWNLOAD_DIR, f), new_media)
+                os.rename(os.path.join(DOWNLOAD_DIR, mf), new_media)
                 
                 extracted_title = None
                 if info_file and os.path.exists(info_file):
@@ -525,12 +472,11 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                     
                 for thumb_ext in ['.jpg', '.webp', '.png']:
                     old_thumb = os.path.join(DOWNLOAD_DIR, f"{base}{thumb_ext}")
-                    if os.path.exists(old_thumb):
-                        os.rename(old_thumb, os.path.join(DOWNLOAD_DIR, f"{new_id}{thumb_ext}"))
+                    if os.path.exists(old_thumb): os.rename(old_thumb, os.path.join(DOWNLOAD_DIR, f"{new_id}{thumb_ext}"))
                         
-                extract_true_duration(new_id, user_id, url, extracted_title, f".{ext_found}", expire_days)
+                if ext_found in ['mp4', 'webm', 'mkv']: extract_true_duration(new_id, user_id, url, extracted_title, f".{ext_found}", expire_days)
+                else: extract_true_duration(new_id, user_id, url, extracted_title or "Image Component", f".{ext_found}", expire_days, engine="🖼️ Media")
 
-            # Scenario B: Gallery Web Component
             else:
                 new_id = generate_secure_id()
                 html_path = os.path.join(DOWNLOAD_DIR, f"{new_id}.html")
@@ -601,7 +547,7 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                 else:
                     shutil.copy(os.path.join(DOWNLOAD_DIR, f"{new_id}_0.{first_ext}"), os.path.join(DOWNLOAD_DIR, f"{new_id}.jpg"))
                 
-                extract_true_duration(new_id, user_id, url, "Media Gallery", ".html", expire_days, engine="🖼️ Gallery")
+                extract_true_duration(new_id, user_id, url, "Media Carousel", ".html", expire_days, engine="🖼️ Gallery")
 
         for f in os.listdir(DOWNLOAD_DIR):
             if f.startswith(f"temp_yt_{task_id}_"):
@@ -752,9 +698,10 @@ def list_videos(user: dict = Depends(verify_auth)):
     videos_data = []
     
     for f in os.listdir(DOWNLOAD_DIR):
-        if f.endswith(('.mp4', '.webm', '.mkv', '.html')) and not f.startswith('temp_'):
+        if f.endswith(('.mp4', '.webm', '.mkv', '.html', '.jpg', '.png', '.webp')) and not f.startswith('temp_'):
             base_name = f.rsplit('.', 1)[0]
-            vid_info = db["videos"].get(base_name, {})
+            vid_info = db["videos"].get(base_name)
+            if not vid_info: continue
             if user["role"] != "admin" and vid_info.get("owner") != user["username"]: continue
                 
             media_file = os.path.join(DOWNLOAD_DIR, f)
@@ -784,7 +731,9 @@ def list_videos(user: dict = Depends(verify_auth)):
                 "views": vid_info.get("views", 0),
                 "expires_at": vid_info.get("expires_at", 0)
             })
-    return {"videos": sorted(videos_data, key=lambda x: x['date'], reverse=True)}
+    
+    unique_videos = {v['id']: v for v in videos_data}.values()
+    return {"videos": sorted(list(unique_videos), key=lambda x: x['date'], reverse=True)}
 
 @app.put("/api/videos/{video_id}/title")
 def rename_video(video_id: str, new_title: str = Form(...), user: dict = Depends(verify_auth)):

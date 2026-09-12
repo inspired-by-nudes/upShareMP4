@@ -116,11 +116,15 @@ def verify_admin(user: dict = Depends(verify_auth)):
     if user["role"] != "admin": raise StarletteHTTPException(status_code=403, detail="Admin access required")
     return user
 
-def increment_view_counter(video_id: str, file_path: str):
+def increment_view_counter(video_id: str, file_path: str, filename: str):
     try:
         with db_lock:
             db = load_db()
-            if video_id in db["videos"]:
+            vid_info = db.get("videos", {}).get(video_id)
+            if vid_info:
+                # Only log a view for the primary media file, not the thumbnail image loads
+                if filename != f"{video_id}{vid_info.get('ext')}": return
+
                 db["videos"][video_id]["views"] = db["videos"][video_id].get("views", 0) + 1
                 if os.path.exists(file_path):
                     file_size = os.path.getsize(file_path)
@@ -143,7 +147,7 @@ async def track_video_views(request: Request, call_next):
             filename = os.path.basename(path)
             video_id = filename.split(".")[0]
             file_path = os.path.join(DOWNLOAD_DIR, filename)
-            asyncio.create_task(asyncio.to_thread(increment_view_counter, video_id, file_path))
+            asyncio.create_task(asyncio.to_thread(increment_view_counter, video_id, file_path, filename))
     return response
 
 app.mount("/videos", StaticFiles(directory=DOWNLOAD_DIR), name="videos")
@@ -437,6 +441,9 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
         logger.info("Executing native Instagram extraction hook...")
         ydl_opts = {'quiet': True}
         if cookie_path: ydl_opts['cookiefile'] = cookie_path
+        
+        # Instagram CDN frequently returns 403 Forbidden without a valid User-Agent
+        req_headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
 
         entries = []
         try:
@@ -470,7 +477,7 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                     if img_url:
                         thumb_out = os.path.join(DOWNLOAD_DIR, f"{base_name}.jpg")
                         try:
-                            r = requests.get(img_url, timeout=10)
+                            r = requests.get(img_url, headers=req_headers, timeout=10)
                             if r.status_code == 200:
                                 with open(thumb_out, 'wb') as f: f.write(r.content)
                         except: pass
@@ -481,15 +488,14 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                 if img_url:
                     out = os.path.join(DOWNLOAD_DIR, f"{base_name}.jpg")
                     try:
-                        r = requests.get(img_url, timeout=10)
+                        r = requests.get(img_url, headers=req_headers, timeout=10)
                         if r.status_code == 200:
                             with open(out, 'wb') as f: f.write(r.content)
                     except: pass
 
         if not any(f.startswith(f"temp_yt_{task_id}_") for f in os.listdir(DOWNLOAD_DIR)):
-            headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
             try:
-                r = requests.get(url, headers=headers, timeout=10)
+                r = requests.get(url, headers=req_headers, timeout=10)
                 urls = re.findall(r'"(https://[a-zA-Z0-9_.-]*scontent[^\"]+?\.jpg[^\"]*?)"', r.text)
                 unique_urls = []
                 for u in urls:
@@ -498,7 +504,7 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
 
                 for idx, u in enumerate(unique_urls[:15]):
                     out = os.path.join(DOWNLOAD_DIR, f"temp_yt_{task_id}_fb_{idx}.jpg")
-                    ir = requests.get(u, headers=headers, timeout=10)
+                    ir = requests.get(u, headers=req_headers, timeout=10)
                     if ir.status_code == 200:
                         with open(out, 'wb') as f: f.write(ir.content)
             except: pass
@@ -561,7 +567,7 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                         os.rename(os.path.join(DOWNLOAD_DIR, f), os.path.join(DOWNLOAD_DIR, f"{new_id}.{thumb_ext}"))
                         break 
                 
-                extract_true_duration(new_id, user_id, url, extracted_title, f".{ext_found}", expire_days)
+                extract_true_duration(new_id, user_id, url, extracted_title, f".{ext_found}", expire_days, engine="🖼️ Image" if ext_found in ['jpg', 'png', 'webp'] else None)
 
             else:
                 new_id = generate_secure_id()
@@ -690,7 +696,13 @@ def get_stats(user: dict = Depends(verify_auth)):
         if f.endswith(('.mp4', '.webm', '.mkv', '.html', '.jpg', '.png', '.webp')):
             if f.startswith('temp_'): continue
             vid_id = os.path.basename(f).split('.')[0]
-            owner = db["videos"].get(vid_id, {}).get("owner", "")
+            
+            # Prevents thumbnail files from inflating your DB disk/count statistics
+            vid_info = db.get("videos", {}).get(vid_id)
+            if not vid_info: continue
+            if f != f"{vid_id}{vid_info.get('ext')}": continue
+            
+            owner = vid_info.get("owner", "")
             if user["role"] == "admin" or owner == user["username"]:
                 total_videos += 1
                 try: total_disk += os.path.getsize(os.path.join(DOWNLOAD_DIR, f))
@@ -799,7 +811,14 @@ def list_videos(user: dict = Depends(verify_auth)):
     for f in os.listdir(DOWNLOAD_DIR):
         if f.endswith(('.mp4', '.webm', '.mkv', '.html', '.jpg', '.png', '.webp')) and not f.startswith('temp_'):
             base_name = f.rsplit('.', 1)[0]
-            vid_info = db["videos"].get(base_name, {})
+            vid_info = db["videos"].get(base_name)
+            
+            if not vid_info: continue
+            
+            # CRITICAL FIX: Stops generated thumbnails (vid_xyz.jpg) from rendering as their own standalone media card.
+            if f != f"{base_name}{vid_info.get('ext')}": 
+                continue
+
             if user["role"] != "admin" and vid_info.get("owner") != user["username"]: continue
 
             media_file = os.path.join(DOWNLOAD_DIR, f)

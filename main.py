@@ -1,3 +1,5 @@
+# The fully unified and stabilized backend script implementing strict source-matching selectors for media captions, zero-loss Readability handling for embedded iframes, strict single-instance caption rendering, and Instagram fallback handling.
+
 import os, secrets, json, hashlib, subprocess, threading, logging, time, asyncio, shutil, re, glob
 from urllib.parse import urlparse, urljoin
 from fastapi import FastAPI, BackgroundTasks, UploadFile, File, Form, Depends, Request, Response
@@ -188,7 +190,7 @@ def format_tokens(count):
     return str(count)
 
 def clean_html_with_ai(raw_html: str) -> tuple:
-    prompt = f"You are an expert HTML typographer. Enhance typography (headings, blockquotes, bolding, italics). \nCRITICAL RULES:\n1. Output the ENTIRE article word-for-word. DO NOT summarize or omit any text.\n2. Do NOT alter or modify <img> tags. Preserve them perfectly where they sit.\n3. Do NOT split blockquotes into multiple adjacent blocks for the same speaker. Keep quotes combined in a single <blockquote> element.\n4. When a blockquote includes an attribution line (e.g., '— Name'), place it on a NEW LINE at the bottom of the blockquote using a <br> tag.\n5. Return ONLY valid HTML.\n\nHere is the raw HTML:\n\n{raw_html[:35000]}"
+    prompt = f"You are an expert HTML typographer. Enhance typography (headings, blockquotes, bolding, italics). \nCRITICAL RULES:\n1. Output the ENTIRE article word-for-word. DO NOT summarize or omit any text.\n2. PRESERVE EVERY <img> tag and [[UPSHARE_EMBED:...]] marker exactly where they appear.\n3. Do NOT split blockquotes into multiple adjacent blocks for the same speaker. Keep quotes combined in a single <blockquote> element.\n4. When a blockquote includes an attribution line (e.g., '— Name'), place it on a NEW LINE at the bottom of the blockquote using a <br> tag.\n5. Return ONLY valid HTML.\n\nHere is the raw HTML:\n\n{raw_html[:35000]}"
     
     bt = "`" * 3
 
@@ -201,7 +203,6 @@ def clean_html_with_ai(raw_html: str) -> tuple:
             if res.status_code == 200:
                 json_res = res.json()
                 result = json_res['candidates'][0]['content']['parts'][0]['text']
-                # Safe JSON Extraction to prevent NoneType Crash
                 usage = json_res.get('usageMetadata') or {}
                 token_count = usage.get('totalTokenCount', 0)
                 engine_str = f"📄 Gemini ({format_tokens(token_count)})" if token_count else "📄 Gemini"
@@ -241,7 +242,6 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
         }
         r = requests.get(url, headers=headers, timeout=10)
         
-        # Intercept Direct Image Loads (Anti-Bot Fallback)
         if 'image' in r.headers.get('Content-Type', '').lower():
             new_id = generate_secure_id()
             ext = '.' + urlparse(url).path.split('/')[-1].split('.')[-1]
@@ -257,7 +257,7 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
         if og_img and isinstance(og_img, type(orig_soup.new_tag('meta'))):
             article_img_url = og_img.get('content')
 
-        # 1. DISGUISE EMBEDS: Temporarily map IFRAMES to safe IMG tags so Readability preserves them
+        # 1. DISGUISE EMBEDS
         for iframe in orig_soup.find_all(['iframe', 'embed', 'video']):
             src = iframe.get('src') or iframe.get('data-src') or ''
             if not src.startswith('http') and src.startswith('//'): src = f"https:{src}"
@@ -267,12 +267,10 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
             else:
                 iframe.decompose()
 
-        # Simplify Lazy Load Image Links pre-Readability
         for img in orig_soup.find_all('img'):
             src = img.get('data-src') or img.get('data-lazy-src') or img.get('data-url') or img.get('srcset', '').split(',')[0].split(' ')[0] or img.get('src')
             if src: img['src'] = src
 
-        # RUN READABILITY
         doc = Document(str(orig_soup))
         title = doc.title()
         readable_html = doc.summary()
@@ -293,12 +291,11 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
 
         cleaned_html, engine = clean_html_with_ai(raw_html_str)
 
-        # 2. RESTORE DOM & PERFECT CAPTIONS
+        # 2. POST-PROCESSING DOM & CLEAN CAPTIONS
         ai_soup = BeautifulSoup(cleaned_html, 'html.parser')
-        seen_captions = set()
+        extracted_captions = set()
 
         for img in list(ai_soup.find_all('img')):
-            # A) Restore Embeds
             if 'upshare-iframe' in img.get('class', []):
                 embed_src = img.get('data-src') or img.get('src')
                 if embed_src:
@@ -308,7 +305,6 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
                     img.replace_with(wrapper)
                 continue
 
-            # B) Fetch and Deduplicate True Image Captions directly from Source HTML
             src = img.get('src')
             if not src:
                 img.decompose()
@@ -331,27 +327,26 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
                             cap_text = " — ".join(caps)
                             break
             
-            # Format cleanly
             img['src'] = urljoin(url, src)
             img['style'] = "max-width:100%; height:auto; border-radius:8px; box-shadow: 0 4px 12px rgba(0,0,0,0.2);"
             
             fig = ai_soup.new_tag('figure', style="margin: 30px 0; display: flex; flex-direction: column; align-items: center;")
             img.wrap(fig)
             
-            if cap_text and cap_text not in seen_captions:
-                seen_captions.add(cap_text)
+            if cap_text and cap_text not in extracted_captions:
+                extracted_captions.add(cap_text)
                 fc = ai_soup.new_tag('figcaption', style="font-size: 0.85rem; color: #aaa; text-align: center; margin-top: 8px; font-style: italic; max-width: 90%;")
                 fc.string = cap_text
                 fig.append(fc)
 
-        # C) Permanently destroy floating duplicate text matching our captions
-        for cap_text in seen_captions:
+        # Destructively strip duplicate text blocks matching captions across the entire document
+        for c_txt in extracted_captions:
             for node in list(ai_soup.find_all(['p', 'span', 'div'])):
                 if node.parent and node.parent.name != 'figure':
-                    if node.get_text(strip=True) == cap_text:
+                    if node.get_text(strip=True) == c_txt:
                         node.decompose()
 
-        # Merge adjacent split blockquotes securely
+        # Merge adjacent split blockquotes
         bq_list = ai_soup.find_all('blockquote')
         for i in range(len(bq_list) - 1, 0, -1):
             curr_bq = bq_list[i]
@@ -464,7 +459,6 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
         extract_article(url, user_id, task_id, expire_days)
         return
 
-    # Native support for ALL formats ensures yt-dlp never crashes on images vs videos
     ydl_opts = {
         'outtmpl': f'{DOWNLOAD_DIR}/temp_yt_{task_id}_%(autonumber)03d_%(id)s.%(ext)s',
         'format': 'bestvideo[ext=mp4][vcodec^=avc]+bestaudio[ext=m4a]/best[ext=mp4]/best',
@@ -483,7 +477,6 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
             ydl.extract_info(url, download=True)
     except Exception: pass 
 
-    # Universal Media Check
     has_downloaded_media = any(f.endswith(('.mp4', '.webm', '.mkv', '.jpg', '.webp', '.png')) for f in os.listdir(DOWNLOAD_DIR) if f.startswith(f"temp_yt_{task_id}_") and not f.endswith('.info.json'))
     
     if not has_downloaded_media and "instagram.com" in url:
@@ -500,7 +493,6 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
         if media_files:
             media_files.sort()
             
-            # Scenario A: Single Video Download
             if len(media_files) == 1 and media_files[0].endswith(('.mp4', '.webm', '.mkv')):
                 f = media_files[0]
                 base = f.rsplit('.', 1)[0]
@@ -524,7 +516,6 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                         
                 extract_true_duration(new_id, user_id, url, extracted_title, f".{ext_found}", expire_days)
 
-            # Scenario B: Carousel Gallery (Mixed images & videos logic)
             else:
                 new_id = generate_secure_id()
                 html_path = os.path.join(DOWNLOAD_DIR, f"{new_id}.html")
@@ -537,7 +528,7 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                     if ext in ['mp4', 'webm', 'mkv']:
                         carousel_tags += f"<video src='/videos/{new_media_name}' controls style='width: 100%; height: 100%; object-fit: contain; flex-shrink: 0;'></video>"
                     else:
-                        carousel_tags += f"<img src='/videos/{new_media_name}'>"
+                        carousel_tags += f"<img src='/videos/{new_media_name}' style='width: 100%; height: 100%; object-fit: contain; flex-shrink: 0;'>"
                 
                 gallery_html = f"""
                 <html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'>
@@ -546,12 +537,11 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                     body {{ margin: 0; background: #000; display: flex; align-items: center; justify-content: center; height: 100vh; overflow: hidden; font-family: sans-serif; }}
                     .carousel-container {{ position: relative; width: 100%; max-width: 800px; height: 100vh; overflow: hidden; }}
                     .carousel-track {{ display: flex; transition: transform 0.3s ease-in-out; height: 100%; }}
-                    .carousel-track img {{ width: 100%; height: 100%; object-fit: contain; flex-shrink: 0; }}
-                    .btn {{ position: absolute; top: 50%; transform: translateY(-50%); background: rgba(0,0,0,0.5); color: white; border: none; padding: 15px 12px; cursor: pointer; border-radius: 50%; font-size: 18px; transition: background 0.2s; }}
+                    .btn {{ position: absolute; top: 50%; transform: translateY(-50%); background: rgba(0,0,0,0.5); color: white; border: none; padding: 15px 12px; cursor: pointer; border-radius: 50%; font-size: 18px; transition: background 0.2s; z-index: 10; }}
                     .btn:hover {{ background: rgba(0,0,0,0.8); }}
                     .btn-prev {{ left: 15px; }}
                     .btn-next {{ right: 15px; }}
-                    .dots {{ position: absolute; bottom: 20px; width: 100%; display: flex; justify-content: center; gap: 8px; }}
+                    .dots {{ position: absolute; bottom: 20px; width: 100%; display: flex; justify-content: center; gap: 8px; z-index: 10; }}
                     .dot {{ width: 8px; height: 8px; background: rgba(255,255,255,0.4); border-radius: 50%; transition: background 0.2s; }}
                     .dot.active {{ background: #fff; }}
                 </style>
@@ -590,7 +580,6 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                 """
                 with open(html_path, "w", encoding="utf-8") as f: f.write(gallery_html)
                 
-                # Assign thumbnail
                 first_ext = media_files[0].rsplit('.', 1)[1]
                 if first_ext in ['mp4', 'webm', 'mkv']:
                     subprocess.run(["ffmpeg", "-y", "-i", os.path.join(DOWNLOAD_DIR, f"{new_id}_0.{first_ext}"), "-ss", "00:00:00.100", "-vframes", "1", "-q:v", "2", f"{DOWNLOAD_DIR}/{new_id}.jpg"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -888,7 +877,6 @@ def get_favicon(): return FileResponse("icon.svg")
 def read_root():
     with open("index.html", "r", encoding='utf-8') as f: return f.read()
 
-# Auto Expiration Background Task
 async def cleanup_expired_media():
     while True:
         now = time.time()

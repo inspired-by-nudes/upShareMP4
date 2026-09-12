@@ -1,5 +1,5 @@
-import os, secrets, json, hashlib, subprocess, threading, logging, time, asyncio, shutil, re, glob
-from urllib.parse import urlparse, urljoin
+import os, secrets, json, hashlib, subprocess, threading, logging, time, asyncio, shutil, re, html
+from urllib.parse import urlparse, urljoin, quote
 from fastapi import FastAPI, BackgroundTasks, UploadFile, File, Form, Depends, Request, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, FileResponse, RedirectResponse
@@ -36,8 +36,9 @@ OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
 
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 os.makedirs(CONFIG_DIR, exist_ok=True)
-DB_V2 = os.path.join(CONFIG_DIR, "v2_db.json")
-DB_FILE = os.path.join(CONFIG_DIR, "v3_db.json")
+DB_OLD_V2 = os.path.join(CONFIG_DIR, "v2_db.json")
+DB_OLD_V3 = os.path.join(CONFIG_DIR, "v3_db.json")
+DB_FILE = os.path.join(CONFIG_DIR, "upsharemedia.json")
 COOKIE_FILE = os.path.join(CONFIG_DIR, "cookies.txt")
 TIKTOK_COOKIE_FILE = os.path.join(CONFIG_DIR, "tiktok_cookies.txt")
 
@@ -62,12 +63,17 @@ def is_social_media_url(url: str) -> bool:
 def load_db():
     if os.path.exists(DB_FILE):
         with open(DB_FILE, "r") as f: return json.load(f)
-    elif os.path.exists(DB_V2):
-        with open(DB_V2, "r") as f: 
-            data = json.load(f)
-            save_db(data)
-            return data
     
+    # Auto-migrate legacy DBs to branded naming convention
+    for legacy_db in [DB_OLD_V3, DB_OLD_V2]:
+        if os.path.exists(legacy_db):
+            with open(legacy_db, "r") as f:
+                data = json.load(f)
+            save_db(data)
+            try: os.remove(legacy_db)
+            except: pass
+            return data
+
     initial_username = os.getenv("APP_USERNAME", "admin")
     default_db = {
         "users": {
@@ -96,7 +102,7 @@ def save_db(data):
 def verify_auth(request: Request):
     token = request.cookies.get("upshare_session")
     auth_header = request.headers.get("Authorization")
-    
+
     with db_lock:
         db = load_db()
         users = db.get("users", {})
@@ -121,7 +127,7 @@ def increment_view_counter(video_id: str, file_path: str):
                 if os.path.exists(file_path):
                     file_size = os.path.getsize(file_path)
                     db["server_bandwidth"] = db.get("server_bandwidth", 0) + file_size
-                    
+
                     owner = db["videos"][video_id].get("owner")
                     if owner and owner in db["users"]:
                         db["users"][owner]["bandwidth"] = db["users"][owner].get("bandwidth", 0) + file_size
@@ -154,11 +160,11 @@ def extract_true_duration(video_id: str, user_id: str, url: str = "#", custom_ti
             res = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", file_path], capture_output=True, text=True)
             duration = float(res.stdout.strip())
         except: pass
-        
+
     title = custom_title if custom_title else f"{video_id}{ext}"
     title = title[:100]
     expires_at = time.time() + (expire_days * 86400) if expire_days > 0 else 0
-    
+
     with db_lock:
         db = load_db()
         db["videos"][video_id] = {
@@ -189,7 +195,7 @@ def format_tokens(count):
 
 def clean_html_with_ai(raw_html: str) -> tuple:
     prompt = f"You are an expert HTML typographer. Enhance typography (headings, blockquotes, bolding, italics). \nCRITICAL RULES:\n1. Output the ENTIRE article word-for-word. DO NOT summarize or omit any text.\n2. Do NOT split blockquotes into multiple adjacent blocks for the same speaker. Keep quotes combined in a single <blockquote> element.\n3. When a blockquote includes an attribution line (e.g., '— Name'), place it on a NEW LINE at the bottom of the blockquote using a <br> tag.\n4. CRITICAL: You will see text markers like ___UPSHARE_IMAGE___SRC:url___CAPTION:text___ and ___UPSHARE_VIDEO___SRC:url___. You MUST preserve these markers exactly word-for-word. Do not alter, translate, or remove them.\n5. Return ONLY valid HTML.\n\nHere is the raw HTML:\n\n{raw_html[:35000]}"
-    
+
     bt = "`" * 3
 
     if GEMINI_API_KEY:
@@ -204,7 +210,7 @@ def clean_html_with_ai(raw_html: str) -> tuple:
                 usage = json_res.get('usageMetadata') or {}
                 token_count = usage.get('totalTokenCount', 0)
                 engine_str = f"📄 Gemini ({format_tokens(token_count)})" if token_count else "📄 Gemini"
-                
+
                 clean_result = result.replace(f'{bt}html', '').replace(bt, '').strip()
                 if len(clean_result) > 100:
                     return clean_result, engine_str
@@ -223,7 +229,7 @@ def clean_html_with_ai(raw_html: str) -> tuple:
                 result = json_res.get('response', raw_html)
                 tokens = json_res.get('prompt_eval_count', 0) + json_res.get('eval_count', 0)
                 engine_str = f"📄 Ollama ({format_tokens(tokens)})" if tokens else "📄 Ollama"
-                
+
                 clean_result = result.replace(f'{bt}html', '').replace(bt, '').strip()
                 if len(clean_result) > 100:
                     return clean_result, engine_str
@@ -239,8 +245,7 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8'
         }
         r = requests.get(url, headers=headers, timeout=10)
-        
-        # Intercept direct binary images to avoid decoding crashes
+
         if 'image' in r.headers.get('Content-Type', '').lower():
             new_id = generate_secure_id()
             ext = '.' + urlparse(url).path.split('/')[-1].split('.')[-1]
@@ -250,13 +255,12 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
             return
 
         orig_soup = BeautifulSoup(r.content, 'html.parser')
-        
+
         og_img = orig_soup.find('meta', property='og:image')
         article_img_url = None
         if og_img and isinstance(og_img, type(orig_soup.new_tag('meta'))):
             article_img_url = og_img.get('content')
 
-        # 1. MEDIA TEXT-IFICATION: Protect Embedded IFrames by converting them to plain text paragraphs
         for iframe in list(orig_soup.find_all(['iframe', 'embed', 'video'])):
             src = iframe.get('src') or iframe.get('data-src') or ''
             if not src.startswith('http') and src.startswith('//'): src = f"https:{src}"
@@ -267,7 +271,6 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
             else:
                 iframe.decompose()
 
-        # 2. IMAGE TEXT-IFICATION: Unbind images from complex figure tags to bypass Readability deletion
         seen_srcs = set()
         for img in list(orig_soup.find_all('img')):
             src = img.get('data-src') or img.get('data-lazy-src') or img.get('src')
@@ -277,8 +280,7 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
             if not src or src.startswith('data:'):
                 img.decompose()
                 continue
-            
-            # Global deduplication across page
+
             if src in seen_srcs:
                 img.decompose()
                 continue
@@ -287,14 +289,16 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
             cap_text = ""
             container = img.find_parent(['figure', 'div', 'picture', 'section'], class_=re.compile(r'(caption|figure|media|photo|wp-caption)', re.I))
             if not container: container = img.find_parent(['figure', 'picture'])
-            
+
             if container and container.name != 'body':
                 caps = []
                 for cap in container.find_all(['figcaption', 'span', 'p', 'div']):
                     cls = str(cap.get('class', ''))
                     if cap.name == 'figcaption' or re.search(r'(caption|credit|byline)', cls, re.I):
                         t = cap.get_text(strip=True)
-                        if t and t not in caps and len(t) < 200: caps.append(t)
+                        if t and len(t) < 200:
+                            if not any(t in existing or existing in t for existing in caps):
+                                caps.append(t)
                 cap_text = " — ".join(caps).replace('___', ' - ')
                 target_to_replace = container
             else:
@@ -304,11 +308,10 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
             marker.string = f"___UPSHARE_IMAGE___SRC:{src}___CAPTION:{cap_text}___"
             target_to_replace.replace_with(marker)
 
-        # 3. RUN READABILITY ALGORITHM
         doc = Document(str(orig_soup))
         title = doc.title()
         readable_html = doc.summary()
-        
+
         soup = BeautifulSoup(readable_html, 'html.parser')
         for h1 in soup.find_all('h1'):
             if title.lower() in h1.get_text().lower() or h1.get_text().lower() in title.lower():
@@ -325,14 +328,12 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
 
         cleaned_html, engine = clean_html_with_ai(raw_html_str)
 
-        # 4. POST-PROCESSING: Transform text markers back into stunning HTML UI elements
         final_html = cleaned_html
-        
+
         def vid_repl(match):
             src = match.group(1).strip()
             return f'<div style="position:relative; padding-bottom:56.25%; height:0; overflow:hidden; margin:30px 0; border-radius:8px; box-shadow:0 4px 12px rgba(0,0,0,0.3);"><iframe src="{src}" style="position:absolute; top:0; left:0; width:100%; height:100%; border:0;" allowfullscreen="true"></iframe></div>'
-        
-        # Regex for both encapsulated and raw text markers
+
         final_html = re.sub(r'<p[^>]*>\s*___UPSHARE_VIDEO___SRC:(.*?)___\s*</p>', vid_repl, final_html)
         final_html = re.sub(r'___UPSHARE_VIDEO___SRC:(.*?)___', vid_repl, final_html)
 
@@ -345,11 +346,10 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
                 fig += f'<figcaption style="font-size: 0.85rem; color: #aaa; text-align: center; margin-top: 8px; font-style: italic; max-width: 90%;">{cap}</figcaption>'
             fig += '</figure>'
             return fig
-            
+
         final_html = re.sub(r'<p[^>]*>\s*___UPSHARE_IMAGE___SRC:(.*?)___CAPTION:(.*?)___\s*</p>', img_repl, final_html)
         final_html = re.sub(r'___UPSHARE_IMAGE___SRC:(.*?)___CAPTION:(.*?)___', img_repl, final_html)
 
-        # Final DOM cleanup for blockquotes
         ai_soup = BeautifulSoup(final_html, 'html.parser')
         bq_list = ai_soup.find_all('blockquote')
         for i in range(len(bq_list) - 1, 0, -1):
@@ -365,7 +365,7 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
         new_id = generate_secure_id()
         html_path = os.path.join(DOWNLOAD_DIR, f"{new_id}.html")
         domain = urlparse(url).netloc.replace('www.', '')
-        
+
         logo_html = f"""
         <div style="display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; margin-bottom: 30px; padding: 20px; background: #1e1e1e; border-radius: 8px;">
             <a href="{url}" target="_blank" style="display: flex; align-items: center; justify-content: center;">
@@ -374,10 +374,11 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
             <a href="{url}" target="_blank" style="color: #ff8c00; text-decoration: none; font-size: 0.9rem; font-weight: bold; text-align: center;">View Original Article on {domain}</a>
         </div>
         """
-        
+
+        safe_title = html.escape(title)
         clean_page = f"""
         <html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'>
-        <title>{title}</title>
+        <title>{safe_title}</title>
         <style>
             body{{font-family: system-ui, sans-serif; line-height: 1.7; max-width: 800px; margin: 0 auto; padding: 20px; background:#121212; color:#e0e0e0;}} 
             h2, h3 {{color:#ff8c00; margin-top: 40px;}}
@@ -389,19 +390,19 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
         </style>
         </head><body>
             {logo_html}
-            <h1>{title}</h1>
+            <h1>{safe_title}</h1>
             <div>{final_html}</div>
         </body></html>
         """
         with open(html_path, "w", encoding="utf-8") as f: f.write(clean_page)
-        
+
         if article_img_url:
             try:
                 img_data = requests.get(article_img_url, headers=headers, timeout=5).content
                 with open(os.path.join(DOWNLOAD_DIR, f"{new_id}.jpg"), "wb") as img_f:
                     img_f.write(img_data)
             except: pass
-            
+
         extract_true_duration(new_id, user_id, url, title, ".html", expire_days, engine=engine)
     except Exception as e:
         logger.error(f"Article parse failed: {e}")
@@ -415,12 +416,11 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
 
     cookie_path = get_cookie_file_for_url(url)
 
-    # NATIVE INSTAGRAM SCRAPER: Bypasses video-only download formats for mixed Media Carousels
     if "instagram.com" in url:
         logger.info("Executing native Instagram extraction hook...")
         ydl_opts = {'quiet': True, 'extract_flat': 'in_playlist'}
         if cookie_path: ydl_opts['cookiefile'] = cookie_path
-        
+
         entries = []
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -434,7 +434,7 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
         for idx, e in enumerate(entries):
             if not e: continue
             is_vid = e.get('ext') == 'mp4' or (e.get('url') and '.mp4' in e.get('url'))
-            
+
             if is_vid:
                 v_url = e.get('url') or e.get('id')
                 out = os.path.join(DOWNLOAD_DIR, f"temp_yt_{task_id}_{idx}.mp4")
@@ -456,8 +456,7 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                             with open(out, 'wb') as f: f.write(r.content)
                             media_files.append(out)
                     except: pass
-        
-        # HTML Regex Fallback if API blocked
+
         if not media_files:
             headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
             try:
@@ -467,7 +466,7 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                 for u in urls:
                     cu = u.replace('\\u0026', '&').replace('\\/', '/')
                     if cu not in unique_urls: unique_urls.append(cu)
-                
+
                 for idx, u in enumerate(unique_urls[:15]):
                     out = os.path.join(DOWNLOAD_DIR, f"temp_yt_{task_id}_fb_{idx}.jpg")
                     ir = requests.get(u, headers=headers, timeout=10)
@@ -475,9 +474,8 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                         with open(out, 'wb') as f: f.write(ir.content)
                         media_files.append(out)
             except: pass
-            
+
     else:
-        # Standard Universal Video Downloader
         ydl_opts = {
             'outtmpl': f'{DOWNLOAD_DIR}/temp_yt_{task_id}_%(autonumber)03d_%(id)s.%(ext)s',
             'format': 'bestvideo[ext=mp4][vcodec^=avc]+bestaudio[ext=m4a]/best[ext=mp4]/best',
@@ -494,7 +492,6 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                 ydl.extract_info(url, download=True)
         except Exception: pass 
 
-    # --- RENDER GALLERY UI OR SINGLE MEDIA ---
     try:
         media_files = []
         for f in os.listdir(DOWNLOAD_DIR):
@@ -505,36 +502,34 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
 
         if media_files:
             media_files.sort()
-            
-            # Scenario A: Single Video Download
+
             if len(media_files) == 1 and media_files[0].endswith(('.mp4', '.webm', '.mkv')):
                 f = media_files[0]
                 base = f.rsplit('.', 1)[0]
                 ext_found = f.rsplit('.', 1)[1]
                 info_file = next((os.path.join(DOWNLOAD_DIR, jf) for jf in os.listdir(DOWNLOAD_DIR) if jf.startswith(f"temp_yt_{task_id}_") and jf.endswith(".info.json")), None)
-                
+
                 new_id = generate_secure_id()
                 new_media = os.path.join(DOWNLOAD_DIR, f"{new_id}.{ext_found}")
                 os.rename(os.path.join(DOWNLOAD_DIR, f), new_media)
-                
+
                 extracted_title = None
                 if info_file and os.path.exists(info_file):
                     try:
                         with open(info_file, 'r', encoding='utf-8') as inf_f: extracted_title = json.load(inf_f).get('title')
                     except: pass
-                    
+
                 for thumb_ext in ['.jpg', '.webp', '.png']:
                     old_thumb = os.path.join(DOWNLOAD_DIR, f"{base}{thumb_ext}")
                     if os.path.exists(old_thumb):
                         os.rename(old_thumb, os.path.join(DOWNLOAD_DIR, f"{new_id}{thumb_ext}"))
-                        
+
                 extract_true_duration(new_id, user_id, url, extracted_title, f".{ext_found}", expire_days)
 
-            # Scenario B: Gallery Web Component
             else:
                 new_id = generate_secure_id()
                 html_path = os.path.join(DOWNLOAD_DIR, f"{new_id}.html")
-                
+
                 carousel_tags = ""
                 for idx, mf in enumerate(media_files):
                     ext = mf.rsplit('.', 1)[1]
@@ -544,7 +539,7 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                         carousel_tags += f"<video src='/videos/{new_media_name}' controls style='width: 100%; height: 100%; object-fit: contain; flex-shrink: 0;'></video>"
                     else:
                         carousel_tags += f"<img src='/videos/{new_media_name}' style='width: 100%; height: 100%; object-fit: contain; flex-shrink: 0;'>"
-                
+
                 gallery_html = f"""
                 <html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'>
                 <title>Media Carousel</title>
@@ -594,20 +589,20 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                 </body></html>
                 """
                 with open(html_path, "w", encoding="utf-8") as f: f.write(gallery_html)
-                
+
                 first_ext = media_files[0].rsplit('.', 1)[1]
                 if first_ext in ['mp4', 'webm', 'mkv']:
                     subprocess.run(["ffmpeg", "-y", "-i", os.path.join(DOWNLOAD_DIR, f"{new_id}_0.{first_ext}"), "-ss", "00:00:00.100", "-vframes", "1", "-q:v", "2", f"{DOWNLOAD_DIR}/{new_id}.jpg"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 else:
                     shutil.copy(os.path.join(DOWNLOAD_DIR, f"{new_id}_0.{first_ext}"), os.path.join(DOWNLOAD_DIR, f"{new_id}.jpg"))
-                
+
                 extract_true_duration(new_id, user_id, url, "Media Gallery", ".html", expire_days, engine="🖼️ Gallery")
 
         for f in os.listdir(DOWNLOAD_DIR):
             if f.startswith(f"temp_yt_{task_id}_"):
                 try: os.remove(os.path.join(DOWNLOAD_DIR, f))
                 except: pass
-                
+
     finally:
         if task_id in active_downloads: del active_downloads[task_id]
 
@@ -630,9 +625,9 @@ def login(response: Response, username: str = Form(...), password: str = Form(..
     with db_lock:
         db = load_db()
         user_data = db.get("users", {}).get(username)
-        
+
     if user_data and user_data["password"] == hashlib.sha256(password.encode()).hexdigest():
-        response.set_cookie(key="upshare_session", value=user_data["token"], max_age=SESSION_DAYS * 86400, httponly=True)
+        response.set_cookie(key="upshare_session", value=user_data["token"], max_age=SESSION_DAYS * 86400, httponly=True, secure=True, samesite="lax")
         return {"status": "success", "token": user_data["token"]}
     raise StarletteHTTPException(status_code=401, detail="Invalid credentials")
 
@@ -645,7 +640,7 @@ def logout(response: Response):
 def get_stats(user: dict = Depends(verify_auth)):
     with db_lock: db = load_db()
     total_videos, total_disk = 0, 0
-    
+
     for f in os.listdir(DOWNLOAD_DIR):
         if f.endswith(('.mp4', '.webm', '.mkv', '.html')):
             if f.startswith('temp_'): continue
@@ -655,9 +650,9 @@ def get_stats(user: dict = Depends(verify_auth)):
                 total_videos += 1
                 try: total_disk += os.path.getsize(os.path.join(DOWNLOAD_DIR, f))
                 except FileNotFoundError: pass
-                
+
     user_bandwidth = db.get("users", {}).get(user["username"], {}).get("bandwidth", 0)
-                
+
     return {
         "role": user["role"],
         "used_disk": total_disk,
@@ -681,7 +676,7 @@ async def form_download(background_tasks: BackgroundTasks, url: str = Form(...),
                 size_mb = (info.get("filesize") or info.get("filesize_approx") or 0) / (1024 * 1024)
                 if warning_mb > 0 and size_mb > warning_mb: return {"status": "needs_confirmation", "size_mb": round(size_mb, 1)}
         except Exception: pass 
-            
+
     task_id = generate_secure_id()
     active_downloads[task_id] = "Starting up..."
     background_tasks.add_task(process_yt_dlp, url, user["username"], task_id, expire_days)
@@ -692,7 +687,7 @@ async def upload_video(background_tasks: BackgroundTasks, file: UploadFile = Fil
     video_id, task_id = generate_secure_id(), generate_secure_id()
     temp_path = os.path.join(DOWNLOAD_DIR, f"temp_{video_id}_{file.filename}")
     final_path = os.path.join(DOWNLOAD_DIR, f"{video_id}.mp4")
-    
+
     active_downloads[task_id] = "Uploading..."
     with open(temp_path, "wb") as buffer: buffer.write(await file.read())
     background_tasks.add_task(convert_local_file, temp_path, final_path, video_id, user["username"], task_id, file.filename, expire_days)
@@ -700,13 +695,18 @@ async def upload_video(background_tasks: BackgroundTasks, file: UploadFile = Fil
 
 @app.post("/api/edit/{video_id}")
 async def edit_video(video_id: str, background_tasks: BackgroundTasks, start: str = Form(...), end: str = Form(...), mode: str = Form(...), user: dict = Depends(verify_auth)):
+    if not re.match(r'^[\d\.:]+$', start) or not re.match(r'^[\d\.:]+$', end):
+        raise StarletteHTTPException(status_code=400, detail="Invalid timestamps")
+    if mode not in ["copy", "overwrite"]:
+        raise StarletteHTTPException(status_code=400, detail="Invalid mode")
+
     safe_id = os.path.basename(video_id)
     with db_lock:
         db = load_db()
         vid = db["videos"].get(safe_id)
         if not vid or (user["role"] != "admin" and vid["owner"] != user["username"]):
             raise StarletteHTTPException(status_code=403, detail="Forbidden")
-    
+
     ext = vid.get("ext", ".mp4")
     input_path = os.path.join(DOWNLOAD_DIR, f"{safe_id}{ext}")
     if not os.path.exists(input_path): raise StarletteHTTPException(status_code=404, detail="Not found")
@@ -737,26 +737,26 @@ def force_download(video_id: str):
     with db_lock:
         db = load_db()
         vid_info = db["videos"].get(safe_id, {})
-    
+
     ext = vid_info.get("ext", ".mp4")
     target_file = os.path.join(DOWNLOAD_DIR, f"{safe_id}{ext}")
     if not os.path.exists(target_file): raise StarletteHTTPException(status_code=404, detail="File not found")
-    
+
     filename = f"{vid_info.get('title', safe_id)}{ext}"
-    filename = filename.replace('"', '').replace(',', '')
-    return FileResponse(target_file, headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+    encoded_filename = quote(filename)
+    return FileResponse(target_file, headers={"Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}"})
 
 @app.get("/api/videos")
 def list_videos(user: dict = Depends(verify_auth)):
     with db_lock: db = load_db()
     videos_data = []
-    
+
     for f in os.listdir(DOWNLOAD_DIR):
         if f.endswith(('.mp4', '.webm', '.mkv', '.html')) and not f.startswith('temp_'):
             base_name = f.rsplit('.', 1)[0]
             vid_info = db["videos"].get(base_name, {})
             if user["role"] != "admin" and vid_info.get("owner") != user["username"]: continue
-                
+
             media_file = os.path.join(DOWNLOAD_DIR, f)
             try:
                 added_timestamp = vid_info.get("added", os.path.getmtime(media_file))
@@ -767,7 +767,7 @@ def list_videos(user: dict = Depends(verify_auth)):
             thumb = next((f"{base_name}{e}" for e in ['.jpg', '.webp', '.png'] if os.path.exists(os.path.join(DOWNLOAD_DIR, f"{base_name}{e}"))), None)
             mins, secs = divmod(int(vid_info.get("duration", 0)), 60)
             date_str = time.strftime("%b %d", time.localtime(added_timestamp))
-            
+
             videos_data.append({
                 "id": base_name,
                 "filename": f,
@@ -790,7 +790,7 @@ def list_videos(user: dict = Depends(verify_auth)):
 def rename_video(video_id: str, new_title: str = Form(...), user: dict = Depends(verify_auth)):
     safe_id = os.path.basename(video_id)
     new_title = new_title.strip()[:100] 
-    
+
     with db_lock:
         db = load_db()
         owner = db["videos"].get(safe_id, {}).get("owner", "")

@@ -188,7 +188,7 @@ def format_tokens(count):
     return str(count)
 
 def clean_html_with_ai(raw_html: str) -> tuple:
-    prompt = f"You are an expert HTML typographer. Enhance typography (headings, blockquotes, bolding, italics). \nCRITICAL RULES:\n1. Output the ENTIRE article word-for-word. DO NOT summarize or omit any text.\n2. Format images: Wrap every <img> and its adjacent caption text (if any) into a proper <figure> and <figcaption> structure. DEDUPLICATE caption text if the exact same caption appears twice sequentially.\n3. Do NOT split blockquotes into multiple adjacent blocks for the same speaker. Keep quotes combined in a single <blockquote> element.\n4. When a blockquote includes an attribution line (e.g., '— Name'), place it on a NEW LINE at the bottom of the blockquote using a <br> tag.\n5. Preserve [[UPSHARE_EMBED:...]] markers exactly as they are.\n6. Return ONLY valid HTML.\n\nHere is the raw HTML:\n\n{raw_html[:35000]}"
+    prompt = f"You are an expert HTML typographer. Enhance typography (headings, blockquotes, bolding, italics). \nCRITICAL RULES:\n1. Output the ENTIRE article word-for-word. DO NOT summarize or omit any text.\n2. Do NOT alter or modify <img> tags. Preserve them perfectly where they sit.\n3. Do NOT split blockquotes into multiple adjacent blocks for the same speaker. Keep quotes combined in a single <blockquote> element.\n4. When a blockquote includes an attribution line (e.g., '— Name'), place it on a NEW LINE at the bottom of the blockquote using a <br> tag.\n5. Return ONLY valid HTML.\n\nHere is the raw HTML:\n\n{raw_html[:35000]}"
     
     bt = "`" * 3
 
@@ -201,7 +201,9 @@ def clean_html_with_ai(raw_html: str) -> tuple:
             if res.status_code == 200:
                 json_res = res.json()
                 result = json_res['candidates'][0]['content']['parts'][0]['text']
-                token_count = json_res.get('usageMetadata', {}).get('totalTokenCount', 0)
+                # Safe JSON Extraction to prevent NoneType Crash
+                usage = json_res.get('usageMetadata') or {}
+                token_count = usage.get('totalTokenCount', 0)
                 engine_str = f"📄 Gemini ({format_tokens(token_count)})" if token_count else "📄 Gemini"
                 
                 clean_result = result.replace(f'{bt}html', '').replace(bt, '').strip()
@@ -239,7 +241,7 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
         }
         r = requests.get(url, headers=headers, timeout=10)
         
-        # Intercept direct image links (e.g., CAPTCHAs, hotlinked PNGs) to prevent binary parsing crashes
+        # Intercept Direct Image Loads (Anti-Bot Fallback)
         if 'image' in r.headers.get('Content-Type', '').lower():
             new_id = generate_secure_id()
             ext = '.' + urlparse(url).path.split('/')[-1].split('.')[-1]
@@ -255,38 +257,30 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
         if og_img and isinstance(og_img, type(orig_soup.new_tag('meta'))):
             article_img_url = og_img.get('content')
 
-        # 1. EMBEDDED VIDEOS: Disguise iframes so Readability ignores them instead of deleting them
+        # 1. DISGUISE EMBEDS: Temporarily map IFRAMES to safe IMG tags so Readability preserves them
         for iframe in orig_soup.find_all(['iframe', 'embed', 'video']):
             src = iframe.get('src') or iframe.get('data-src') or ''
             if not src.startswith('http') and src.startswith('//'): src = f"https:{src}"
             if 'youtube' in src or 'youtu.be' in src or 'vimeo' in src:
-                marker = orig_soup.new_tag('p')
-                marker.string = f"[[UPSHARE_EMBED:{src}]]"
+                marker = orig_soup.new_tag('img', **{'class': 'upshare-iframe', 'data-src': src})
                 iframe.replace_with(marker)
             else:
                 iframe.decompose()
 
-        # 2. IMAGE PRE-PROCESS: Standardize lazy loading attributes
+        # Simplify Lazy Load Image Links pre-Readability
         for img in orig_soup.find_all('img'):
-            src = img.get('data-src') or img.get('data-lazy-src') or img.get('src')
+            src = img.get('data-src') or img.get('data-lazy-src') or img.get('data-url') or img.get('srcset', '').split(',')[0].split(' ')[0] or img.get('src')
             if src: img['src'] = src
 
-        # 3. FIGURE UNWRAPPING: Temporarily rename <figure> and <picture> so Readability accepts their text
-        for fig in orig_soup.find_all(['figure', 'picture']):
-            fig.name = 'div'
-        for cap in orig_soup.find_all('figcaption'):
-            cap.name = 'p'
-
+        # RUN READABILITY
         doc = Document(str(orig_soup))
         title = doc.title()
         readable_html = doc.summary()
         
         soup = BeautifulSoup(readable_html, 'html.parser')
-        
         for h1 in soup.find_all('h1'):
             if title.lower() in h1.get_text().lower() or h1.get_text().lower() in title.lower():
                 h1.decompose()
-                
         for a in soup.find_all('a'):
             txt = a.get_text(strip=True)
             if txt.isdigit() and len(txt) <= 3:
@@ -294,39 +288,68 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
 
         raw_html_str = str(soup)
         if len(raw_html_str.strip()) < 100:
-            raw_html_str = str(orig_soup.find('body'))
+            body = orig_soup.find('body')
+            raw_html_str = str(body) if body else str(orig_soup)
 
         cleaned_html, engine = clean_html_with_ai(raw_html_str)
 
-        # 4. POST-PROCESSING: Restore Embeds and rebuild clean Figures
+        # 2. RESTORE DOM & PERFECT CAPTIONS
         ai_soup = BeautifulSoup(cleaned_html, 'html.parser')
+        seen_captions = set()
 
-        # Revive YouTube Embeds
-        for p_tag in ai_soup.find_all(['p', 'div']):
-            txt = p_tag.get_text(strip=True)
-            if '[[UPSHARE_EMBED:' in txt:
-                m = re.search(r'\[\[UPSHARE_EMBED:(.*?)\]\]', txt)
-                if m:
-                    embed_url = m.group(1)
+        for img in list(ai_soup.find_all('img')):
+            # A) Restore Embeds
+            if 'upshare-iframe' in img.get('class', []):
+                embed_src = img.get('data-src') or img.get('src')
+                if embed_src:
                     wrapper = ai_soup.new_tag('div', style="position:relative; padding-bottom:56.25%; height:0; overflow:hidden; margin:30px 0; border-radius:8px; box-shadow:0 4px 12px rgba(0,0,0,0.3);")
-                    iframe = ai_soup.new_tag('iframe', src=embed_url, style="position:absolute; top:0; left:0; width:100%; height:100%; border:0;", allowfullscreen="true")
+                    iframe = ai_soup.new_tag('iframe', src=embed_src, style="position:absolute; top:0; left:0; width:100%; height:100%; border:0;", allowfullscreen="true")
                     wrapper.append(iframe)
-                    p_tag.replace_with(wrapper)
+                    img.replace_with(wrapper)
+                continue
 
-        # Apply robust styles to Figures & Images
-        for figure in ai_soup.find_all('figure'):
-            figure['style'] = "margin: 30px 0; display: flex; flex-direction: column; align-items: center;"
-        for img in ai_soup.find_all('img'):
-            if not img.get('src'):
+            # B) Fetch and Deduplicate True Image Captions directly from Source HTML
+            src = img.get('src')
+            if not src:
                 img.decompose()
                 continue
-            img['src'] = urljoin(url, img['src'])
+                
+            cap_text = ""
+            filename = src.split('/')[-1].split('?')[0]
+            if filename:
+                for o_img in orig_soup.find_all('img'):
+                    o_src = o_img.get('src', '')
+                    if filename in o_src:
+                        container = o_img.find_parent(['figure', 'div', 'picture', 'section'])
+                        if container:
+                            caps = []
+                            for cap_node in container.find_all(['figcaption', 'span', 'p', 'div']):
+                                classes = str(cap_node.get('class', ''))
+                                if cap_node.name == 'figcaption' or re.search(r'(caption|credit|byline)', classes, re.I):
+                                    t = cap_node.get_text(strip=True)
+                                    if t and t not in caps and len(t) < 200: caps.append(t)
+                            cap_text = " — ".join(caps)
+                            break
+            
+            # Format cleanly
+            img['src'] = urljoin(url, src)
             img['style'] = "max-width:100%; height:auto; border-radius:8px; box-shadow: 0 4px 12px rgba(0,0,0,0.2);"
-            if not img.parent or img.parent.name != 'figure':
-                fig = ai_soup.new_tag('figure', style="margin: 30px 0; display: flex; flex-direction: column; align-items: center;")
-                img.wrap(fig)
-        for figcap in ai_soup.find_all('figcaption'):
-            figcap['style'] = "font-size: 0.85rem; color: #aaa; text-align: center; margin-top: 8px; font-style: italic; max-width: 90%;"
+            
+            fig = ai_soup.new_tag('figure', style="margin: 30px 0; display: flex; flex-direction: column; align-items: center;")
+            img.wrap(fig)
+            
+            if cap_text and cap_text not in seen_captions:
+                seen_captions.add(cap_text)
+                fc = ai_soup.new_tag('figcaption', style="font-size: 0.85rem; color: #aaa; text-align: center; margin-top: 8px; font-style: italic; max-width: 90%;")
+                fc.string = cap_text
+                fig.append(fc)
+
+        # C) Permanently destroy floating duplicate text matching our captions
+        for cap_text in seen_captions:
+            for node in list(ai_soup.find_all(['p', 'span', 'div'])):
+                if node.parent and node.parent.name != 'figure':
+                    if node.get_text(strip=True) == cap_text:
+                        node.decompose()
 
         # Merge adjacent split blockquotes securely
         bq_list = ai_soup.find_all('blockquote')
@@ -335,8 +358,7 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
             prev_bq = bq_list[i - 1]
             if prev_bq.find_next_sibling() == curr_bq:
                 prev_bq.append(ai_soup.new_tag('br'))
-                for child in list(curr_bq.contents):
-                    prev_bq.append(child)
+                for child in list(curr_bq.contents): prev_bq.append(child)
                 curr_bq.decompose()
 
         final_html = str(ai_soup)
@@ -388,7 +410,6 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
         if task_id in active_downloads: del active_downloads[task_id]
 
 def fetch_instagram_carousel_direct(url: str, task_id: str) -> bool:
-    """Scrapes Instagram carousels via public embed and CDN endpoints when direct video formats fail."""
     try:
         shortcode = None
         m = re.search(r'/(?:p|reel|reels|tv)/([^/?#&]+)', url)
@@ -401,17 +422,15 @@ def fetch_instagram_carousel_direct(url: str, task_id: str) -> bool:
         }
         
         image_urls = []
-
-        # 1. Fetch Instagram Embed page directly
         embed_url = f"https://www.instagram.com/p/{shortcode}/embed/captioned/"
         res = requests.get(embed_url, headers=headers, timeout=10)
+        
         if res.status_code == 200:
             soup = BeautifulSoup(res.text, 'html.parser')
             for img in soup.find_all('img', class_='EmbeddedMediaImage'):
                 s = img.get('src')
                 if s and s not in image_urls: image_urls.append(s)
             
-            # Extract raw CDN URLs hidden inside the embed JS payloads
             for script in soup.find_all('script'):
                 if script.string and 'scontent' in script.string:
                     matches = re.findall(r'https://[a-zA-Z0-9_.-]*scontent[^\s"\'\\]+\.fbcdn\.net/[^\s"\'\\]+\.jpg[^\s"\'\\]*', script.string)
@@ -419,7 +438,6 @@ def fetch_instagram_carousel_direct(url: str, task_id: str) -> bool:
                         clean_u = m_url.replace('\\u0026', '&').replace('\\/', '/')
                         if clean_u not in image_urls: image_urls.append(clean_u)
 
-        # 2. Fallback to basic HTML regex if embed yields no media
         if not image_urls:
             r = requests.get(url, headers=headers, timeout=10)
             urls = re.findall(r'"(https://[a-zA-Z0-9_.-]*scontent[^\"]+?\.jpg[^\"]*?)"', r.text)
@@ -438,8 +456,7 @@ def fetch_instagram_carousel_direct(url: str, task_id: str) -> bool:
                         downloaded += 1
                 except: pass
             return downloaded > 0
-    except Exception as e:
-        logger.error(f"Insta scrape error: {e}")
+    except Exception: pass
     return False
 
 def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
@@ -447,6 +464,7 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
         extract_article(url, user_id, task_id, expire_days)
         return
 
+    # Native support for ALL formats ensures yt-dlp never crashes on images vs videos
     ydl_opts = {
         'outtmpl': f'{DOWNLOAD_DIR}/temp_yt_{task_id}_%(autonumber)03d_%(id)s.%(ext)s',
         'format': 'bestvideo[ext=mp4][vcodec^=avc]+bestaudio[ext=m4a]/best[ext=mp4]/best',
@@ -455,8 +473,7 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
         'writethumbnail': True,
         'noplaylist': False,
         'ignoreerrors': True,
-        'progress_hooks': [lambda d: my_hook(d, task_id, user_id)],
-        'postprocessors': [{'key': 'FFmpegVideoConvertor', 'preferedformat': 'mp4'}],
+        'progress_hooks': [lambda d: my_hook(d, task_id, user_id)]
     }
     cookie_path = get_cookie_file_for_url(url)
     if cookie_path: ydl_opts['cookiefile'] = cookie_path
@@ -464,10 +481,10 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl: 
             ydl.extract_info(url, download=True)
-    except Exception: 
-        pass 
+    except Exception: pass 
 
-    has_downloaded_media = any(f.endswith(('.mp4', '.webm', '.mkv')) for f in os.listdir(DOWNLOAD_DIR) if f.startswith(f"temp_yt_{task_id}_"))
+    # Universal Media Check
+    has_downloaded_media = any(f.endswith(('.mp4', '.webm', '.mkv', '.jpg', '.webp', '.png')) for f in os.listdir(DOWNLOAD_DIR) if f.startswith(f"temp_yt_{task_id}_") and not f.endswith('.info.json'))
     
     if not has_downloaded_media and "instagram.com" in url:
         logger.info("Executing Instagram carousel fallback scraper...")
@@ -475,30 +492,30 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
 
     try:
         media_files = []
-        image_files = []
-        
         for f in os.listdir(DOWNLOAD_DIR):
             if f.startswith(f"temp_yt_{task_id}_"):
-                if f.endswith(('.mp4', '.webm', '.mkv')): media_files.append(f)
-                elif f.endswith(('.jpg', '.png', '.webp')): image_files.append(f)
+                if f.endswith(('.mp4', '.webm', '.mkv', '.jpg', '.png', '.webp')): 
+                    if 'thumbnail' not in f: media_files.append(f)
 
         if media_files:
-            for f in media_files:
+            media_files.sort()
+            
+            # Scenario A: Single Video Download
+            if len(media_files) == 1 and media_files[0].endswith(('.mp4', '.webm', '.mkv')):
+                f = media_files[0]
                 base = f.rsplit('.', 1)[0]
                 ext_found = f.rsplit('.', 1)[1]
-                info_file = os.path.join(DOWNLOAD_DIR, f"{base}.info.json")
+                info_file = next((os.path.join(DOWNLOAD_DIR, jf) for jf in os.listdir(DOWNLOAD_DIR) if jf.startswith(f"temp_yt_{task_id}_") and jf.endswith(".info.json")), None)
                 
                 new_id = generate_secure_id()
                 new_media = os.path.join(DOWNLOAD_DIR, f"{new_id}.{ext_found}")
                 os.rename(os.path.join(DOWNLOAD_DIR, f), new_media)
                 
                 extracted_title = None
-                if os.path.exists(info_file):
+                if info_file and os.path.exists(info_file):
                     try:
-                        with open(info_file, 'r', encoding='utf-8') as inf_f:
-                            extracted_title = json.load(inf_f).get('title')
+                        with open(info_file, 'r', encoding='utf-8') as inf_f: extracted_title = json.load(inf_f).get('title')
                     except: pass
-                    os.remove(info_file)
                     
                 for thumb_ext in ['.jpg', '.webp', '.png']:
                     old_thumb = os.path.join(DOWNLOAD_DIR, f"{base}{thumb_ext}")
@@ -507,79 +524,80 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                         
                 extract_true_duration(new_id, user_id, url, extracted_title, f".{ext_found}", expire_days)
 
-        elif image_files:
-            new_id = generate_secure_id()
-            html_path = os.path.join(DOWNLOAD_DIR, f"{new_id}.html")
-            
-            img_tags = ""
-            for idx, img_f in enumerate(sorted(image_files)):
-                ext = img_f.rsplit('.', 1)[1]
-                new_img_name = f"{new_id}_{idx}.{ext}"
-                os.rename(os.path.join(DOWNLOAD_DIR, img_f), os.path.join(DOWNLOAD_DIR, new_img_name))
-                img_tags += f"<img src='/videos/{new_img_name}'>"
-            
-            gallery_html = f"""
-            <html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'>
-            <title>Media Carousel</title>
-            <style>
-                body {{ margin: 0; background: #000; display: flex; align-items: center; justify-content: center; height: 100vh; overflow: hidden; font-family: sans-serif; }}
-                .carousel-container {{ position: relative; width: 100%; max-width: 800px; height: 100vh; overflow: hidden; }}
-                .carousel-track {{ display: flex; transition: transform 0.3s ease-in-out; height: 100%; }}
-                .carousel-track img {{ width: 100%; height: 100%; object-fit: contain; flex-shrink: 0; }}
-                .btn {{ position: absolute; top: 50%; transform: translateY(-50%); background: rgba(0,0,0,0.5); color: white; border: none; padding: 15px 12px; cursor: pointer; border-radius: 50%; font-size: 18px; transition: background 0.2s; }}
-                .btn:hover {{ background: rgba(0,0,0,0.8); }}
-                .btn-prev {{ left: 15px; }}
-                .btn-next {{ right: 15px; }}
-                .dots {{ position: absolute; bottom: 20px; width: 100%; display: flex; justify-content: center; gap: 8px; }}
-                .dot {{ width: 8px; height: 8px; background: rgba(255,255,255,0.4); border-radius: 50%; transition: background 0.2s; }}
-                .dot.active {{ background: #fff; }}
-            </style>
-            </head><body>
-                <div class="carousel-container" id="carousel">
-                    <div class="carousel-track" id="track">{img_tags}</div>
-                    <button class="btn btn-prev" onclick="window.move(-1)">❮</button>
-                    <button class="btn btn-next" onclick="window.move(1)">❯</button>
-                    <div class="dots" id="dots"></div>
-                </div>
-                <script>
-                    const track = document.getElementById('track');
-                    const items = track.children.length;
-                    const dotsContainer = document.getElementById('dots');
-                    let index = 0;
-                    if (items > 1) {{
-                        for(let i=0; i<items; i++) {{
-                            let d = document.createElement('div');
-                            d.className = 'dot' + (i===0 ? ' active' : '');
-                            dotsContainer.appendChild(d);
+            # Scenario B: Carousel Gallery (Mixed images & videos logic)
+            else:
+                new_id = generate_secure_id()
+                html_path = os.path.join(DOWNLOAD_DIR, f"{new_id}.html")
+                
+                carousel_tags = ""
+                for idx, mf in enumerate(media_files):
+                    ext = mf.rsplit('.', 1)[1]
+                    new_media_name = f"{new_id}_{idx}.{ext}"
+                    os.rename(os.path.join(DOWNLOAD_DIR, mf), os.path.join(DOWNLOAD_DIR, new_media_name))
+                    if ext in ['mp4', 'webm', 'mkv']:
+                        carousel_tags += f"<video src='/videos/{new_media_name}' controls style='width: 100%; height: 100%; object-fit: contain; flex-shrink: 0;'></video>"
+                    else:
+                        carousel_tags += f"<img src='/videos/{new_media_name}'>"
+                
+                gallery_html = f"""
+                <html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'>
+                <title>Media Carousel</title>
+                <style>
+                    body {{ margin: 0; background: #000; display: flex; align-items: center; justify-content: center; height: 100vh; overflow: hidden; font-family: sans-serif; }}
+                    .carousel-container {{ position: relative; width: 100%; max-width: 800px; height: 100vh; overflow: hidden; }}
+                    .carousel-track {{ display: flex; transition: transform 0.3s ease-in-out; height: 100%; }}
+                    .carousel-track img {{ width: 100%; height: 100%; object-fit: contain; flex-shrink: 0; }}
+                    .btn {{ position: absolute; top: 50%; transform: translateY(-50%); background: rgba(0,0,0,0.5); color: white; border: none; padding: 15px 12px; cursor: pointer; border-radius: 50%; font-size: 18px; transition: background 0.2s; }}
+                    .btn:hover {{ background: rgba(0,0,0,0.8); }}
+                    .btn-prev {{ left: 15px; }}
+                    .btn-next {{ right: 15px; }}
+                    .dots {{ position: absolute; bottom: 20px; width: 100%; display: flex; justify-content: center; gap: 8px; }}
+                    .dot {{ width: 8px; height: 8px; background: rgba(255,255,255,0.4); border-radius: 50%; transition: background 0.2s; }}
+                    .dot.active {{ background: #fff; }}
+                </style>
+                </head><body>
+                    <div class="carousel-container" id="carousel">
+                        <div class="carousel-track" id="track">{carousel_tags}</div>
+                        <button class="btn btn-prev" onclick="window.move(-1)">❮</button>
+                        <button class="btn btn-next" onclick="window.move(1)">❯</button>
+                        <div class="dots" id="dots"></div>
+                    </div>
+                    <script>
+                        const track = document.getElementById('track');
+                        const items = track.children.length;
+                        const dotsContainer = document.getElementById('dots');
+                        let index = 0;
+                        if (items > 1) {{
+                            for(let i=0; i<items; i++) {{
+                                let d = document.createElement('div');
+                                d.className = 'dot' + (i===0 ? ' active' : '');
+                                dotsContainer.appendChild(d);
+                            }}
+                            const dots = dotsContainer.children;
+                            window.move = function(dir) {{
+                                index += dir;
+                                if(index < 0) index = items - 1;
+                                if(index >= items) index = 0;
+                                track.style.transform = `translateX(-${{index * 100}}%)`;
+                                for(let d of dots) d.className = 'dot';
+                                dots[index].className = 'dot active';
+                            }}
+                        }} else {{
+                            document.querySelectorAll('.btn').forEach(b => b.style.display = 'none');
                         }}
-                        const dots = dotsContainer.children;
-                        window.move = function(dir) {{
-                            index += dir;
-                            if(index < 0) index = items - 1;
-                            if(index >= items) index = 0;
-                            track.style.transform = `translateX(-${{index * 100}}%)`;
-                            for(let d of dots) d.className = 'dot';
-                            dots[index].className = 'dot active';
-                        }}
-                        
-                        let startX = 0;
-                        document.getElementById('carousel').addEventListener('touchstart', e => startX = e.touches[0].clientX);
-                        document.getElementById('carousel').addEventListener('touchend', e => {{
-                            let diff = startX - e.changedTouches[0].clientX;
-                            if(diff > 50) window.move(1);
-                            else if(diff < -50) window.move(-1);
-                        }});
-                    }} else {{
-                        document.querySelectorAll('.btn').forEach(b => b.style.display = 'none');
-                    }}
-                </script>
-            </body></html>
-            """
-            with open(html_path, "w", encoding="utf-8") as f: f.write(gallery_html)
-            
-            first_ext = sorted(image_files)[0].rsplit('.', 1)[1]
-            shutil.copy(os.path.join(DOWNLOAD_DIR, f"{new_id}_0.{first_ext}"), os.path.join(DOWNLOAD_DIR, f"{new_id}.jpg"))
-            extract_true_duration(new_id, user_id, url, "Image Carousel", ".html", expire_days, engine="🖼️ Carousel")
+                    </script>
+                </body></html>
+                """
+                with open(html_path, "w", encoding="utf-8") as f: f.write(gallery_html)
+                
+                # Assign thumbnail
+                first_ext = media_files[0].rsplit('.', 1)[1]
+                if first_ext in ['mp4', 'webm', 'mkv']:
+                    subprocess.run(["ffmpeg", "-y", "-i", os.path.join(DOWNLOAD_DIR, f"{new_id}_0.{first_ext}"), "-ss", "00:00:00.100", "-vframes", "1", "-q:v", "2", f"{DOWNLOAD_DIR}/{new_id}.jpg"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                else:
+                    shutil.copy(os.path.join(DOWNLOAD_DIR, f"{new_id}_0.{first_ext}"), os.path.join(DOWNLOAD_DIR, f"{new_id}.jpg"))
+                
+                extract_true_duration(new_id, user_id, url, "Media Carousel", ".html", expire_days, engine="🖼️ Carousel")
 
         for f in os.listdir(DOWNLOAD_DIR):
             if f.startswith(f"temp_yt_{task_id}_"):

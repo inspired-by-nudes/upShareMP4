@@ -123,7 +123,6 @@ def increment_view_counter(video_id: str, file_path: str, filename: str):
             vid_info = db.get("videos", {}).get(video_id)
             if vid_info:
                 ext = vid_info.get('ext')
-                # Prevents thumbnails (.jpg/.webp) from triggering a video view count
                 if ext and filename != f"{video_id}{ext}": return
 
                 db["videos"][video_id]["views"] = db["videos"][video_id].get("views", 0) + 1
@@ -438,25 +437,77 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
 
     cookie_path = get_cookie_file_for_url(url)
 
-    ydl_opts = {
-        'outtmpl': f'{DOWNLOAD_DIR}/temp_yt_{task_id}_%(autonumber)03d_%(id)s.%(ext)s',
-        'format': 'bestvideo[ext=mp4][vcodec^=avc]+bestaudio[ext=m4a]/best[ext=mp4]/best',
-        'merge_output_format': 'mp4',
-        'writeinfojson': True,
-        'writethumbnail': True,
-        'noplaylist': False,
-        'ignoreerrors': True,
-        'progress_hooks': [lambda d: my_hook(d, task_id, user_id)]
-    }
-    if cookie_path: ydl_opts['cookiefile'] = cookie_path
-    
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl: 
-            ydl.extract_info(url, download=True)
-    except Exception: pass 
+    if "instagram.com" in url:
+        logger.info("Executing custom Instagram extraction hook...")
+        ydl_opts = {'quiet': True}
+        if cookie_path: ydl_opts['cookiefile'] = cookie_path
+        
+        extracted_title = "Instagram Media"
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+                entries = info.get('entries', [info])
+                
+                t = info.get('title')
+                d = info.get('description')
+                if t and t.strip() and "Instagram" not in t: extracted_title = t
+                elif d and d.strip(): extracted_title = d
+                elif t: extracted_title = t
+        except Exception as e:
+            logger.error(f"IG metadata extract failed: {e}")
+            entries = []
+
+        for idx, e in enumerate(entries):
+            if not e: continue
+            is_vid = e.get('is_video') == True or e.get('ext') == 'mp4' or (e.get('url') and '.mp4' in e.get('url'))
+            base_name = f"temp_yt_{task_id}_{idx:03d}"
+            
+            dl_opts = {'quiet': True}
+            if cookie_path: dl_opts['cookiefile'] = cookie_path
+            dl_opts['http_headers'] = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
+            
+            if is_vid:
+                v_url = e.get('url') or e.get('id')
+                dl_opts['outtmpl'] = os.path.join(DOWNLOAD_DIR, f"{base_name}.mp4")
+                dl_opts['format'] = 'bestvideo[ext=mp4][vcodec^=avc]+bestaudio[ext=m4a]/best[ext=mp4]/best'
+                try:
+                    with yt_dlp.YoutubeDL(dl_opts) as ydl_vid:
+                        ydl_vid.download([v_url if str(v_url).startswith('http') else url])
+                except Exception as ex: logger.error(f"IG Vid DL Error: {ex}")
+            else:
+                img_url = e.get('url')
+                if not img_url and e.get('thumbnails'): img_url = e.get('thumbnails')[-1].get('url')
+                if img_url:
+                    dl_opts['outtmpl'] = os.path.join(DOWNLOAD_DIR, f"{base_name}.jpg")
+                    try:
+                        with yt_dlp.YoutubeDL(dl_opts) as ydl_img:
+                            ydl_img.download([img_url])
+                    except Exception as ex: logger.error(f"IG Img DL Error: {ex}")
+        
+        dummy_info = os.path.join(DOWNLOAD_DIR, f"temp_yt_{task_id}_info.info.json")
+        with open(dummy_info, 'w', encoding='utf-8') as f:
+            json.dump({'title': extracted_title}, f)
+            
+    else:
+        ydl_opts = {
+            'outtmpl': f'{DOWNLOAD_DIR}/temp_yt_{task_id}_%(autonumber)03d_%(id)s.%(ext)s',
+            'format': 'bestvideo[ext=mp4][vcodec^=avc]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+            'merge_output_format': 'mp4',
+            'writeinfojson': True,
+            'writethumbnail': True,
+            'noplaylist': False,
+            'ignoreerrors': True,
+            'progress_hooks': [lambda d: my_hook(d, task_id, user_id)]
+        }
+        if cookie_path: ydl_opts['cookiefile'] = cookie_path
+        
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl: 
+                ydl.extract_info(url, download=True)
+        except Exception: pass 
 
     try:
-        media_files = [f for f in os.listdir(DOWNLOAD_DIR) if f.startswith(f"temp_yt_{task_id}_")]
+        media_files = [f for f in os.listdir(DOWNLOAD_DIR) if f.startswith(f"temp_yt_{task_id}_") and f.endswith(('.mp4', '.webm', '.mkv', '.jpg', '.png', '.webp'))]
 
         if media_files:
             media_files.sort()
@@ -466,13 +517,6 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                 base = f.rsplit('.', 1)[0]
                 if base not in bases: bases[base] = []
                 bases[base].append(f)
-
-            # Clean out bases that only have json metadata but failed to download media
-            valid_bases = {}
-            for b, files in bases.items():
-                if any(f.endswith(('.mp4', '.webm', '.mkv', '.jpg', '.png', '.webp')) for f in files):
-                    valid_bases[b] = files
-            bases = valid_bases
 
             if len(bases) == 1:
                 base = list(bases.keys())[0]
@@ -485,20 +529,18 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                     return
 
                 ext_found = primary.rsplit('.', 1)[1]
-                info_file = next((os.path.join(DOWNLOAD_DIR, jf) for jf in files if jf.endswith(".info.json")), None)
+                info_file = next((os.path.join(DOWNLOAD_DIR, jf) for jf in os.listdir(DOWNLOAD_DIR) if jf.startswith(f"temp_yt_{task_id}_") and jf.endswith(".info.json")), None)
                 
                 new_id = generate_secure_id()
                 new_media = os.path.join(DOWNLOAD_DIR, f"{new_id}.{ext_found}")
                 os.rename(os.path.join(DOWNLOAD_DIR, primary), new_media)
                 
                 extracted_title = None
-                thumb_downloaded = False
                 
                 for f in files:
                     if f != primary and f.endswith(('.jpg', '.webp', '.png')):
                         thumb_ext = f.rsplit('.', 1)[1]
                         os.rename(os.path.join(DOWNLOAD_DIR, f), os.path.join(DOWNLOAD_DIR, f"{new_id}.{thumb_ext}"))
-                        thumb_downloaded = True
                         break 
                 
                 if info_file and os.path.exists(info_file):
@@ -514,16 +556,6 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                                 extracted_title = d
                             elif t:
                                 extracted_title = t
-                            
-                            # Manually fallback to fetching thumbnail if yt-dlp missed it
-                            if not thumb_downloaded and ext_found in ['mp4', 'webm', 'mkv']:
-                                thumbs = info_data.get('thumbnails', [])
-                                if thumbs:
-                                    t_url = thumbs[-1].get('url')
-                                    req_h = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
-                                    tr = requests.get(t_url, headers=req_h, timeout=10)
-                                    if tr.status_code == 200:
-                                        with open(os.path.join(DOWNLOAD_DIR, f"{new_id}.jpg"), 'wb') as tf: tf.write(tr.content)
                     except: pass
                 
                 extract_true_duration(new_id, user_id, url, extracted_title, f".{ext_found}", expire_days, engine="🖼️ Image" if ext_found in ['jpg', 'png', 'webp'] else None)
@@ -557,6 +589,7 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
 
                 extracted_title = "Media Carousel"
                 first_info = next((os.path.join(DOWNLOAD_DIR, jf) for jf in os.listdir(DOWNLOAD_DIR) if jf.startswith(f"temp_yt_{task_id}_") and jf.endswith(".info.json")), None)
+                
                 if first_info and os.path.exists(first_info):
                     try:
                         with open(first_info, 'r', encoding='utf-8') as inf_f: 
@@ -763,18 +796,23 @@ async def edit_video(video_id: str, background_tasks: BackgroundTasks, start: st
     def run_edit():
         task_id = generate_secure_id()
         active_downloads[task_id] = "Clipping Media..."
+        
+        # Calculate strict duration to guarantee millisecond-accurate sync during re-encoding
+        dur = max(0, float(end) - float(start))
+        
         if mode == "copy":
             new_id = generate_secure_id()
             out_path = os.path.join(DOWNLOAD_DIR, f"{new_id}{ext}")
-            subprocess.run(["ffmpeg", "-i", input_path, "-ss", start, "-to", end, "-c", "copy", out_path, "-y"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run(["ffmpeg", "-ss", start, "-i", input_path, "-t", str(dur), "-c:v", "libx264", "-preset", "fast", "-c:a", "aac", out_path, "-y"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             subprocess.run(["ffmpeg", "-y", "-i", out_path, "-ss", "00:00:00.100", "-vframes", "1", "-q:v", "2", f"{DOWNLOAD_DIR}/{new_id}.jpg"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             extract_true_duration(new_id, user["username"], custom_title=f"Clip - {vid.get('title', new_id)}", ext=ext)
         else:
             temp_out = os.path.join(DOWNLOAD_DIR, f"temp_edit_{safe_id}{ext}")
-            subprocess.run(["ffmpeg", "-i", input_path, "-ss", start, "-to", end, "-c", "copy", temp_out, "-y"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run(["ffmpeg", "-ss", start, "-i", input_path, "-t", str(dur), "-c:v", "libx264", "-preset", "fast", "-c:a", "aac", temp_out, "-y"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             shutil.move(temp_out, input_path)
             subprocess.run(["ffmpeg", "-y", "-i", input_path, "-ss", "00:00:00.100", "-vframes", "1", "-q:v", "2", f"{DOWNLOAD_DIR}/{safe_id}.jpg"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             extract_true_duration(safe_id, user["username"], custom_title=vid.get('title'), ext=ext)
+            
         if task_id in active_downloads: del active_downloads[task_id]
 
     background_tasks.add_task(run_edit)
@@ -807,7 +845,6 @@ def list_videos(user: dict = Depends(verify_auth)):
             
             if not vid_info: continue
             
-            # Smart filter to ensure old uploads are preserved, while blocking thumbnail `.jpg` files from creating duplicate tiles
             expected_ext = vid_info.get("ext")
             if expected_ext:
                 if f != f"{base_name}{expected_ext}":

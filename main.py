@@ -64,11 +64,9 @@ def load_db():
     if os.path.exists(DB_FILE):
         with open(DB_FILE, "r") as f: return json.load(f)
     
-    # Auto-migrate legacy DBs to branded naming convention
     for legacy_db in [DB_OLD_V3, DB_OLD_V2]:
         if os.path.exists(legacy_db):
-            with open(legacy_db, "r") as f:
-                data = json.load(f)
+            with open(legacy_db, "r") as f: data = json.load(f)
             save_db(data)
             try: os.remove(legacy_db)
             except: pass
@@ -292,14 +290,17 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
 
             if container and container.name != 'body':
                 caps = []
+                normalized_caps = []
                 for cap in container.find_all(['figcaption', 'span', 'p', 'div']):
                     cls = str(cap.get('class', ''))
                     if cap.name == 'figcaption' or re.search(r'(caption|credit|byline)', cls, re.I):
                         t = cap.get_text(strip=True)
                         if t and len(t) < 200:
-                            if not any(t in existing or existing in t for existing in caps):
+                            t_norm = re.sub(r'\W+', '', t).lower()
+                            if not any(t_norm in enc or enc in t_norm for enc in normalized_caps):
                                 caps.append(t)
-                cap_text = " — ".join(caps).replace('___', ' - ')
+                                normalized_caps.append(t_norm)
+                cap_text = "|||".join(caps).replace('___', ' - ')
                 target_to_replace = container
             else:
                 target_to_replace = img
@@ -341,9 +342,16 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
             src = match.group(1).strip()
             src = urljoin(url, src)
             cap = match.group(2).strip()
+            
+            cap_lines = cap.split('|||')
+            formatted_cap = cap_lines[0]
+            if len(cap_lines) > 1:
+                for line in cap_lines[1:]:
+                    formatted_cap += f"<br>— {line}"
+                    
             fig = f'<figure style="margin: 30px 0; display: flex; flex-direction: column; align-items: center;"><img src="{src}" style="max-width:100%; height:auto; border-radius:8px; box-shadow: 0 4px 12px rgba(0,0,0,0.2);">'
-            if cap:
-                fig += f'<figcaption style="font-size: 0.85rem; color: #aaa; text-align: center; margin-top: 8px; font-style: italic; max-width: 90%;">{cap}</figcaption>'
+            if formatted_cap:
+                fig += f'<figcaption style="font-size: 0.85rem; color: #aaa; text-align: center; margin-top: 8px; font-style: italic; max-width: 90%;">{formatted_cap}</figcaption>'
             fig += '</figure>'
             return fig
 
@@ -434,30 +442,43 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
         for idx, e in enumerate(entries):
             if not e: continue
             is_vid = e.get('ext') == 'mp4' or (e.get('url') and '.mp4' in e.get('url'))
+            base_name = f"temp_yt_{task_id}_{idx}"
 
             if is_vid:
                 v_url = e.get('url') or e.get('id')
-                out = os.path.join(DOWNLOAD_DIR, f"temp_yt_{task_id}_{idx}.mp4")
-                dl_opts = {'outtmpl': out, 'quiet': True}
+                out = os.path.join(DOWNLOAD_DIR, f"{base_name}.mp4")
+                dl_opts = {
+                    'outtmpl': out, 
+                    'quiet': True,
+                    'format': 'bestvideo[ext=mp4][vcodec^=avc]+bestaudio[ext=m4a]/best[ext=mp4]/best'
+                }
                 if cookie_path: dl_opts['cookiefile'] = cookie_path
                 try:
                     with yt_dlp.YoutubeDL(dl_opts) as ydl_vid:
                         ydl_vid.download([v_url if v_url.startswith('http') else url])
-                    if os.path.exists(out): media_files.append(out)
+                    
+                    img_url = e.get('thumbnail')
+                    if not img_url and e.get('thumbnails'): img_url = e.get('thumbnails')[-1].get('url')
+                    if img_url:
+                        thumb_out = os.path.join(DOWNLOAD_DIR, f"{base_name}.jpg")
+                        try:
+                            r = requests.get(img_url, timeout=10)
+                            if r.status_code == 200:
+                                with open(thumb_out, 'wb') as f: f.write(r.content)
+                        except: pass
                 except: pass
             else:
                 img_url = e.get('url')
                 if not img_url and e.get('thumbnails'): img_url = e.get('thumbnails')[-1].get('url')
                 if img_url:
-                    out = os.path.join(DOWNLOAD_DIR, f"temp_yt_{task_id}_{idx}.jpg")
+                    out = os.path.join(DOWNLOAD_DIR, f"{base_name}.jpg")
                     try:
                         r = requests.get(img_url, timeout=10)
                         if r.status_code == 200:
                             with open(out, 'wb') as f: f.write(r.content)
-                            media_files.append(out)
                     except: pass
 
-        if not media_files:
+        if not any(f.startswith(f"temp_yt_{task_id}_") for f in os.listdir(DOWNLOAD_DIR)):
             headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
             try:
                 r = requests.get(url, headers=headers, timeout=10)
@@ -472,9 +493,7 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                     ir = requests.get(u, headers=headers, timeout=10)
                     if ir.status_code == 200:
                         with open(out, 'wb') as f: f.write(ir.content)
-                        media_files.append(out)
             except: pass
-
     else:
         ydl_opts = {
             'outtmpl': f'{DOWNLOAD_DIR}/temp_yt_{task_id}_%(autonumber)03d_%(id)s.%(ext)s',
@@ -497,48 +516,66 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
         for f in os.listdir(DOWNLOAD_DIR):
             if f.startswith(f"temp_yt_{task_id}_"):
                 if f.endswith(('.mp4', '.webm', '.mkv', '.jpg', '.png', '.webp')): 
-                    if 'thumbnail' not in f and 'fb_' not in f: media_files.append(f)
+                    if 'fb_' not in f: media_files.append(f)
                 elif 'fb_' in f: media_files.append(f)
 
         if media_files:
             media_files.sort()
-
-            if len(media_files) == 1 and media_files[0].endswith(('.mp4', '.webm', '.mkv')):
-                f = media_files[0]
+            
+            bases = {}
+            for f in media_files:
                 base = f.rsplit('.', 1)[0]
-                ext_found = f.rsplit('.', 1)[1]
-                info_file = next((os.path.join(DOWNLOAD_DIR, jf) for jf in os.listdir(DOWNLOAD_DIR) if jf.startswith(f"temp_yt_{task_id}_") and jf.endswith(".info.json")), None)
+                if base not in bases: bases[base] = []
+                bases[base].append(f)
 
+            if len(bases) == 1:
+                base = list(bases.keys())[0]
+                files = bases[base]
+                
+                primary = next((f for f in files if f.endswith(('.mp4', '.webm', '.mkv'))), files[0])
+                ext_found = primary.rsplit('.', 1)[1]
+                
+                info_file = next((os.path.join(DOWNLOAD_DIR, jf) for jf in os.listdir(DOWNLOAD_DIR) if jf.startswith(f"temp_yt_{task_id}_") and jf.endswith(".info.json")), None)
+                
                 new_id = generate_secure_id()
                 new_media = os.path.join(DOWNLOAD_DIR, f"{new_id}.{ext_found}")
-                os.rename(os.path.join(DOWNLOAD_DIR, f), new_media)
-
+                os.rename(os.path.join(DOWNLOAD_DIR, primary), new_media)
+                
                 extracted_title = None
                 if info_file and os.path.exists(info_file):
                     try:
                         with open(info_file, 'r', encoding='utf-8') as inf_f: extracted_title = json.load(inf_f).get('title')
                     except: pass
-
-                for thumb_ext in ['.jpg', '.webp', '.png']:
-                    old_thumb = os.path.join(DOWNLOAD_DIR, f"{base}{thumb_ext}")
-                    if os.path.exists(old_thumb):
-                        os.rename(old_thumb, os.path.join(DOWNLOAD_DIR, f"{new_id}{thumb_ext}"))
-
+                
+                for f in files:
+                    if f != primary and f.endswith(('.jpg', '.webp', '.png')):
+                        thumb_ext = f.rsplit('.', 1)[1]
+                        os.rename(os.path.join(DOWNLOAD_DIR, f), os.path.join(DOWNLOAD_DIR, f"{new_id}.{thumb_ext}"))
+                        break 
+                
                 extract_true_duration(new_id, user_id, url, extracted_title, f".{ext_found}", expire_days)
 
             else:
                 new_id = generate_secure_id()
                 html_path = os.path.join(DOWNLOAD_DIR, f"{new_id}.html")
-
+                
                 carousel_tags = ""
-                for idx, mf in enumerate(media_files):
-                    ext = mf.rsplit('.', 1)[1]
-                    new_media_name = f"{new_id}_{idx}.{ext}"
-                    os.rename(os.path.join(DOWNLOAD_DIR, mf), os.path.join(DOWNLOAD_DIR, new_media_name))
+                sorted_bases = sorted(bases.keys())
+                
+                idx_counter = 0
+                for base in sorted_bases:
+                    files = bases[base]
+                    primary = next((f for f in files if f.endswith(('.mp4', '.webm', '.mkv'))), files[0])
+                    ext = primary.rsplit('.', 1)[1]
+                    
+                    new_media_name = f"{new_id}_{idx_counter}.{ext}"
+                    os.rename(os.path.join(DOWNLOAD_DIR, primary), os.path.join(DOWNLOAD_DIR, new_media_name))
+                    
                     if ext in ['mp4', 'webm', 'mkv']:
-                        carousel_tags += f"<video src='/videos/{new_media_name}' controls style='width: 100%; height: 100%; object-fit: contain; flex-shrink: 0;'></video>"
+                        carousel_tags += f"<video src='/videos/{new_media_name}' controls playsinline style='width: 100%; height: 100%; object-fit: contain; flex-shrink: 0;'></video>"
                     else:
                         carousel_tags += f"<img src='/videos/{new_media_name}' style='width: 100%; height: 100%; object-fit: contain; flex-shrink: 0;'>"
+                    idx_counter += 1
 
                 gallery_html = f"""
                 <html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'>
@@ -590,13 +627,13 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                 """
                 with open(html_path, "w", encoding="utf-8") as f: f.write(gallery_html)
 
-                first_ext = media_files[0].rsplit('.', 1)[1]
+                first_ext = files[0].rsplit('.', 1)[1] if not files[0].endswith(('.mp4', '.webm', '.mkv')) else next((f.rsplit('.', 1)[1] for f in files if f.endswith(('.mp4', '.webm', '.mkv'))))
                 if first_ext in ['mp4', 'webm', 'mkv']:
                     subprocess.run(["ffmpeg", "-y", "-i", os.path.join(DOWNLOAD_DIR, f"{new_id}_0.{first_ext}"), "-ss", "00:00:00.100", "-vframes", "1", "-q:v", "2", f"{DOWNLOAD_DIR}/{new_id}.jpg"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 else:
                     shutil.copy(os.path.join(DOWNLOAD_DIR, f"{new_id}_0.{first_ext}"), os.path.join(DOWNLOAD_DIR, f"{new_id}.jpg"))
 
-                extract_true_duration(new_id, user_id, url, "Media Gallery", ".html", expire_days, engine="🖼️ Gallery")
+                extract_true_duration(new_id, user_id, url, "Media Carousel", ".html", expire_days, engine="🎠 Carousel")
 
         for f in os.listdir(DOWNLOAD_DIR):
             if f.startswith(f"temp_yt_{task_id}_"):

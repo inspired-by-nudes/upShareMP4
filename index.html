@@ -432,7 +432,6 @@
             updateBulkCounter();
         }
 
-        // Smart View Controller: Routes fullscreen for mobile/tablet, new tab for desktop
         window.smartView = function(url) {
             const isTouch = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
             const isMobileUA = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
@@ -444,7 +443,7 @@
             }
         };
 
-        // Mobile Fullscreen Native Player
+        // Instant Native Mobile Fullscreen
         function playFullscreen(url) {
             let vid = document.getElementById('fullscreen-player');
             if (!vid) {
@@ -462,7 +461,7 @@
                 const flushBufferAndHide = () => {
                     if (!document.fullscreenElement && !document.webkitFullscreenElement) {
                         vid.pause();
-                        vid.removeAttribute('src'); // Flush the decoder block completely
+                        vid.removeAttribute('src'); 
                         vid.load();
                     }
                 };
@@ -473,20 +472,18 @@
             }
             
             vid.src = url;
-            vid.load();
             
-            let playPromise = vid.play();
-            if (playPromise !== undefined) {
-                playPromise.then(() => {
-                    if (vid.webkitEnterFullscreen) { 
-                        vid.webkitEnterFullscreen(); // Hijack iOS to native player
-                    } else if (vid.requestFullscreen) { 
-                        vid.requestFullscreen(); // Fallback for other touch devices
-                    }
-                }).catch(e => {
-                    window.open(url, '_blank');
-                });
+            // Critical fix: We execute the fullscreen API immediately *before* the video Promise starts parsing.
+            // This prevents mobile browsers from silently rejecting the command due to lost gesture tokens.
+            if (vid.webkitEnterFullscreen) { 
+                vid.webkitEnterFullscreen();
+            } else if (vid.requestFullscreen) { 
+                vid.requestFullscreen(); 
             }
+            
+            vid.play().catch(e => {
+                window.open(url, '_blank');
+            });
         }
 
         function renderUnifiedGrid() {

@@ -58,8 +58,12 @@
         .card.article-card { border-left-color: #ffffff !important; }
         .card.carousel-card { border-left-color: #2196F3 !important; } 
 
-        .card-checkbox { display: none; position: absolute; top: 10px; right: 10px; width: 20px; height: 20px; z-index: 10; cursor: pointer; }
-        .card:hover .card-checkbox, .card-checkbox:checked { display: block; }
+        .card-checkbox { opacity: 0; position: absolute; top: 10px; right: 10px; width: 20px; height: 20px; z-index: 10; cursor: pointer; transition: opacity 0.2s; pointer-events: none; }
+        .card:hover .card-checkbox, .card-checkbox:checked { opacity: 1; pointer-events: auto; }
+        @media (hover: none) {
+            .card-checkbox { opacity: 1; pointer-events: auto; background: rgba(0,0,0,0.5); border-radius: 4px; box-shadow: 0 0 0 2px #fff; }
+        }
+        
         body.select-mode-active .btn-group a, body.select-mode-active .btn-group button { opacity: 0.3; pointer-events: none; }
 
         .card-content { flex-grow: 1; display: flex; flex-direction: column; }
@@ -423,6 +427,34 @@
             updateBulkCounter();
         }
 
+        // Bridge to allow native mobile player without leaving the page
+        function playFullscreen(url) {
+            let vid = document.getElementById('fullscreen-player');
+            if (!vid) {
+                vid = document.createElement('video');
+                vid.id = 'fullscreen-player';
+                vid.style.display = 'none';
+                vid.controls = true;
+                vid.playsInline = false; // Forces iOS Quick-Look full screen player
+                document.body.appendChild(vid);
+                
+                vid.addEventListener('fullscreenchange', () => {
+                    if (!document.fullscreenElement && !document.webkitFullscreenElement) vid.pause();
+                });
+                vid.addEventListener('webkitendfullscreen', () => {
+                    vid.pause();
+                });
+            }
+            vid.src = url;
+            vid.play().then(() => {
+                if (vid.requestFullscreen) { vid.requestFullscreen(); }
+                else if (vid.webkitRequestFullscreen) { vid.webkitRequestFullscreen(); }
+                else if (vid.webkitEnterFullscreen) { vid.webkitEnterFullscreen(); }
+            }).catch(e => {
+                window.open(url, '_blank');
+            });
+        }
+
         function renderUnifiedGrid() {
             const stateString = JSON.stringify(currentTasks) + JSON.stringify(activeVideosData);
             if (stateString === lastVideosString) return; lastVideosString = stateString;
@@ -453,6 +485,11 @@
                 let editBtn = (!isArticle && !isCarousel && !isImage) ? `<button class="btn btn-edit" onclick="openEditorModal('${v.id}', '${url}')">✂️</button>` : '';
                 let timeDisplay = (isArticle || isCarousel || isImage) ? (v.engine || (isImage ? '🖼️ Direct' : '📄 Readability')) : `⏱️ ${v.duration}`;
 
+                let viewAction = `<a href="${url}" target="_blank" class="btn btn-view">View</a>`;
+                if (!isArticle && !isCarousel && !isImage) {
+                    viewAction = `<button class="btn btn-view" onclick="playFullscreen('${url}')">View</button>`;
+                }
+
                 htmlBuffer += `
                     <div class="${cardClass}">
                         <input type="checkbox" class="card-checkbox" value="${v.id}" onchange="updateBulkCounter()">
@@ -464,7 +501,7 @@
                             <div class="meta-tags"><div class="meta-tag">👁️ ${v.views}</div><div class="meta-tag">${timeDisplay}</div><div class="meta-tag">💾 ${formatBytes(v.size_bytes)}</div></div>
                             <div class="btn-group">
                                 <button class="btn btn-copy" onclick="copyLink('${url}')">Copy</button>
-                                <a href="${url}" target="_blank" class="btn btn-view">View</a>
+                                ${viewAction}
                                 ${editBtn}
                                 <a href="/api/download/${v.id}" class="btn btn-download">📥</a>
                                 <button class="btn btn-delete" onmouseenter="this.closest('.card').classList.add('deleting')" onmouseleave="this.closest('.card').classList.remove('deleting')" onclick="triggerDelete('${v.id}', this)">✖</button>

@@ -13,7 +13,6 @@
         .container { padding: 20px; padding-top: max(20px, env(safe-area-inset-top)); padding-bottom: 80px; max-width: 1200px; margin: 0 auto; position: relative; }
         .header-bar { display: flex; justify-content: center; align-items: center; position: relative; margin-bottom: 5px; }
         h1 { color: #ff8c00; font-size: 2.5rem; margin: 0; cursor: pointer; transition: opacity 0.2s ease; user-select: none; }
-        h1:hover { opacity: 0.8; }
 
         p.subtitle { text-align: center; color: #888; margin-top: 0px; margin-bottom: 25px; font-weight: 500; letter-spacing: 1px;}
 
@@ -42,7 +41,6 @@
         select.expire-drop { flex: 1; background: #222; border-color: #444; }
 
         .btn-submit { background-color: #ff8c00; color: #fff; border: none; border-radius: 4px; font-weight: bold; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 16px; height: 48px; padding: 0 24px; flex: 1; }
-        .btn-submit:hover { opacity: 0.8; }
 
         @media (max-width: 600px) {
             .controls { padding: 15px; }
@@ -59,7 +57,15 @@
         .card.carousel-card { border-left-color: #2196F3 !important; } 
 
         .card-checkbox { opacity: 0; position: absolute; top: 10px; right: 10px; width: 20px; height: 20px; z-index: 10; cursor: pointer; transition: opacity 0.2s; pointer-events: none; }
-        .card:hover .card-checkbox, .card-checkbox:checked { opacity: 1; pointer-events: auto; }
+        .card-checkbox:checked { opacity: 1; pointer-events: auto; }
+        
+        /* Disable hover intercepts on iOS to allow instant one-tap buttons */
+        @media (hover: hover) {
+            h1:hover { opacity: 0.8; }
+            .btn:hover { opacity: 0.8; }
+            .btn-submit:hover { opacity: 0.8; }
+            .card:hover .card-checkbox { opacity: 1; pointer-events: auto; }
+        }
         @media (hover: none) {
             .card-checkbox { opacity: 1; pointer-events: auto; background: rgba(0,0,0,0.5); border-radius: 4px; box-shadow: 0 0 0 2px #fff; }
         }
@@ -83,7 +89,7 @@
 
         .btn-group { display: flex; flex-wrap: nowrap; gap: 6px; }
         .btn { flex: 1; padding: 10px 2px; border: none; border-radius: 4px; font-weight: bold; cursor: pointer; text-align: center; transition: opacity 0.2s ease; text-decoration: none; display: flex; align-items: center; justify-content: center; }
-        .btn:hover { opacity: 0.8; }
+        
         .btn-copy { background-color: transparent; border: 1px solid #ff8c00; color: #ff8c00; }
         .btn-view { background-color: #00E676; color: #121212; }
         .btn-edit { background-color: #555; color: #fff; flex: 0 0 45px; }
@@ -427,32 +433,48 @@
             updateBulkCounter();
         }
 
-        // Bridge to allow native mobile player without leaving the page
+        // Bridge to allow native mobile player perfectly synced to DOM lifecycle
         function playFullscreen(url) {
             let vid = document.getElementById('fullscreen-player');
             if (!vid) {
                 vid = document.createElement('video');
                 vid.id = 'fullscreen-player';
-                vid.style.display = 'none';
+                // Critical iOS Fix: Keep it in the active layout rendering tree instead of display:none
+                vid.style.position = 'absolute';
+                vid.style.top = '-9999px';
+                vid.style.width = '1px';
+                vid.style.height = '1px';
+                vid.style.opacity = '0';
                 vid.controls = true;
-                vid.playsInline = false; // Forces iOS Quick-Look full screen player
+                vid.playsInline = false;
                 document.body.appendChild(vid);
                 
                 vid.addEventListener('fullscreenchange', () => {
-                    if (!document.fullscreenElement && !document.webkitFullscreenElement) vid.pause();
+                    if (!document.fullscreenElement && !document.webkitFullscreenElement) {
+                        vid.pause();
+                        vid.removeAttribute('src'); // Flush decoder block
+                        vid.load();
+                    }
                 });
                 vid.addEventListener('webkitendfullscreen', () => {
                     vid.pause();
+                    vid.removeAttribute('src');
+                    vid.load();
                 });
             }
+            
             vid.src = url;
-            vid.play().then(() => {
-                if (vid.requestFullscreen) { vid.requestFullscreen(); }
-                else if (vid.webkitRequestFullscreen) { vid.webkitRequestFullscreen(); }
-                else if (vid.webkitEnterFullscreen) { vid.webkitEnterFullscreen(); }
-            }).catch(e => {
-                window.open(url, '_blank');
-            });
+            vid.load(); // Forces iOS Safari to abandon old media buffer and attach to new URL
+            
+            let playPromise = vid.play();
+            if (playPromise !== undefined) {
+                playPromise.then(() => {
+                    if (vid.webkitEnterFullscreen) { vid.webkitEnterFullscreen(); }
+                    else if (vid.requestFullscreen) { vid.requestFullscreen(); }
+                }).catch(e => {
+                    window.open(url, '_blank');
+                });
+            }
         }
 
         function renderUnifiedGrid() {

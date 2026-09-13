@@ -59,7 +59,6 @@
         .card-checkbox { opacity: 0; position: absolute; top: 10px; right: 10px; width: 20px; height: 20px; z-index: 10; cursor: pointer; transition: opacity 0.2s; pointer-events: none; }
         .card-checkbox:checked { opacity: 1; pointer-events: auto; }
         
-        /* Disable hover intercepts on iOS to allow instant one-tap buttons */
         @media (hover: hover) {
             h1:hover { opacity: 0.8; }
             .btn:hover { opacity: 0.8; }
@@ -433,13 +432,12 @@
             updateBulkCounter();
         }
 
-        // Bridge to allow native mobile player perfectly synced to DOM lifecycle
+        // Bridge to allow native mobile player perfectly synced to DOM lifecycle + Desktop CSS fixes
         function playFullscreen(url) {
             let vid = document.getElementById('fullscreen-player');
             if (!vid) {
                 vid = document.createElement('video');
                 vid.id = 'fullscreen-player';
-                // Critical iOS Fix: Keep it in the active layout rendering tree instead of display:none
                 vid.style.position = 'absolute';
                 vid.style.top = '-9999px';
                 vid.style.width = '1px';
@@ -449,18 +447,27 @@
                 vid.playsInline = false;
                 document.body.appendChild(vid);
                 
-                vid.addEventListener('fullscreenchange', () => {
+                const flushBufferAndHide = () => {
                     if (!document.fullscreenElement && !document.webkitFullscreenElement) {
                         vid.pause();
-                        vid.removeAttribute('src'); // Flush decoder block
+                        vid.removeAttribute('src'); // Instantly flushes the decoder buffer preventing locks
                         vid.load();
+                        
+                        // Re-hide from desktop Chrome/Safari
+                        vid.style.top = '-9999px';
+                        vid.style.left = '';
+                        vid.style.width = '1px';
+                        vid.style.height = '1px';
+                        vid.style.opacity = '0';
+                        vid.style.position = 'absolute';
+                        vid.style.zIndex = '';
+                        vid.style.background = '';
                     }
-                });
-                vid.addEventListener('webkitendfullscreen', () => {
-                    vid.pause();
-                    vid.removeAttribute('src');
-                    vid.load();
-                });
+                };
+
+                document.addEventListener('fullscreenchange', flushBufferAndHide);
+                document.addEventListener('webkitfullscreenchange', flushBufferAndHide);
+                vid.addEventListener('webkitendfullscreen', flushBufferAndHide);
             }
             
             vid.src = url;
@@ -469,8 +476,21 @@
             let playPromise = vid.play();
             if (playPromise !== undefined) {
                 playPromise.then(() => {
-                    if (vid.webkitEnterFullscreen) { vid.webkitEnterFullscreen(); }
-                    else if (vid.requestFullscreen) { vid.requestFullscreen(); }
+                    if (vid.webkitEnterFullscreen) { 
+                        vid.webkitEnterFullscreen(); // iOS Mobile (Hijacks to native player, ignores CSS)
+                    }
+                    else if (vid.requestFullscreen) { 
+                        // Desktop browsers respect CSS, so we must make it visible before entering fullscreen
+                        vid.style.top = '0';
+                        vid.style.left = '0';
+                        vid.style.width = '100%';
+                        vid.style.height = '100%';
+                        vid.style.opacity = '1';
+                        vid.style.position = 'fixed';
+                        vid.style.zIndex = '9999';
+                        vid.style.background = '#000';
+                        vid.requestFullscreen(); 
+                    }
                 }).catch(e => {
                     window.open(url, '_blank');
                 });

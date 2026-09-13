@@ -438,60 +438,66 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
     cookie_path = get_cookie_file_for_url(url)
 
     if "instagram.com" in url:
-        logger.info("Executing custom Instagram extraction hook...")
-        ydl_opts = {'quiet': True}
-        if cookie_path: ydl_opts['cookiefile'] = cookie_path
+        ydl_opts_ig = {'ignoreerrors': True, 'quiet': True}
+        if cookie_path: ydl_opts_ig['cookiefile'] = cookie_path
         
-        extracted_title = "Instagram Media"
         try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            with yt_dlp.YoutubeDL(ydl_opts_ig) as ydl:
                 info = ydl.extract_info(url, download=False)
-                entries = info.get('entries', [info])
-                
-                t = info.get('title')
-                d = info.get('description')
-                if t and t.strip() and "Instagram" not in t: extracted_title = t
-                elif d and d.strip(): extracted_title = d
-                elif t: extracted_title = t
-        except Exception as e:
-            logger.error(f"IG metadata extract failed: {e}")
-            entries = []
-
-        for idx, e in enumerate(entries):
+        except Exception:
+            info = {}
+            
+        entries = info.get('entries', [info]) if info else []
+        idx = 0
+        
+        for e in entries:
             if not e: continue
-            is_vid = e.get('is_video') == True or e.get('ext') == 'mp4' or (e.get('url') and '.mp4' in e.get('url'))
+            
+            is_vid = e.get('is_video') == True or e.get('ext') == 'mp4'
             base_name = f"temp_yt_{task_id}_{idx:03d}"
             
-            dl_opts = {'quiet': True}
-            if cookie_path: dl_opts['cookiefile'] = cookie_path
-            dl_opts['http_headers'] = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
-            
             if is_vid:
-                v_url = e.get('url') or e.get('id')
-                dl_opts['outtmpl'] = os.path.join(DOWNLOAD_DIR, f"{base_name}.mp4")
-                dl_opts['format'] = 'bestvideo[ext=mp4][vcodec^=avc]+bestaudio[ext=m4a]/best[ext=mp4]/best'
+                v_url = e.get('url') or e.get('webpage_url') or url
+                dl_opts = {
+                    'outtmpl': os.path.join(DOWNLOAD_DIR, f"{base_name}.%(ext)s"),
+                    'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+                    'ignoreerrors': True,
+                    'quiet': True
+                }
+                if cookie_path: dl_opts['cookiefile'] = cookie_path
                 try:
                     with yt_dlp.YoutubeDL(dl_opts) as ydl_vid:
-                        ydl_vid.download([v_url if str(v_url).startswith('http') else url])
-                except Exception as ex: logger.error(f"IG Vid DL Error: {ex}")
+                        ydl_vid.download([v_url])
+                    
+                    with open(os.path.join(DOWNLOAD_DIR, f"{base_name}.info.json"), 'w', encoding='utf-8') as f:
+                        json.dump({'title': e.get('title') or info.get('title') or info.get('description') or "Instagram Video"}, f)
+                    
+                    img_url = None
+                    if e.get('thumbnails'): img_url = e.get('thumbnails')[-1].get('url')
+                    if img_url:
+                        img_data = requests.get(img_url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=10).content
+                        with open(os.path.join(DOWNLOAD_DIR, f"{base_name}.jpg"), 'wb') as f:
+                            f.write(img_data)
+                except: pass
             else:
-                img_url = e.get('url')
-                if not img_url and e.get('thumbnails'): img_url = e.get('thumbnails')[-1].get('url')
+                img_url = None
+                if e.get('thumbnails'): img_url = e.get('thumbnails')[-1].get('url')
+                if not img_url and e.get('url'): img_url = e.get('url')
+                
                 if img_url:
-                    dl_opts['outtmpl'] = os.path.join(DOWNLOAD_DIR, f"{base_name}.jpg")
                     try:
-                        with yt_dlp.YoutubeDL(dl_opts) as ydl_img:
-                            ydl_img.download([img_url])
-                    except Exception as ex: logger.error(f"IG Img DL Error: {ex}")
-        
-        dummy_info = os.path.join(DOWNLOAD_DIR, f"temp_yt_{task_id}_info.info.json")
-        with open(dummy_info, 'w', encoding='utf-8') as f:
-            json.dump({'title': extracted_title}, f)
+                        img_data = requests.get(img_url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=10).content
+                        with open(os.path.join(DOWNLOAD_DIR, f"{base_name}.jpg"), 'wb') as f:
+                            f.write(img_data)
+                        with open(os.path.join(DOWNLOAD_DIR, f"{base_name}.info.json"), 'w', encoding='utf-8') as f:
+                            json.dump({'title': e.get('title') or info.get('title') or info.get('description') or "Instagram Photo"}, f)
+                    except: pass
+            idx += 1
             
     else:
         ydl_opts = {
             'outtmpl': f'{DOWNLOAD_DIR}/temp_yt_{task_id}_%(autonumber)03d_%(id)s.%(ext)s',
-            'format': 'bestvideo[ext=mp4][vcodec^=avc]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+            'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
             'merge_output_format': 'mp4',
             'writeinfojson': True,
             'writethumbnail': True,
@@ -500,23 +506,28 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
             'progress_hooks': [lambda d: my_hook(d, task_id, user_id)]
         }
         if cookie_path: ydl_opts['cookiefile'] = cookie_path
-        
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl: 
                 ydl.extract_info(url, download=True)
         except Exception: pass 
 
     try:
-        media_files = [f for f in os.listdir(DOWNLOAD_DIR) if f.startswith(f"temp_yt_{task_id}_") and f.endswith(('.mp4', '.webm', '.mkv', '.jpg', '.png', '.webp'))]
+        media_files = [f for f in os.listdir(DOWNLOAD_DIR) if f.startswith(f"temp_yt_{task_id}_")]
 
         if media_files:
             media_files.sort()
             
             bases = {}
             for f in media_files:
-                base = f.rsplit('.', 1)[0]
+                base = f.split('.info.json')[0] if f.endswith('.info.json') else f.rsplit('.', 1)[0]
                 if base not in bases: bases[base] = []
                 bases[base].append(f)
+
+            valid_bases = {}
+            for b, files in bases.items():
+                if any(f.endswith(('.mp4', '.webm', '.mkv', '.jpg', '.png', '.webp')) for f in files):
+                    valid_bases[b] = files
+            bases = valid_bases
 
             if len(bases) == 1:
                 base = list(bases.keys())[0]
@@ -529,19 +540,28 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                     return
 
                 ext_found = primary.rsplit('.', 1)[1]
-                info_file = next((os.path.join(DOWNLOAD_DIR, jf) for jf in os.listdir(DOWNLOAD_DIR) if jf.startswith(f"temp_yt_{task_id}_") and jf.endswith(".info.json")), None)
+                info_file = next((os.path.join(DOWNLOAD_DIR, jf) for jf in files if jf.endswith(".info.json")), None)
                 
                 new_id = generate_secure_id()
                 new_media = os.path.join(DOWNLOAD_DIR, f"{new_id}.{ext_found}")
                 os.rename(os.path.join(DOWNLOAD_DIR, primary), new_media)
                 
                 extracted_title = None
+                thumb_downloaded = False
                 
                 for f in files:
                     if f != primary and f.endswith(('.jpg', '.webp', '.png')):
                         thumb_ext = f.rsplit('.', 1)[1]
-                        os.rename(os.path.join(DOWNLOAD_DIR, f), os.path.join(DOWNLOAD_DIR, f"{new_id}.{thumb_ext}"))
-                        break 
+                        if ext_found in ['jpg', 'png', 'webp']:
+                            try: os.remove(os.path.join(DOWNLOAD_DIR, f))
+                            except: pass
+                        else:
+                            os.rename(os.path.join(DOWNLOAD_DIR, f), os.path.join(DOWNLOAD_DIR, f"{new_id}.{thumb_ext}"))
+                            thumb_downloaded = True
+                            break 
+                            
+                if not thumb_downloaded and ext_found in ['mp4', 'webm', 'mkv']:
+                    subprocess.run(["ffmpeg", "-y", "-i", new_media, "-ss", "00:00:00.100", "-vframes", "1", "-q:v", "2", f"{DOWNLOAD_DIR}/{new_id}.jpg"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 
                 if info_file and os.path.exists(info_file):
                     try:
@@ -588,7 +608,8 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                     idx_counter += 1
 
                 extracted_title = "Media Carousel"
-                first_info = next((os.path.join(DOWNLOAD_DIR, jf) for jf in os.listdir(DOWNLOAD_DIR) if jf.startswith(f"temp_yt_{task_id}_") and jf.endswith(".info.json")), None)
+                
+                first_info = next((os.path.join(DOWNLOAD_DIR, f) for b in sorted_bases for f in bases[b] if f.endswith(".info.json")), None)
                 
                 if first_info and os.path.exists(first_info):
                     try:
@@ -685,96 +706,6 @@ def convert_local_file(input_path: str, final_path: str, video_id: str, user_id:
     extract_true_duration(video_id, user_id, custom_title=original_filename, expire_days=expire_days)
     if task_id in active_downloads: del active_downloads[task_id]
 
-@app.get("/api/env")
-def get_env():
-    with db_lock:
-        db = load_db()
-        return {"login_msg": db.get("settings", {}).get("login_msg", os.getenv("LOGIN_CONTACT_MSG", ""))}
-
-@app.post("/api/login")
-def login(response: Response, username: str = Form(...), password: str = Form(...)):
-    with db_lock:
-        db = load_db()
-        user_data = db.get("users", {}).get(username)
-
-    if user_data and user_data["password"] == hashlib.sha256(password.encode()).hexdigest():
-        response.set_cookie(key="upshare_session", value=user_data["token"], max_age=SESSION_DAYS * 86400, httponly=True, secure=True, samesite="lax")
-        return {"status": "success", "token": user_data["token"]}
-    raise StarletteHTTPException(status_code=401, detail="Invalid credentials")
-
-@app.post("/api/logout")
-def logout(response: Response):
-    response.delete_cookie("upshare_session")
-    return {"status": "logged_out"}
-
-@app.get("/api/stats")
-def get_stats(user: dict = Depends(verify_auth)):
-    with db_lock: db = load_db()
-    total_videos, total_disk = 0, 0
-
-    for f in os.listdir(DOWNLOAD_DIR):
-        if f.endswith(('.mp4', '.webm', '.mkv', '.html', '.jpg', '.png', '.webp')):
-            if f.startswith('temp_'): continue
-            vid_id = os.path.basename(f).rsplit('.', 1)[0]
-            
-            vid_info = db.get("videos", {}).get(vid_id)
-            if not vid_info: continue
-            
-            expected_ext = vid_info.get("ext")
-            if expected_ext:
-                if f != f"{vid_id}{expected_ext}": continue
-            else:
-                if f.endswith(('.jpg', '.png', '.webp')) and any(os.path.exists(os.path.join(DOWNLOAD_DIR, f"{vid_id}{e}")) for e in ['.mp4', '.webm', '.mkv', '.html']):
-                    continue
-            
-            owner = vid_info.get("owner", "")
-            if user["role"] == "admin" or owner == user["username"]:
-                total_videos += 1
-                try: total_disk += os.path.getsize(os.path.join(DOWNLOAD_DIR, f))
-                except FileNotFoundError: pass
-
-    user_bandwidth = db.get("users", {}).get(user["username"], {}).get("bandwidth", 0)
-
-    return {
-        "role": user["role"],
-        "used_disk": total_disk,
-        "user_bandwidth": user_bandwidth,
-        "bandwidth": db.get("server_bandwidth", 0) if user["role"] == "admin" else 0,
-        "video_count": total_videos,
-        "deleted_count": db.get("deleted_count", 0) if user["role"] == "admin" else 0
-    }
-
-@app.post("/api/download_form")
-async def form_download(background_tasks: BackgroundTasks, url: str = Form(...), expire_days: int = Form(0), confirm_override: str = Form(None), user: dict = Depends(verify_auth)):
-    warning_mb = user["config"].get("warning_mb", 150)
-    force_article = not is_social_media_url(url)
-
-    if not force_article and confirm_override != "true":
-        try:
-            ydl_opts = {'noplaylist': True}
-            if cp := get_cookie_file_for_url(url): ydl_opts['cookiefile'] = cp
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(url, download=False)
-                size_mb = (info.get("filesize") or info.get("filesize_approx") or 0) / (1024 * 1024)
-                if warning_mb > 0 and size_mb > warning_mb: return {"status": "needs_confirmation", "size_mb": round(size_mb, 1)}
-        except Exception: pass 
-
-    task_id = generate_secure_id()
-    active_downloads[task_id] = "Starting up..."
-    background_tasks.add_task(process_yt_dlp, url, user["username"], task_id, expire_days)
-    return {"status": "processing"}
-
-@app.post("/api/upload")
-async def upload_video(background_tasks: BackgroundTasks, file: UploadFile = File(...), expire_days: int = Form(0), user: dict = Depends(verify_auth)):
-    video_id, task_id = generate_secure_id(), generate_secure_id()
-    temp_path = os.path.join(DOWNLOAD_DIR, f"temp_{video_id}_{file.filename}")
-    final_path = os.path.join(DOWNLOAD_DIR, f"{video_id}.mp4")
-
-    active_downloads[task_id] = "Uploading..."
-    with open(temp_path, "wb") as buffer: buffer.write(await file.read())
-    background_tasks.add_task(convert_local_file, temp_path, final_path, video_id, user["username"], task_id, file.filename, expire_days)
-    return {"status": "processing"}
-
 @app.post("/api/edit/{video_id}")
 async def edit_video(video_id: str, background_tasks: BackgroundTasks, start: str = Form(...), end: str = Form(...), mode: str = Form(...), user: dict = Depends(verify_auth)):
     if not re.match(r'^[\d\.:]+$', start) or not re.match(r'^[\d\.:]+$', end):
@@ -796,8 +727,6 @@ async def edit_video(video_id: str, background_tasks: BackgroundTasks, start: st
     def run_edit():
         task_id = generate_secure_id()
         active_downloads[task_id] = "Clipping Media..."
-        
-        # Calculate strict duration to guarantee millisecond-accurate sync during re-encoding
         dur = max(0, float(end) - float(start))
         
         if mode == "copy":
@@ -811,7 +740,16 @@ async def edit_video(video_id: str, background_tasks: BackgroundTasks, start: st
             subprocess.run(["ffmpeg", "-ss", start, "-i", input_path, "-t", str(dur), "-c:v", "libx264", "-preset", "fast", "-c:a", "aac", temp_out, "-y"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             shutil.move(temp_out, input_path)
             subprocess.run(["ffmpeg", "-y", "-i", input_path, "-ss", "00:00:00.100", "-vframes", "1", "-q:v", "2", f"{DOWNLOAD_DIR}/{safe_id}.jpg"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            extract_true_duration(safe_id, user["username"], custom_title=vid.get('title'), ext=ext)
+            
+            try:
+                res = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", input_path], capture_output=True, text=True)
+                new_dur = float(res.stdout.strip())
+                with db_lock:
+                    db = load_db()
+                    if safe_id in db["videos"]:
+                        db["videos"][safe_id]["duration"] = new_dur
+                        save_db(db)
+            except: pass
             
         if task_id in active_downloads: del active_downloads[task_id]
 
@@ -983,6 +921,12 @@ def change_password(target_username: str, req: Request, password: str = Form(...
             return {"status": "success"}
     raise StarletteHTTPException(status_code=404, detail="User not found")
 
+@app.get("/api/env")
+def get_env():
+    with db_lock:
+        db = load_db()
+        return {"login_msg": db.get("settings", {}).get("login_msg", os.getenv("LOGIN_CONTACT_MSG", ""))}
+        
 @app.get("/icon.svg")
 def get_favicon(): return FileResponse("icon.svg")
 

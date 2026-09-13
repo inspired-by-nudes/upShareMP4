@@ -275,6 +275,8 @@
         let isLoggedIn = false, lastVideosString = "", currentTasks = {}, activeVideosData = [];
         let loginContactMsg = "";
 
+        const isMobileDevice = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) || ('ontouchstart' in window && window.innerWidth < 768);
+
         fetch('/api/env').then(r => r.json()).then(d => { loginContactMsg = d.login_msg; });
 
         function switchSegment(mode) {
@@ -432,7 +434,7 @@
             updateBulkCounter();
         }
 
-        // Bridge to allow native mobile player perfectly synced to DOM lifecycle + Desktop CSS fixes
+        // Mobile Fullscreen Player Controller
         function playFullscreen(url) {
             let vid = document.getElementById('fullscreen-player');
             if (!vid) {
@@ -450,18 +452,8 @@
                 const flushBufferAndHide = () => {
                     if (!document.fullscreenElement && !document.webkitFullscreenElement) {
                         vid.pause();
-                        vid.removeAttribute('src'); // Instantly flushes the decoder buffer preventing locks
+                        vid.removeAttribute('src');
                         vid.load();
-                        
-                        // Re-hide from desktop Chrome/Safari
-                        vid.style.top = '-9999px';
-                        vid.style.left = '';
-                        vid.style.width = '1px';
-                        vid.style.height = '1px';
-                        vid.style.opacity = '0';
-                        vid.style.position = 'absolute';
-                        vid.style.zIndex = '';
-                        vid.style.background = '';
                     }
                 };
 
@@ -471,24 +463,14 @@
             }
             
             vid.src = url;
-            vid.load(); // Forces iOS Safari to abandon old media buffer and attach to new URL
+            vid.load();
             
             let playPromise = vid.play();
             if (playPromise !== undefined) {
                 playPromise.then(() => {
                     if (vid.webkitEnterFullscreen) { 
-                        vid.webkitEnterFullscreen(); // iOS Mobile (Hijacks to native player, ignores CSS)
-                    }
-                    else if (vid.requestFullscreen) { 
-                        // Desktop browsers respect CSS, so we must make it visible before entering fullscreen
-                        vid.style.top = '0';
-                        vid.style.left = '0';
-                        vid.style.width = '100%';
-                        vid.style.height = '100%';
-                        vid.style.opacity = '1';
-                        vid.style.position = 'fixed';
-                        vid.style.zIndex = '9999';
-                        vid.style.background = '#000';
+                        vid.webkitEnterFullscreen();
+                    } else if (vid.requestFullscreen) { 
                         vid.requestFullscreen(); 
                     }
                 }).catch(e => {
@@ -527,8 +509,9 @@
                 let editBtn = (!isArticle && !isCarousel && !isImage) ? `<button class="btn btn-edit" onclick="openEditorModal('${v.id}', '${url}')">✂️</button>` : '';
                 let timeDisplay = (isArticle || isCarousel || isImage) ? (v.engine || (isImage ? '🖼️ Direct' : '📄 Readability')) : `⏱️ ${v.duration}`;
 
+                // Desktop opens in new tab natively; mobile launches native mobile fullscreen player
                 let viewAction = `<a href="${url}" target="_blank" class="btn btn-view">View</a>`;
-                if (!isArticle && !isCarousel && !isImage) {
+                if (!isArticle && !isCarousel && !isImage && isMobileDevice) {
                     viewAction = `<button class="btn btn-view" onclick="playFullscreen('${url}')">View</button>`;
                 }
 
@@ -650,6 +633,13 @@
                 const firstTab = document.querySelector('#settings-tabs .tab');
                 if(firstTab) firstTab.classList.add('active');
             }
+        }
+
+        async function saveLoginMsg() {
+            const msg = document.getElementById('loginMsgInput').value;
+            const fd = new FormData(); fd.append("login_msg", msg);
+            await fetch('/api/settings/login_msg', {method:'POST', body:fd});
+            alert("Login message updated.");
         }
 
         async function changePass() { const np = document.getElementById('newPass').value; if(np){ const fd = new FormData(); fd.append("password", np); await fetch('/api/stats'); alert("Password updated."); document.getElementById('newPass').value = ''; } }

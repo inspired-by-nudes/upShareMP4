@@ -443,19 +443,22 @@
             }
         };
 
-        // Instant Native Mobile Fullscreen
+        // Fully Supported Mobile Overlay Player for Strict iOS Policies
         function playFullscreen(url) {
             let vid = document.getElementById('fullscreen-player');
             if (!vid) {
                 vid = document.createElement('video');
                 vid.id = 'fullscreen-player';
-                vid.style.position = 'absolute';
-                vid.style.top = '-9999px';
-                vid.style.width = '1px';
-                vid.style.height = '1px';
-                vid.style.opacity = '0';
+                vid.style.position = 'fixed';
+                vid.style.top = '0';
+                vid.style.left = '0';
+                vid.style.width = '100%';
+                vid.style.height = '100%';
+                vid.style.zIndex = '999999';
+                vid.style.backgroundColor = '#000';
+                vid.style.display = 'none';
                 vid.controls = true;
-                vid.playsInline = false;
+                vid.playsInline = true;
                 document.body.appendChild(vid);
                 
                 const flushBufferAndHide = () => {
@@ -463,6 +466,7 @@
                         vid.pause();
                         vid.removeAttribute('src'); 
                         vid.load();
+                        vid.style.display = 'none';
                     }
                 };
 
@@ -471,17 +475,17 @@
                 vid.addEventListener('webkitendfullscreen', flushBufferAndHide);
             }
             
+            vid.style.display = 'block';
             vid.src = url;
             
-            // Critical fix: We execute the fullscreen API immediately *before* the video Promise starts parsing.
-            // This prevents mobile browsers from silently rejecting the command due to lost gesture tokens.
-            if (vid.webkitEnterFullscreen) { 
-                vid.webkitEnterFullscreen();
-            } else if (vid.requestFullscreen) { 
-                vid.requestFullscreen(); 
-            }
-            
-            vid.play().catch(e => {
+            vid.play().then(() => {
+                if (vid.webkitEnterFullscreen) { 
+                    vid.webkitEnterFullscreen();
+                } else if (vid.requestFullscreen) { 
+                    vid.requestFullscreen(); 
+                }
+            }).catch(e => {
+                vid.style.display = 'none';
                 window.open(url, '_blank');
             });
         }

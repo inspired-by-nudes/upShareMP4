@@ -132,7 +132,6 @@ def increment_view_counter(video_id: str, file_path: str, filename: str):
     try:
         now = time.time()
         with view_lock:
-            # 10 second debounce to prevent double-counting chunked media requests
             if video_id in recent_views and (now - recent_views[video_id]) < 10:
                 return
             recent_views[video_id] = now
@@ -455,24 +454,23 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
     download_success = False
 
     if "instagram.com" in url:
-        # NATIVE GALLERY-DL INTEGRATION
-        # gallery-dl completely bypasses yt-dlp's inability to extract Instagram photos & photo carousels
         try:
             if shutil.which("gallery-dl"):
                 active_downloads[task_id] = "Extracting with gallery-dl..."
-                cmd = ["gallery-dl", "-g", url]
+                
+                # NATIVE GALLERY-DL DOWNLOADING (Bypasses Python requests to avoid CDN 403 blocks)
+                # -D sets the EXACT directory (no subfolders), -f formats the filename directly
+                cmd = ["gallery-dl", "-D", DOWNLOAD_DIR, "-f", f"temp_yt_{task_id}_{{id}}_{{num}}.{{extension}}", url]
                 if cookie_path: cmd.extend(["--cookies", cookie_path])
                 
-                result = subprocess.run(cmd, capture_output=True, text=True)
-                direct_urls = [u.strip() for u in result.stdout.split('\n') if u.strip()]
+                subprocess.run(cmd, capture_output=True, text=True)
+                downloaded_files = [f for f in os.listdir(DOWNLOAD_DIR) if f.startswith(f"temp_yt_{task_id}_")]
                 
-                if direct_urls:
-                    idx = 0
-                    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
-                    cj = get_requests_cookies(cookie_path)
-                    
+                if downloaded_files:
                     meta_title = "Instagram Media"
                     try:
+                        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
+                        cj = get_requests_cookies(cookie_path)
                         r_page = requests.get(url, headers=headers, cookies=cj, timeout=10)
                         soup = BeautifulSoup(r_page.content, 'html.parser')
                         og_title = soup.find('meta', property='og:title')
@@ -480,20 +478,11 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                             meta_title = og_title.get('content').split(' on Instagram')[0].strip()
                     except: pass
                     
-                    for d_url in direct_urls:
-                        ext = 'mp4' if '.mp4' in d_url else ('jpg' if '.jpg' in d_url else ('webp' if '.webp' in d_url else 'jpg'))
-                        base_name = f"temp_yt_{task_id}_{idx:03d}"
-                        
-                        active_downloads[task_id] = f"Downloading {idx+1}/{len(direct_urls)}"
-                        r_media = requests.get(d_url, headers=headers, cookies=cj, stream=True, timeout=15)
-                        with open(os.path.join(DOWNLOAD_DIR, f"{base_name}.{ext}"), 'wb') as f:
-                            for chunk in r_media.iter_content(chunk_size=8192):
-                                if chunk: f.write(chunk)
-                                
-                        with open(os.path.join(DOWNLOAD_DIR, f"{base_name}.info.json"), 'w', encoding='utf-8') as f:
+                    for df in downloaded_files:
+                        base_n = df.rsplit('.', 1)[0]
+                        with open(os.path.join(DOWNLOAD_DIR, f"{base_n}.info.json"), 'w', encoding='utf-8') as f:
                             json.dump({'title': meta_title}, f)
                             
-                        idx += 1
                     download_success = True
             else:
                 logger.warning("gallery-dl not found, falling back to yt-dlp")
@@ -502,7 +491,12 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
 
         # YT-DLP FALLBACK (If gallery-dl fails or is not installed)
         if not download_success:
-            ydl_opts_ig = {'ignoreerrors': True, 'ignorenoformats': True}
+            ydl_opts_ig = {
+                'outtmpl': f'{DOWNLOAD_DIR}/temp_yt_{task_id}_%(autonumber)03d_%(id)s.%(ext)s',
+                'format': 'bestvideo[vcodec^=avc]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+                'ignoreerrors': True, 
+                'ignorenoformats': True
+            }
             if cookie_path: ydl_opts_ig['cookiefile'] = cookie_path
             
             info = None
@@ -531,16 +525,17 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                         img_url = og_img.get('content')
                         if img_url:
                             base_name = f"temp_yt_{task_id}_000"
-                            img_data = requests.get(img_url, headers=headers, cookies=cj, timeout=10).content
-                            with open(os.path.join(DOWNLOAD_DIR, f"{base_name}.jpg"), 'wb') as f:
-                                f.write(img_data)
-                            
-                            og_title = soup.find('meta', property='og:title')
-                            meta_title = og_title.get('content') if og_title else "Instagram Photo"
-                            meta_title = meta_title.split(' on Instagram')[0].strip()
-                            
-                            with open(os.path.join(DOWNLOAD_DIR, f"{base_name}.info.json"), 'w', encoding='utf-8') as f:
-                                json.dump({'title': meta_title}, f)
+                            r_img = requests.get(img_url, headers=headers, cookies=cj, timeout=10)
+                            if r_img.status_code == 200:
+                                with open(os.path.join(DOWNLOAD_DIR, f"{base_name}.jpg"), 'wb') as f:
+                                    f.write(r_img.content)
+                                
+                                og_title = soup.find('meta', property='og:title')
+                                meta_title = og_title.get('content') if og_title else "Instagram Photo"
+                                meta_title = meta_title.split(' on Instagram')[0].strip()
+                                
+                                with open(os.path.join(DOWNLOAD_DIR, f"{base_name}.info.json"), 'w', encoding='utf-8') as f:
+                                    json.dump({'title': meta_title}, f)
                 except Exception as e:
                     logger.error(f"Fallback IG scrape failed: {e}")
             else:
@@ -555,7 +550,7 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                         v_url = e.get('url') or e.get('webpage_url') or url
                         dl_opts = {
                             'outtmpl': os.path.join(DOWNLOAD_DIR, f"{base_name}.%(ext)s"),
-                            'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+                            'format': 'bestvideo[vcodec^=avc]+bestaudio[ext=m4a]/best[ext=mp4]/best',
                             'ignoreerrors': True
                         }
                         if cookie_path: dl_opts['cookiefile'] = cookie_path
@@ -572,9 +567,10 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                             if img_url:
                                 headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
                                 cj = get_requests_cookies(cookie_path)
-                                img_data = requests.get(img_url, headers=headers, cookies=cj, timeout=10).content
-                                with open(os.path.join(DOWNLOAD_DIR, f"{base_name}.jpg"), 'wb') as f:
-                                    f.write(img_data)
+                                r_img = requests.get(img_url, headers=headers, cookies=cj, timeout=10)
+                                if r_img.status_code == 200:
+                                    with open(os.path.join(DOWNLOAD_DIR, f"{base_name}.jpg"), 'wb') as f:
+                                        f.write(r_img.content)
                         except Exception as ex:
                             logger.error(f"Error downloading Instagram video entry: {ex}")
                     else:
@@ -587,12 +583,13 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                             try:
                                 headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
                                 cj = get_requests_cookies(cookie_path)
-                                img_data = requests.get(img_url, headers=headers, cookies=cj, timeout=10).content
-                                with open(os.path.join(DOWNLOAD_DIR, f"{base_name}.jpg"), 'wb') as f:
-                                    f.write(img_data)
-                                meta_title = e.get('title') or (info.get('title') if info else None) or (info.get('description') if info else None) or "Instagram Photo"
-                                with open(os.path.join(DOWNLOAD_DIR, f"{base_name}.info.json"), 'w', encoding='utf-8') as f:
-                                    json.dump({'title': meta_title}, f)
+                                r_img = requests.get(img_url, headers=headers, cookies=cj, timeout=10)
+                                if r_img.status_code == 200:
+                                    with open(os.path.join(DOWNLOAD_DIR, f"{base_name}.jpg"), 'wb') as f:
+                                        f.write(r_img.content)
+                                    meta_title = e.get('title') or (info.get('title') if info else None) or (info.get('description') if info else None) or "Instagram Photo"
+                                    with open(os.path.join(DOWNLOAD_DIR, f"{base_name}.info.json"), 'w', encoding='utf-8') as f:
+                                        json.dump({'title': meta_title}, f)
                             except Exception as ex:
                                 logger.error(f"Error downloading Instagram image entry: {ex}")
                     idx += 1
@@ -601,7 +598,7 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
         # Standard yt-dlp block for YouTube, TikTok, etc
         ydl_opts = {
             'outtmpl': f'{DOWNLOAD_DIR}/temp_yt_{task_id}_%(autonumber)03d_%(id)s.%(ext)s',
-            'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+            'format': 'bestvideo[vcodec^=avc]+bestaudio[ext=m4a]/best[ext=mp4]/best', # CRITICAL: Force H.264 video for strict iOS Compatibility
             'merge_output_format': 'mp4',
             'writeinfojson': True,
             'writethumbnail': True,

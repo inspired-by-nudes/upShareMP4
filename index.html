@@ -275,8 +275,6 @@
         let isLoggedIn = false, lastVideosString = "", currentTasks = {}, activeVideosData = [];
         let loginContactMsg = "";
 
-        const isMobileDevice = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) || ('ontouchstart' in window && window.innerWidth < 768);
-
         fetch('/api/env').then(r => r.json()).then(d => { loginContactMsg = d.login_msg; });
 
         function switchSegment(mode) {
@@ -434,7 +432,19 @@
             updateBulkCounter();
         }
 
-        // Mobile Fullscreen Player Controller
+        // Smart View Controller: Routes fullscreen for mobile/tablet, new tab for desktop
+        window.smartView = function(url) {
+            const isTouch = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
+            const isMobileUA = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+            
+            if (isTouch || isMobileUA) {
+                playFullscreen(url);
+            } else {
+                window.open(url, '_blank');
+            }
+        };
+
+        // Mobile Fullscreen Native Player
         function playFullscreen(url) {
             let vid = document.getElementById('fullscreen-player');
             if (!vid) {
@@ -452,7 +462,7 @@
                 const flushBufferAndHide = () => {
                     if (!document.fullscreenElement && !document.webkitFullscreenElement) {
                         vid.pause();
-                        vid.removeAttribute('src');
+                        vid.removeAttribute('src'); // Flush the decoder block completely
                         vid.load();
                     }
                 };
@@ -469,9 +479,9 @@
             if (playPromise !== undefined) {
                 playPromise.then(() => {
                     if (vid.webkitEnterFullscreen) { 
-                        vid.webkitEnterFullscreen();
+                        vid.webkitEnterFullscreen(); // Hijack iOS to native player
                     } else if (vid.requestFullscreen) { 
-                        vid.requestFullscreen(); 
+                        vid.requestFullscreen(); // Fallback for other touch devices
                     }
                 }).catch(e => {
                     window.open(url, '_blank');
@@ -509,10 +519,9 @@
                 let editBtn = (!isArticle && !isCarousel && !isImage) ? `<button class="btn btn-edit" onclick="openEditorModal('${v.id}', '${url}')">✂️</button>` : '';
                 let timeDisplay = (isArticle || isCarousel || isImage) ? (v.engine || (isImage ? '🖼️ Direct' : '📄 Readability')) : `⏱️ ${v.duration}`;
 
-                // Desktop opens in new tab natively; mobile launches native mobile fullscreen player
                 let viewAction = `<a href="${url}" target="_blank" class="btn btn-view">View</a>`;
-                if (!isArticle && !isCarousel && !isImage && isMobileDevice) {
-                    viewAction = `<button class="btn btn-view" onclick="playFullscreen('${url}')">View</button>`;
+                if (!isArticle && !isCarousel && !isImage) {
+                    viewAction = `<button class="btn btn-view" onclick="window.smartView('${url}')">View</button>`;
                 }
 
                 htmlBuffer += `

@@ -55,6 +55,16 @@ def get_cookie_file_for_url(url: str):
     if os.path.exists(COOKIE_FILE): return COOKIE_FILE
     return None
 
+def get_requests_cookies(cookie_path: str):
+    if not cookie_path or not os.path.exists(cookie_path): return None
+    import http.cookiejar
+    cj = http.cookiejar.MozillaCookieJar(cookie_path)
+    try:
+        cj.load(ignore_discard=True, ignore_expires=True)
+        return cj
+    except:
+        return None
+
 def is_social_media_url(url: str) -> bool:
     domain = urlparse(url).netloc.lower()
     social_domains = ["instagram.com", "tiktok.com", "youtube.com", "youtu.be", "twitter.com", "x.com", "reddit.com", "facebook.com", "fb.watch", "vimeo.com"]
@@ -435,7 +445,7 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
     cookie_path = get_cookie_file_for_url(url)
 
     if "instagram.com" in url:
-        ydl_opts_ig = {'ignoreerrors': True}
+        ydl_opts_ig = {'ignoreerrors': True, 'ignorenoformats': True}
         if cookie_path: ydl_opts_ig['cookiefile'] = cookie_path
         
         info = None
@@ -449,59 +459,88 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
         if info:
             if isinstance(info, dict) and 'entries' in info and info['entries']:
                 entries = [e for e in info['entries'] if e]
-            else:
+            elif isinstance(info, dict):
                 entries = [info]
                 
-        idx = 0
-        for e in entries:
-            if not e or not isinstance(e, dict): continue
-            
-            is_vid = e.get('is_video') == True or e.get('ext') == 'mp4'
-            base_name = f"temp_yt_{task_id}_{idx:03d}"
-            
-            if is_vid:
-                v_url = e.get('url') or e.get('webpage_url') or url
-                dl_opts = {
-                    'outtmpl': os.path.join(DOWNLOAD_DIR, f"{base_name}.%(ext)s"),
-                    'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
-                    'ignoreerrors': True
-                }
-                if cookie_path: dl_opts['cookiefile'] = cookie_path
-                try:
-                    with yt_dlp.YoutubeDL(dl_opts) as ydl_vid:
-                        ydl_vid.download([v_url])
-                    
-                    meta_title = e.get('title') or (info.get('title') if info else None) or (info.get('description') if info else None) or "Instagram Video"
-                    with open(os.path.join(DOWNLOAD_DIR, f"{base_name}.info.json"), 'w', encoding='utf-8') as f:
-                        json.dump({'title': meta_title}, f)
-                    
-                    img_url = None
-                    if e.get('thumbnails'): img_url = e.get('thumbnails')[-1].get('url')
-                    if img_url:
-                        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
-                        img_data = requests.get(img_url, headers=headers, timeout=10).content
-                        with open(os.path.join(DOWNLOAD_DIR, f"{base_name}.jpg"), 'wb') as f:
-                            f.write(img_data)
-                except Exception as ex:
-                    logger.error(f"Error downloading Instagram video entry: {ex}")
-            else:
-                img_url = None
-                if e.get('thumbnails'): img_url = e.get('thumbnails')[-1].get('url')
-                if not img_url and e.get('url'): img_url = e.get('url')
-                if not img_url and e.get('display_url'): img_url = e.get('display_url')
+        # NATIVE INSTAGRAM SCRAPE FALLBACK: For single photos or entirely photo-based posts 
+        # where yt-dlp deliberately crashes with "There is no video in this post"
+        if not entries:
+            try:
+                headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
+                cj = get_requests_cookies(cookie_path)
+                r = requests.get(url, headers=headers, cookies=cj, timeout=10)
+                soup = BeautifulSoup(r.content, 'html.parser')
                 
-                if img_url:
-                    try:
-                        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
-                        img_data = requests.get(img_url, headers=headers, timeout=10).content
+                og_img = soup.find('meta', property='og:image')
+                if og_img:
+                    img_url = og_img.get('content')
+                    if img_url:
+                        base_name = f"temp_yt_{task_id}_000"
+                        img_data = requests.get(img_url, headers=headers, cookies=cj, timeout=10).content
                         with open(os.path.join(DOWNLOAD_DIR, f"{base_name}.jpg"), 'wb') as f:
                             f.write(img_data)
-                        meta_title = e.get('title') or (info.get('title') if info else None) or (info.get('description') if info else None) or "Instagram Photo"
+                        
+                        og_title = soup.find('meta', property='og:title')
+                        meta_title = og_title.get('content') if og_title else "Instagram Photo"
+                        meta_title = meta_title.split(' on Instagram')[0].strip()
+                        
                         with open(os.path.join(DOWNLOAD_DIR, f"{base_name}.info.json"), 'w', encoding='utf-8') as f:
                             json.dump({'title': meta_title}, f)
+            except Exception as e:
+                logger.error(f"Fallback IG scrape failed: {e}")
+        else:
+            idx = 0
+            for e in entries:
+                if not e or not isinstance(e, dict): continue
+                
+                is_vid = e.get('is_video') == True or e.get('ext') == 'mp4'
+                base_name = f"temp_yt_{task_id}_{idx:03d}"
+                
+                if is_vid:
+                    v_url = e.get('url') or e.get('webpage_url') or url
+                    dl_opts = {
+                        'outtmpl': os.path.join(DOWNLOAD_DIR, f"{base_name}.%(ext)s"),
+                        'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+                        'ignoreerrors': True
+                    }
+                    if cookie_path: dl_opts['cookiefile'] = cookie_path
+                    try:
+                        with yt_dlp.YoutubeDL(dl_opts) as ydl_vid:
+                            ydl_vid.download([v_url])
+                        
+                        meta_title = e.get('title') or (info.get('title') if info else None) or (info.get('description') if info else None) or "Instagram Video"
+                        with open(os.path.join(DOWNLOAD_DIR, f"{base_name}.info.json"), 'w', encoding='utf-8') as f:
+                            json.dump({'title': meta_title}, f)
+                        
+                        img_url = None
+                        if e.get('thumbnails'): img_url = e.get('thumbnails')[-1].get('url')
+                        if img_url:
+                            headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+                            cj = get_requests_cookies(cookie_path)
+                            img_data = requests.get(img_url, headers=headers, cookies=cj, timeout=10).content
+                            with open(os.path.join(DOWNLOAD_DIR, f"{base_name}.jpg"), 'wb') as f:
+                                f.write(img_data)
                     except Exception as ex:
-                        logger.error(f"Error downloading Instagram image entry: {ex}")
-            idx += 1
+                        logger.error(f"Error downloading Instagram video entry: {ex}")
+                else:
+                    img_url = None
+                    if e.get('thumbnails'): img_url = e.get('thumbnails')[-1].get('url')
+                    if not img_url and e.get('url'): img_url = e.get('url')
+                    if not img_url and e.get('display_url'): img_url = e.get('display_url')
+                    
+                    if img_url:
+                        try:
+                            headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+                            cj = get_requests_cookies(cookie_path)
+                            img_data = requests.get(img_url, headers=headers, cookies=cj, timeout=10).content
+                            with open(os.path.join(DOWNLOAD_DIR, f"{base_name}.jpg"), 'wb') as f:
+                                f.write(img_data)
+                            meta_title = e.get('title') or (info.get('title') if info else None) or (info.get('description') if info else None) or "Instagram Photo"
+                            with open(os.path.join(DOWNLOAD_DIR, f"{base_name}.info.json"), 'w', encoding='utf-8') as f:
+                                json.dump({'title': meta_title}, f)
+                        except Exception as ex:
+                            logger.error(f"Error downloading Instagram image entry: {ex}")
+                idx += 1
             
     else:
         ydl_opts = {

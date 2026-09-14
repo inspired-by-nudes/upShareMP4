@@ -458,32 +458,54 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
             if shutil.which("gallery-dl"):
                 active_downloads[task_id] = "Extracting with gallery-dl..."
                 
-                # NATIVE GALLERY-DL DOWNLOADING (Bypasses Python requests to avoid CDN 403 blocks)
-                # -D sets the EXACT directory (no subfolders), -f formats the filename directly
-                cmd = ["gallery-dl", "-D", DOWNLOAD_DIR, "-f", f"temp_yt_{task_id}_{{id}}_{{num}}.{{extension}}", url]
+                temp_dl_dir = os.path.join(DOWNLOAD_DIR, f"gallery_dl_{task_id}")
+                os.makedirs(temp_dl_dir, exist_ok=True)
+                
+                # NATIVE GALLERY-DL DOWNLOADING - Isolates files into a unique temp directory
+                cmd = ["gallery-dl", "-D", temp_dl_dir, url]
                 if cookie_path: cmd.extend(["--cookies", cookie_path])
                 
                 subprocess.run(cmd, capture_output=True, text=True)
-                downloaded_files = [f for f in os.listdir(DOWNLOAD_DIR) if f.startswith(f"temp_yt_{task_id}_")]
                 
-                if downloaded_files:
+                extracted = []
+                if os.path.exists(temp_dl_dir):
+                    for root, dirs, files in os.walk(temp_dl_dir):
+                        for f in files:
+                            extracted.append(os.path.join(root, f))
+                
+                if extracted:
                     meta_title = "Instagram Media"
                     try:
                         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
-                        cj = get_requests_cookies(cookie_path)
-                        r_page = requests.get(url, headers=headers, cookies=cj, timeout=10)
+                        r_page = requests.get(url, headers=headers, timeout=10)
+                        if r_page.status_code != 200:
+                            cj = get_requests_cookies(cookie_path)
+                            r_page = requests.get(url, headers=headers, cookies=cj, timeout=10)
+                            
                         soup = BeautifulSoup(r_page.content, 'html.parser')
                         og_title = soup.find('meta', property='og:title')
                         if og_title and og_title.get('content'):
                             meta_title = og_title.get('content').split(' on Instagram')[0].strip()
                     except: pass
                     
-                    for df in downloaded_files:
-                        base_n = df.rsplit('.', 1)[0]
-                        with open(os.path.join(DOWNLOAD_DIR, f"{base_n}.info.json"), 'w', encoding='utf-8') as f:
+                    idx = 0
+                    extracted.sort() 
+                    
+                    # Sweeps the temp folder, standardizes extensions, and moves to main directory
+                    for filepath in extracted:
+                        ext = filepath.rsplit('.', 1)[-1].lower() if '.' in filepath else 'jpg'
+                        if ext == 'jpeg': ext = 'jpg'
+                        
+                        new_name = f"temp_yt_{task_id}_{idx:03d}.{ext}"
+                        shutil.move(filepath, os.path.join(DOWNLOAD_DIR, new_name))
+                        
+                        with open(os.path.join(DOWNLOAD_DIR, f"temp_yt_{task_id}_{idx:03d}.info.json"), 'w', encoding='utf-8') as f:
                             json.dump({'title': meta_title}, f)
                             
+                        idx += 1
                     download_success = True
+                    
+                shutil.rmtree(temp_dl_dir, ignore_errors=True)
             else:
                 logger.warning("gallery-dl not found, falling back to yt-dlp")
         except Exception as e:
@@ -494,8 +516,10 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
             ydl_opts_ig = {
                 'outtmpl': f'{DOWNLOAD_DIR}/temp_yt_{task_id}_%(autonumber)03d_%(id)s.%(ext)s',
                 'format': 'bestvideo[vcodec^=avc]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+                'merge_output_format': 'mp4',
                 'ignoreerrors': True, 
-                'ignorenoformats': True
+                'ignorenoformats': True,
+                'postprocessor_args': {'ffmpeg': ['-movflags', '+faststart']}
             }
             if cookie_path: ydl_opts_ig['cookiefile'] = cookie_path
             
@@ -515,7 +539,7 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                     
             if not entries:
                 try:
-                    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
+                    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
                     cj = get_requests_cookies(cookie_path)
                     r = requests.get(url, headers=headers, cookies=cj, timeout=10)
                     soup = BeautifulSoup(r.content, 'html.parser')
@@ -551,7 +575,9 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                         dl_opts = {
                             'outtmpl': os.path.join(DOWNLOAD_DIR, f"{base_name}.%(ext)s"),
                             'format': 'bestvideo[vcodec^=avc]+bestaudio[ext=m4a]/best[ext=mp4]/best',
-                            'ignoreerrors': True
+                            'merge_output_format': 'mp4',
+                            'ignoreerrors': True,
+                            'postprocessor_args': {'ffmpeg': ['-movflags', '+faststart']}
                         }
                         if cookie_path: dl_opts['cookiefile'] = cookie_path
                         try:
@@ -598,12 +624,13 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
         # Standard yt-dlp block for YouTube, TikTok, etc
         ydl_opts = {
             'outtmpl': f'{DOWNLOAD_DIR}/temp_yt_{task_id}_%(autonumber)03d_%(id)s.%(ext)s',
-            'format': 'bestvideo[vcodec^=avc]+bestaudio[ext=m4a]/best[ext=mp4]/best', # CRITICAL: Force H.264 video for strict iOS Compatibility
+            'format': 'bestvideo[vcodec^=avc]+bestaudio[ext=m4a]/best[ext=mp4]/best', 
             'merge_output_format': 'mp4',
             'writeinfojson': True,
             'writethumbnail': True,
             'noplaylist': False,
             'ignoreerrors': True,
+            'postprocessor_args': {'ffmpeg': ['-movflags', '+faststart']}, # Critical: Applies faststart natively during yt-dlp merge
             'progress_hooks': [lambda d: my_hook(d, task_id, user_id)]
         }
         if cookie_path: ydl_opts['cookiefile'] = cookie_path
@@ -629,7 +656,7 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
 
             valid_bases = {}
             for b, files in bases.items():
-                if any(f.endswith(('.mp4', '.webm', '.mkv', '.jpg', '.png', '.webp')) for f in files):
+                if any(f.endswith(('.mp4', '.webm', '.mkv', '.jpg', '.jpeg', '.png', '.webp')) for f in files):
                     valid_bases[b] = files
             bases = valid_bases
 
@@ -639,27 +666,40 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                 
                 primary = next((f for f in files if f.endswith(('.mp4', '.webm', '.mkv'))), None)
                 if not primary:
-                    primary = next((f for f in files if f.endswith(('.jpg', '.png', '.webp'))), files[0])
-                if not primary.endswith(('.mp4', '.webm', '.mkv', '.jpg', '.png', '.webp')):
+                    primary = next((f for f in files if f.endswith(('.jpg', '.jpeg', '.png', '.webp'))), files[0])
+                if not primary.endswith(('.mp4', '.webm', '.mkv', '.jpg', '.jpeg', '.png', '.webp')):
                     return
 
-                ext_found = primary.rsplit('.', 1)[1]
+                ext_found = primary.rsplit('.', 1)[1].lower()
+                if ext_found == 'jpeg': ext_found = 'jpg'
                 info_file = next((os.path.join(DOWNLOAD_DIR, jf) for jf in files if jf.endswith(".info.json")), None)
                 
                 new_id = generate_secure_id()
                 new_media = os.path.join(DOWNLOAD_DIR, f"{new_id}.{ext_found}")
                 os.rename(os.path.join(DOWNLOAD_DIR, primary), new_media)
                 
+                # GUARANTEE moov ATOM FASTSTART FOR MP4s ON iOS
+                if ext_found == 'mp4':
+                    active_downloads[task_id] = "Optimizing for iOS..."
+                    temp_fs = os.path.join(DOWNLOAD_DIR, f"fs_{new_id}.mp4")
+                    res = subprocess.run(["ffmpeg", "-y", "-i", new_media, "-c", "copy", "-movflags", "+faststart", temp_fs], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    if res.returncode == 0 and os.path.exists(temp_fs):
+                        os.replace(temp_fs, new_media)
+                    else:
+                        try: os.remove(temp_fs)
+                        except: pass
+                
                 extracted_title = None
                 thumb_downloaded = False
                 
                 for f in files:
-                    if f != primary and f.endswith(('.jpg', '.webp', '.png')):
-                        thumb_ext = f.rsplit('.', 1)[1]
+                    if f != primary and f.endswith(('.jpg', '.jpeg', '.webp', '.png')):
+                        thumb_ext = f.rsplit('.', 1)[1].lower()
                         if ext_found in ['jpg', 'png', 'webp']:
                             try: os.remove(os.path.join(DOWNLOAD_DIR, f))
                             except: pass
                         else:
+                            if thumb_ext == 'jpeg': thumb_ext = 'jpg'
                             os.rename(os.path.join(DOWNLOAD_DIR, f), os.path.join(DOWNLOAD_DIR, f"{new_id}.{thumb_ext}"))
                             thumb_downloaded = True
                             break 
@@ -696,14 +736,26 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                     files = bases[base]
                     primary = next((f for f in files if f.endswith(('.mp4', '.webm', '.mkv'))), None)
                     if not primary:
-                        primary = next((f for f in files if f.endswith(('.jpg', '.png', '.webp'))), files[0])
+                        primary = next((f for f in files if f.endswith(('.jpg', '.jpeg', '.png', '.webp'))), files[0])
 
-                    if not primary.endswith(('.mp4', '.webm', '.mkv', '.jpg', '.png', '.webp')):
+                    if not primary.endswith(('.mp4', '.webm', '.mkv', '.jpg', '.jpeg', '.png', '.webp')):
                         continue
                         
-                    ext = primary.rsplit('.', 1)[1]
+                    ext = primary.rsplit('.', 1)[1].lower()
+                    if ext == 'jpeg': ext = 'jpg'
                     new_media_name = f"{new_id}_{idx_counter}.{ext}"
-                    os.rename(os.path.join(DOWNLOAD_DIR, primary), os.path.join(DOWNLOAD_DIR, new_media_name))
+                    new_media_path = os.path.join(DOWNLOAD_DIR, new_media_name)
+                    os.rename(os.path.join(DOWNLOAD_DIR, primary), new_media_path)
+                    
+                    if ext == 'mp4':
+                        active_downloads[task_id] = "Optimizing for iOS..."
+                        temp_fs = os.path.join(DOWNLOAD_DIR, f"fs_{new_media_name}")
+                        res = subprocess.run(["ffmpeg", "-y", "-i", new_media_path, "-c", "copy", "-movflags", "+faststart", temp_fs], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                        if res.returncode == 0 and os.path.exists(temp_fs):
+                            os.replace(temp_fs, new_media_path)
+                        else:
+                            try: os.remove(temp_fs)
+                            except: pass
                     
                     if ext in ['mp4', 'webm', 'mkv']:
                         carousel_tags += f"<video src='/videos/{new_media_name}' controls playsinline style='width: 100%; height: 100%; object-fit: contain; flex-shrink: 0;'></video>"
@@ -782,8 +834,9 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                 first_files = bases[first_base]
                 first_primary = next((f for f in first_files if f.endswith(('.mp4', '.webm', '.mkv'))), None)
                 if not first_primary:
-                    first_primary = next((f for f in first_files if f.endswith(('.jpg', '.png', '.webp'))), first_files[0])
-                first_ext = first_primary.rsplit('.', 1)[1]
+                    first_primary = next((f for f in first_files if f.endswith(('.jpg', '.jpeg', '.png', '.webp'))), first_files[0])
+                first_ext = first_primary.rsplit('.', 1)[1].lower()
+                if first_ext == 'jpeg': first_ext = 'jpg'
 
                 if first_ext in ['mp4', 'webm', 'mkv']:
                     subprocess.run(["ffmpeg", "-y", "-i", os.path.join(DOWNLOAD_DIR, f"{new_id}_0.{first_ext}"), "-ss", "00:00:00.100", "-vframes", "1", "-q:v", "2", f"{DOWNLOAD_DIR}/{new_id}.jpg"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -803,7 +856,7 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
 
 def convert_local_file(input_path: str, final_path: str, video_id: str, user_id: str, task_id: str, original_filename: str, expire_days: int):
     active_downloads[task_id] = "Converting..."
-    subprocess.run(["ffmpeg", "-i", input_path, "-c:v", "libx264", "-preset", "fast", "-c:a", "aac", final_path, "-y"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    subprocess.run(["ffmpeg", "-i", input_path, "-c:v", "libx264", "-preset", "fast", "-c:a", "aac", "-movflags", "+faststart", final_path, "-y"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     subprocess.run(["ffmpeg", "-y", "-i", final_path, "-ss", "00:00:00.100", "-vframes", "1", "-q:v", "2", f"{DOWNLOAD_DIR}/{video_id}.jpg"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     os.remove(input_path)
     extract_true_duration(video_id, user_id, custom_title=original_filename, expire_days=expire_days)
@@ -888,12 +941,12 @@ async def edit_video(video_id: str, background_tasks: BackgroundTasks, start: st
         if mode == "copy":
             new_id = generate_secure_id()
             out_path = os.path.join(DOWNLOAD_DIR, f"{new_id}{ext}")
-            subprocess.run(["ffmpeg", "-ss", start, "-i", input_path, "-t", str(dur), "-c:v", "libx264", "-preset", "fast", "-c:a", "aac", out_path, "-y"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run(["ffmpeg", "-ss", start, "-i", input_path, "-t", str(dur), "-c:v", "libx264", "-preset", "fast", "-c:a", "aac", "-movflags", "+faststart", out_path, "-y"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             subprocess.run(["ffmpeg", "-y", "-i", out_path, "-ss", "00:00:00.100", "-vframes", "1", "-q:v", "2", f"{DOWNLOAD_DIR}/{new_id}.jpg"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             extract_true_duration(new_id, user["username"], custom_title=f"Clip - {vid.get('title', new_id)}", ext=ext)
         else:
             temp_out = os.path.join(DOWNLOAD_DIR, f"temp_edit_{safe_id}{ext}")
-            subprocess.run(["ffmpeg", "-ss", start, "-i", input_path, "-t", str(dur), "-c:v", "libx264", "-preset", "fast", "-c:a", "aac", temp_out, "-y"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run(["ffmpeg", "-ss", start, "-i", input_path, "-t", str(dur), "-c:v", "libx264", "-preset", "fast", "-c:a", "aac", "-movflags", "+faststart", temp_out, "-y"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             shutil.move(temp_out, input_path)
             subprocess.run(["ffmpeg", "-y", "-i", input_path, "-ss", "00:00:00.100", "-vframes", "1", "-q:v", "2", f"{DOWNLOAD_DIR}/{safe_id}.jpg"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             

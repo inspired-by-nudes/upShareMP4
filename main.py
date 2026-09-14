@@ -461,7 +461,6 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                 temp_dl_dir = os.path.join(DOWNLOAD_DIR, f"gallery_dl_{task_id}")
                 os.makedirs(temp_dl_dir, exist_ok=True)
                 
-                # NATIVE GALLERY-DL DOWNLOADING - Isolates files into a unique temp directory
                 cmd = ["gallery-dl", "-D", temp_dl_dir, url]
                 if cookie_path: cmd.extend(["--cookies", cookie_path])
                 
@@ -491,7 +490,6 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                     idx = 0
                     extracted.sort() 
                     
-                    # Sweeps the temp folder, standardizes extensions, and moves to main directory
                     for filepath in extracted:
                         ext = filepath.rsplit('.', 1)[-1].lower() if '.' in filepath else 'jpg'
                         if ext == 'jpeg': ext = 'jpg'
@@ -511,7 +509,6 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
         except Exception as e:
             logger.error(f"gallery-dl failed, falling back to yt-dlp: {e}")
 
-        # YT-DLP FALLBACK (If gallery-dl fails or is not installed)
         if not download_success:
             ydl_opts_ig = {
                 'outtmpl': f'{DOWNLOAD_DIR}/temp_yt_{task_id}_%(autonumber)03d_%(id)s.%(ext)s',
@@ -621,7 +618,6 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                     idx += 1
             
     else:
-        # Standard yt-dlp block for YouTube, TikTok, etc
         ydl_opts = {
             'outtmpl': f'{DOWNLOAD_DIR}/temp_yt_{task_id}_%(autonumber)03d_%(id)s.%(ext)s',
             'format': 'bestvideo[vcodec^=avc]+bestaudio[ext=m4a]/best[ext=mp4]/best', 
@@ -630,7 +626,7 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
             'writethumbnail': True,
             'noplaylist': False,
             'ignoreerrors': True,
-            'postprocessor_args': {'ffmpeg': ['-movflags', '+faststart']}, # Critical: Applies faststart natively during yt-dlp merge
+            'postprocessor_args': {'ffmpeg': ['-movflags', '+faststart']}, 
             'progress_hooks': [lambda d: my_hook(d, task_id, user_id)]
         }
         if cookie_path: ydl_opts['cookiefile'] = cookie_path
@@ -640,7 +636,6 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
         except Exception as e:
             logger.error(f"yt-dlp extract error: {e}")
 
-    # Post-Processing Block (Unifies temp files into a single object or Carousel)
     try:
         active_downloads[task_id] = "Processing Data..."
         media_files = [f for f in os.listdir(DOWNLOAD_DIR) if f.startswith(f"temp_yt_{task_id}_")]
@@ -678,7 +673,6 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                 new_media = os.path.join(DOWNLOAD_DIR, f"{new_id}.{ext_found}")
                 os.rename(os.path.join(DOWNLOAD_DIR, primary), new_media)
                 
-                # GUARANTEE moov ATOM FASTSTART FOR MP4s ON iOS
                 if ext_found == 'mp4':
                     active_downloads[task_id] = "Optimizing for iOS..."
                     temp_fs = os.path.join(DOWNLOAD_DIR, f"fs_{new_id}.mp4")
@@ -757,10 +751,11 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                             try: os.remove(temp_fs)
                             except: pass
                     
+                    # ENHANCED CAROUSEL INJECTION: Proper flex-shrink item wrapping
                     if ext in ['mp4', 'webm', 'mkv']:
-                        carousel_tags += f"<video src='/videos/{new_media_name}' controls playsinline style='width: 100%; height: 100%; object-fit: contain; flex-shrink: 0;'></video>"
+                        carousel_tags += f"<div class='carousel-item'><video src='/videos/{new_media_name}' controls playsinline></video></div>"
                     else:
-                        carousel_tags += f"<img src='/videos/{new_media_name}' style='width: 100%; height: 100%; object-fit: contain; flex-shrink: 0;'>"
+                        carousel_tags += f"<div class='carousel-item'><img src='/videos/{new_media_name}'></div>"
                     idx_counter += 1
 
                 extracted_title = "Media Carousel"
@@ -785,8 +780,10 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                 <title>{html.escape(extracted_title)}</title>
                 <style>
                     body {{ margin: 0; background: #000; display: flex; align-items: center; justify-content: center; height: 100vh; overflow: hidden; font-family: sans-serif; }}
-                    .carousel-container {{ position: relative; width: 100%; max-width: 800px; height: 100vh; overflow: hidden; }}
-                    .carousel-track {{ display: flex; transition: transform 0.3s ease-in-out; height: 100%; }}
+                    .carousel-container {{ position: relative; width: 100%; height: 100vh; overflow: hidden; display: flex; }}
+                    .carousel-track {{ display: flex; transition: transform 0.3s ease-in-out; height: 100%; width: 100%; }}
+                    .carousel-item {{ min-width: 100%; width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }}
+                    .carousel-item img, .carousel-item video {{ max-width: 100%; max-height: 100%; object-fit: contain; }}
                     .btn {{ position: absolute; top: 50%; transform: translateY(-50%); background: rgba(0,0,0,0.5); color: white; border: none; padding: 15px 12px; cursor: pointer; border-radius: 50%; font-size: 18px; transition: background 0.2s; z-index: 10; }}
                     .btn:hover {{ background: rgba(0,0,0,0.8); }}
                     .btn-prev {{ left: 15px; }}
@@ -815,6 +812,7 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                             }}
                             const dots = dotsContainer.children;
                             window.move = function(dir) {{
+                                document.querySelectorAll('video').forEach(v => v.pause());
                                 index += dir;
                                 if(index < 0) index = items - 1;
                                 if(index >= items) index = 0;

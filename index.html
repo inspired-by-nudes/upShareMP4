@@ -55,6 +55,7 @@
         
         .card.article-card { border-left-color: #ffffff !important; }
         .card.carousel-card { border-left-color: #2196F3 !important; } 
+        .card.image-card { border-left-color: #9c27b0 !important; } 
 
         .card-checkbox { opacity: 0; position: absolute; top: 10px; right: 10px; width: 20px; height: 20px; z-index: 10; cursor: pointer; transition: opacity 0.2s; pointer-events: none; }
         .card-checkbox:checked { opacity: 1; pointer-events: auto; }
@@ -432,64 +433,6 @@
             updateBulkCounter();
         }
 
-        window.smartView = function(url) {
-            const isTouch = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
-            const isMobileUA = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
-            
-            if (isTouch || isMobileUA) {
-                playFullscreen(url);
-            } else {
-                window.open(url, '_blank');
-            }
-        };
-
-        // Fully Supported Mobile Overlay Player for Strict iOS Policies
-        function playFullscreen(url) {
-            let vid = document.getElementById('fullscreen-player');
-            if (!vid) {
-                vid = document.createElement('video');
-                vid.id = 'fullscreen-player';
-                vid.style.position = 'fixed';
-                vid.style.top = '0';
-                vid.style.left = '0';
-                vid.style.width = '100%';
-                vid.style.height = '100%';
-                vid.style.zIndex = '999999';
-                vid.style.backgroundColor = '#000';
-                vid.style.display = 'none';
-                vid.controls = true;
-                vid.playsInline = true;
-                document.body.appendChild(vid);
-                
-                const flushBufferAndHide = () => {
-                    if (!document.fullscreenElement && !document.webkitFullscreenElement) {
-                        vid.pause();
-                        vid.removeAttribute('src'); 
-                        vid.load();
-                        vid.style.display = 'none';
-                    }
-                };
-
-                document.addEventListener('fullscreenchange', flushBufferAndHide);
-                document.addEventListener('webkitfullscreenchange', flushBufferAndHide);
-                vid.addEventListener('webkitendfullscreen', flushBufferAndHide);
-            }
-            
-            vid.style.display = 'block';
-            vid.src = url;
-            
-            vid.play().then(() => {
-                if (vid.webkitEnterFullscreen) { 
-                    vid.webkitEnterFullscreen();
-                } else if (vid.requestFullscreen) { 
-                    vid.requestFullscreen(); 
-                }
-            }).catch(e => {
-                vid.style.display = 'none';
-                window.open(url, '_blank');
-            });
-        }
-
         function renderUnifiedGrid() {
             const stateString = JSON.stringify(currentTasks) + JSON.stringify(activeVideosData);
             if (stateString === lastVideosString) return; lastVideosString = stateString;
@@ -510,6 +453,7 @@
                 let cardClass = 'card';
                 if (isArticle) cardClass += ' article-card';
                 if (isCarousel) cardClass += ' carousel-card';
+                if (isImage) cardClass += ' image-card';
 
                 const thumb = v.thumbnail ? `<img src="/videos/${v.thumbnail}" class="thumbnail">` : `<div class="thumbnail" style="font-size:1.5rem;">${isArticle ? '📝<br>Article' : (isCarousel ? '🎠<br>Carousel' : (isImage ? '🖼️<br>Image' : 'No Thumb'))}</div>`;
                 const favicon = v.domain !== 'unknown' ? `<a href="${v.original_url}" target="_blank"><img src="https://www.google.com/s2/favicons?domain=${v.domain}&sz=32" class="favicon" onerror="this.style.display='none'"></a>` : '';
@@ -521,9 +465,6 @@
                 let timeDisplay = (isArticle || isCarousel || isImage) ? (v.engine || (isImage ? '🖼️ Direct' : '📄 Readability')) : `⏱️ ${v.duration}`;
 
                 let viewAction = `<a href="${url}" target="_blank" class="btn btn-view">View</a>`;
-                if (!isArticle && !isCarousel && !isImage) {
-                    viewAction = `<button class="btn btn-view" onclick="window.smartView('${url}')">View</button>`;
-                }
 
                 htmlBuffer += `
                     <div class="${cardClass}">

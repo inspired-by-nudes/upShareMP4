@@ -172,6 +172,54 @@ app.mount("/videos", StaticFiles(directory=DOWNLOAD_DIR), name="videos")
 
 def generate_secure_id(): return f"vid_{secrets.token_urlsafe(8)}"
 
+def ensure_ios_compatible_video(file_path: str):
+    if not file_path.endswith(('.mp4', '.mov', '.mkv', '.webm')):
+        return file_path
+    
+    try:
+        res = subprocess.run([
+            "ffprobe", "-v", "error", "-select_streams", "v:0",
+            "-show_entries", "stream=codec_name", "-of", "default=noprint_wrappers=1:nokey=1",
+            file_path
+        ], capture_output=True, text=True)
+        codec = res.stdout.strip().lower()
+    except Exception:
+        codec = ""
+
+    temp_out = file_path.rsplit('.', 1)[0] + "_transcoded.mp4"
+    if codec == "h264":
+        cmd = ["ffmpeg", "-y", "-i", file_path, "-c", "copy", "-movflags", "+faststart", temp_out]
+    else:
+        cmd = ["ffmpeg", "-y", "-i", file_path, "-c:v", "libx264", "-preset", "fast", "-c:a", "aac", "-movflags", "+faststart", temp_out]
+    
+    res = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if res.returncode == 0 and os.path.exists(temp_out):
+        target_path = file_path.rsplit('.', 1)[0] + ".mp4"
+        if file_path != target_path and os.path.exists(file_path):
+            try: os.remove(file_path)
+            except: pass
+        shutil.move(temp_out, target_path)
+        return target_path
+    else:
+        if os.path.exists(temp_out):
+            try: os.remove(temp_out)
+            except: pass
+        return file_path
+
+def ensure_jpg_image(file_path: str) -> str:
+    if file_path.endswith('.jpg'):
+        return file_path
+    target_jpg = file_path.rsplit('.', 1)[0] + ".jpg"
+    try:
+        res = subprocess.run(["ffmpeg", "-y", "-i", file_path, "-q:v", "2", target_jpg], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if res.returncode == 0 and os.path.exists(target_jpg) and os.path.getsize(target_jpg) > 0:
+            if file_path != target_jpg and os.path.exists(file_path):
+                try: os.remove(file_path)
+                except: pass
+            return target_jpg
+    except Exception: pass
+    return file_path
+
 def extract_true_duration(video_id: str, user_id: str, url: str = "#", custom_title: str = None, ext: str = ".mp4", expire_days: int = 0, engine: str = None):
     file_path = os.path.join(DOWNLOAD_DIR, f"{video_id}{ext}")
     duration = 0.0
@@ -276,6 +324,25 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
 
         orig_soup = BeautifulSoup(r.content, 'html.parser')
 
+        # DECOMPOSE ARTIFACTS & JUNK PROMPTS (Google follow banners, clocks, ads, social bars)
+        junk_selectors = [
+            'script', 'style', 'nav', 'footer', 'header', 'form', 'aside', 'iframe', 'noscript',
+            '[class*="google-news"]', '[class*="preferred-source"]', '[class*="google-follow"]',
+            '[class*="social-share"]', '[class*="share-bar"]', '[class*="newsletter"]',
+            '[class*="recirc"]', '[aria-label*="Google"]', '[data-testid*="google"]',
+            '.ad-container', '.advertisement', '.mrf-article-body-ad'
+        ]
+        for sel in junk_selectors:
+            for el in orig_soup.select(sel):
+                try: el.decompose()
+                except: pass
+
+        for el in list(orig_soup.find_all(['div', 'p', 'span', 'a', 'button'])):
+            txt = el.get_text(strip=True).lower()
+            if ("add" in txt and "preferred source" in txt and "google" in txt) or "add to google settings" in txt:
+                try: el.decompose()
+                except: pass
+
         og_img = orig_soup.find('meta', property='og:image')
         article_img_url = None
         if og_img and isinstance(og_img, type(orig_soup.new_tag('meta'))):
@@ -292,12 +359,26 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
                 iframe.decompose()
 
         seen_srcs = set()
+        junk_img_keywords = ['logo', 'icon', 'badge', 'clock', 'avatar', 'button', 'google', 'facebook', 'twitter', 'instagram', 'pinterest', 'share', 'pixel', 'sprite', 'svg']
+        
         for img in list(orig_soup.find_all('img')):
-            src = img.get('data-src') or img.get('data-lazy-src') or img.get('src')
-            if not src:
-                srcset = img.get('srcset')
-                if srcset: src = srcset.split(',')[0].strip().split(' ')[0]
+            src = img.get('data-src') or img.get('data-lazy-src') or img.get('src') or ''
             if not src or src.startswith('data:'):
+                img.decompose()
+                continue
+
+            alt = (img.get('alt') or '').lower()
+            cls = ' '.join(img.get('class', [])).lower()
+            
+            # Decompose UI icons, clock badges, and logos
+            w, h = img.get('width'), img.get('height')
+            is_small = False
+            try:
+                if w and int(w) < 100: is_small = True
+                if h and int(h) < 100: is_small = True
+            except: pass
+
+            if is_small or any(k in src.lower() for k in junk_img_keywords) or any(k in cls for k in junk_img_keywords) or any(k in alt for k in ['clock', 'logo', 'icon', 'google']):
                 img.decompose()
                 continue
 
@@ -306,23 +387,31 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
                 continue
             seen_srcs.add(src)
 
-            cap_text = ""
-            container = img.find_parent(['figure', 'div', 'picture', 'section'], class_=re.compile(r'(caption|figure|media|photo|wp-caption)', re.I))
+            # Enhanced Caption & Credit Extraction for Delish / Hearst / General News
+            container = img.find_parent(['figure', 'div', 'picture', 'section'], class_=re.compile(r'(caption|figure|media|photo|wp-caption|embed-image)', re.I))
             if not container: container = img.find_parent(['figure', 'picture'])
 
+            cap_text = ""
             if container and container.name != 'body':
-                caps = []
-                normalized_caps = []
-                for cap in container.find_all(['figcaption', 'span', 'p', 'div']):
-                    cls = str(cap.get('class', ''))
-                    if cap.name == 'figcaption' or re.search(r'(caption|credit|byline)', cls, re.I):
-                        t = cap.get_text(strip=True)
-                        if t and len(t) < 200:
-                            t_norm = re.sub(r'\W+', '', t).lower()
-                            if not any(t_norm in enc or enc in t_norm for enc in normalized_caps):
-                                caps.append(t)
-                                normalized_caps.append(t_norm)
-                cap_text = "|||".join(caps).replace('___', ' - ')
+                caption_el = container.find(class_=re.compile(r'(caption-text|caption|description)', re.I)) or container.find('figcaption')
+                credit_el = container.find(class_=re.compile(r'(credit|byline|source)', re.I))
+                
+                cap_parts = []
+                if caption_el:
+                    t = caption_el.get_text(strip=True)
+                    if t and len(t) < 300: cap_parts.append(t)
+                if credit_el:
+                    c = credit_el.get_text(strip=True)
+                    if c and len(c) < 150 and c not in cap_parts: cap_parts.append(c)
+                    
+                if not cap_parts:
+                    for cap in container.find_all(['figcaption', 'span', 'p']):
+                        if cap.name == 'figcaption' or re.search(r'(caption|credit|byline)', str(cap.get('class', '')), re.I):
+                            t = cap.get_text(strip=True)
+                            if t and len(t) < 300 and t not in cap_parts:
+                                cap_parts.append(t)
+                                
+                cap_text = "|||".join(cap_parts).replace('___', ' - ')
                 target_to_replace = container
             else:
                 target_to_replace = img
@@ -452,6 +541,7 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
 
     cookie_path = get_cookie_file_for_url(url)
     download_success = False
+    valid_media_exts = ('.jpg', '.jpeg', '.png', '.webp', '.mp4', '.mkv', '.webm', '.mov')
 
     if "instagram.com" in url:
         try:
@@ -470,12 +560,13 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                 if os.path.exists(temp_dl_dir):
                     for root, dirs, files in os.walk(temp_dl_dir):
                         for f in files:
-                            extracted.append(os.path.join(root, f))
+                            if f.lower().endswith(valid_media_exts):
+                                extracted.append(os.path.join(root, f))
                 
                 if extracted:
                     meta_title = "Instagram Media"
                     try:
-                        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
+                        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
                         r_page = requests.get(url, headers=headers, timeout=10)
                         if r_page.status_code != 200:
                             cj = get_requests_cookies(cookie_path)
@@ -494,9 +585,14 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                         ext = filepath.rsplit('.', 1)[-1].lower() if '.' in filepath else 'jpg'
                         if ext == 'jpeg': ext = 'jpg'
                         
-                        new_name = f"temp_yt_{task_id}_{idx:03d}.{ext}"
-                        shutil.move(filepath, os.path.join(DOWNLOAD_DIR, new_name))
+                        target_temp = os.path.join(DOWNLOAD_DIR, f"temp_yt_{task_id}_{idx:03d}.{ext}")
+                        shutil.move(filepath, target_temp)
                         
+                        if ext in ['mp4', 'mov', 'mkv', 'webm']:
+                            target_temp = ensure_ios_compatible_video(target_temp)
+                        else:
+                            target_temp = ensure_jpg_image(target_temp)
+
                         with open(os.path.join(DOWNLOAD_DIR, f"temp_yt_{task_id}_{idx:03d}.info.json"), 'w', encoding='utf-8') as f:
                             json.dump({'title': meta_title}, f)
                             
@@ -512,8 +608,7 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
         if not download_success:
             ydl_opts_ig = {
                 'outtmpl': f'{DOWNLOAD_DIR}/temp_yt_{task_id}_%(autonumber)03d_%(id)s.%(ext)s',
-                'format': 'bestvideo[vcodec^=avc]+bestaudio[ext=m4a]/best[ext=mp4]/best',
-                'merge_output_format': 'mp4',
+                'format': 'best',
                 'ignoreerrors': True, 
                 'ignorenoformats': True,
                 'postprocessor_args': {'ffmpeg': ['-movflags', '+faststart']}
@@ -581,6 +676,10 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                             with yt_dlp.YoutubeDL(dl_opts) as ydl_vid:
                                 ydl_vid.download([v_url])
                             
+                            vid_p = os.path.join(DOWNLOAD_DIR, f"{base_name}.mp4")
+                            if os.path.exists(vid_p):
+                                ensure_ios_compatible_video(vid_p)
+
                             meta_title = e.get('title') or (info.get('title') if info else None) or (info.get('description') if info else None) or "Instagram Video"
                             with open(os.path.join(DOWNLOAD_DIR, f"{base_name}.info.json"), 'w', encoding='utf-8') as f:
                                 json.dump({'title': meta_title}, f)
@@ -651,7 +750,7 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
 
             valid_bases = {}
             for b, files in bases.items():
-                if any(f.endswith(('.mp4', '.webm', '.mkv', '.jpg', '.jpeg', '.png', '.webp')) for f in files):
+                if any(f.endswith(valid_media_exts) for f in files):
                     valid_bases[b] = files
             bases = valid_bases
 
@@ -659,10 +758,10 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                 base = list(bases.keys())[0]
                 files = bases[base]
                 
-                primary = next((f for f in files if f.endswith(('.mp4', '.webm', '.mkv'))), None)
+                primary = next((f for f in files if f.endswith(('.mp4', '.webm', '.mkv', '.mov'))), None)
                 if not primary:
                     primary = next((f for f in files if f.endswith(('.jpg', '.jpeg', '.png', '.webp'))), files[0])
-                if not primary.endswith(('.mp4', '.webm', '.mkv', '.jpg', '.jpeg', '.png', '.webp')):
+                if not primary.endswith(valid_media_exts):
                     return
 
                 ext_found = primary.rsplit('.', 1)[1].lower()
@@ -673,15 +772,13 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                 new_media = os.path.join(DOWNLOAD_DIR, f"{new_id}.{ext_found}")
                 os.rename(os.path.join(DOWNLOAD_DIR, primary), new_media)
                 
-                if ext_found == 'mp4':
-                    active_downloads[task_id] = "Optimizing for iOS..."
-                    temp_fs = os.path.join(DOWNLOAD_DIR, f"fs_{new_id}.mp4")
-                    res = subprocess.run(["ffmpeg", "-y", "-i", new_media, "-c", "copy", "-movflags", "+faststart", temp_fs], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                    if res.returncode == 0 and os.path.exists(temp_fs):
-                        os.replace(temp_fs, new_media)
-                    else:
-                        try: os.remove(temp_fs)
-                        except: pass
+                if ext_found in ['mp4', 'mov', 'mkv', 'webm']:
+                    active_downloads[task_id] = "Optimizing for Mobile..."
+                    new_media = ensure_ios_compatible_video(new_media)
+                    ext_found = 'mp4'
+                else:
+                    new_media = ensure_jpg_image(new_media)
+                    ext_found = 'jpg'
                 
                 extracted_title = None
                 thumb_downloaded = False
@@ -695,10 +792,11 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                         else:
                             if thumb_ext == 'jpeg': thumb_ext = 'jpg'
                             os.rename(os.path.join(DOWNLOAD_DIR, f), os.path.join(DOWNLOAD_DIR, f"{new_id}.{thumb_ext}"))
+                            ensure_jpg_image(os.path.join(DOWNLOAD_DIR, f"{new_id}.jpg"))
                             thumb_downloaded = True
                             break 
                             
-                if not thumb_downloaded and ext_found in ['mp4', 'webm', 'mkv']:
+                if not thumb_downloaded and ext_found in ['mp4', 'webm', 'mkv', 'mov']:
                     subprocess.run(["ffmpeg", "-y", "-i", new_media, "-ss", "00:00:00.100", "-vframes", "1", "-q:v", "2", f"{DOWNLOAD_DIR}/{new_id}.jpg"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 
                 if info_file and os.path.exists(info_file):
@@ -728,11 +826,11 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                 idx_counter = 0
                 for base in sorted_bases:
                     files = bases[base]
-                    primary = next((f for f in files if f.endswith(('.mp4', '.webm', '.mkv'))), None)
+                    primary = next((f for f in files if f.endswith(('.mp4', '.webm', '.mkv', '.mov'))), None)
                     if not primary:
                         primary = next((f for f in files if f.endswith(('.jpg', '.jpeg', '.png', '.webp'))), files[0])
 
-                    if not primary.endswith(('.mp4', '.webm', '.mkv', '.jpg', '.jpeg', '.png', '.webp')):
+                    if not primary.endswith(valid_media_exts):
                         continue
                         
                     ext = primary.rsplit('.', 1)[1].lower()
@@ -741,21 +839,16 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                     new_media_path = os.path.join(DOWNLOAD_DIR, new_media_name)
                     os.rename(os.path.join(DOWNLOAD_DIR, primary), new_media_path)
                     
-                    if ext == 'mp4':
-                        active_downloads[task_id] = "Optimizing for iOS..."
-                        temp_fs = os.path.join(DOWNLOAD_DIR, f"fs_{new_media_name}")
-                        res = subprocess.run(["ffmpeg", "-y", "-i", new_media_path, "-c", "copy", "-movflags", "+faststart", temp_fs], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                        if res.returncode == 0 and os.path.exists(temp_fs):
-                            os.replace(temp_fs, new_media_path)
-                        else:
-                            try: os.remove(temp_fs)
-                            except: pass
-                    
-                    # ENHANCED CAROUSEL INJECTION: Proper flex-shrink item wrapping
-                    if ext in ['mp4', 'webm', 'mkv']:
-                        carousel_tags += f"<div class='carousel-item'><video src='/videos/{new_media_name}' controls playsinline></video></div>"
+                    if ext in ['mp4', 'mov', 'mkv', 'webm']:
+                        active_downloads[task_id] = "Optimizing for Mobile..."
+                        new_media_path = ensure_ios_compatible_video(new_media_path)
+                        new_media_name = f"{new_id}_{idx_counter}.mp4"
+                        ext = 'mp4'
+                        carousel_tags += f"<div class='carousel-item' data-type='video'><video src='/videos/{new_media_name}' controls playsinline webkit-playsinline></video></div>"
                     else:
-                        carousel_tags += f"<div class='carousel-item'><img src='/videos/{new_media_name}'></div>"
+                        new_media_path = ensure_jpg_image(new_media_path)
+                        new_media_name = f"{new_id}_{idx_counter}.jpg"
+                        carousel_tags += f"<div class='carousel-item' data-type='image'><img src='/videos/{new_media_name}'></div>"
                     idx_counter += 1
 
                 extracted_title = "Media Carousel"
@@ -779,50 +872,107 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                 <html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'>
                 <title>{html.escape(extracted_title)}</title>
                 <style>
-                    body {{ margin: 0; background: #000; display: flex; align-items: center; justify-content: center; height: 100vh; overflow: hidden; font-family: sans-serif; }}
-                    .carousel-container {{ position: relative; width: 100%; height: 100vh; overflow: hidden; display: flex; }}
+                    body {{ margin: 0; background: #000; display: flex; align-items: center; justify-content: center; height: 100vh; overflow: hidden; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; user-select: none; }}
+                    .carousel-container {{ position: relative; width: 100%; height: 100vh; overflow: hidden; display: flex; flex-direction: column; }}
+                    
+                    .progress-bars {{ position: absolute; top: 12px; left: 10px; right: 10px; display: flex; gap: 6px; z-index: 100; pointer-events: none; }}
+                    .bar-segment {{ flex: 1; height: 3px; background: rgba(255, 255, 255, 0.35); border-radius: 2px; overflow: hidden; }}
+                    .bar-fill {{ height: 100%; width: 0%; background: #ffffff; transition: width 0.1s linear; }}
+
                     .carousel-track {{ display: flex; transition: transform 0.3s ease-in-out; height: 100%; width: 100%; }}
-                    .carousel-item {{ min-width: 100%; width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }}
+                    .carousel-item {{ min-width: 100%; width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; flex-shrink: 0; background: #000; }}
                     .carousel-item img, .carousel-item video {{ max-width: 100%; max-height: 100%; object-fit: contain; }}
+
                     .btn {{ position: absolute; top: 50%; transform: translateY(-50%); background: rgba(0,0,0,0.5); color: white; border: none; padding: 15px 12px; cursor: pointer; border-radius: 50%; font-size: 18px; transition: background 0.2s; z-index: 10; }}
                     .btn:hover {{ background: rgba(0,0,0,0.8); }}
                     .btn-prev {{ left: 15px; }}
                     .btn-next {{ right: 15px; }}
-                    .dots {{ position: absolute; bottom: 20px; width: 100%; display: flex; justify-content: center; gap: 8px; z-index: 10; }}
-                    .dot {{ width: 8px; height: 8px; background: rgba(255,255,255,0.4); border-radius: 50%; transition: background 0.2s; }}
-                    .dot.active {{ background: #fff; }}
                 </style>
                 </head><body>
                     <div class="carousel-container" id="carousel">
+                        <div class="progress-bars" id="progressBars"></div>
                         <div class="carousel-track" id="track">{carousel_tags}</div>
                         <button class="btn btn-prev" onclick="window.move(-1)">❮</button>
                         <button class="btn btn-next" onclick="window.move(1)">❯</button>
-                        <div class="dots" id="dots"></div>
                     </div>
                     <script>
                         const track = document.getElementById('track');
                         const items = track.children.length;
-                        const dotsContainer = document.getElementById('dots');
+                        const progressBars = document.getElementById('progressBars');
                         let index = 0;
-                        if (items > 1) {{
-                            for(let i=0; i<items; i++) {{
-                                let d = document.createElement('div');
-                                d.className = 'dot' + (i===0 ? ' active' : '');
-                                dotsContainer.appendChild(d);
+                        let imgTimer = null;
+
+                        for (let i = 0; i < items; i++) {{
+                            let seg = document.createElement('div');
+                            seg.className = 'bar-segment';
+                            seg.innerHTML = `<div class="bar-fill" id="fill-${{i}}"></div>`;
+                            progressBars.appendChild(seg);
+                        }}
+
+                        function updateSlide() {{
+                            if (imgTimer) clearInterval(imgTimer);
+                            document.querySelectorAll('video').forEach(v => {{ v.pause(); v.currentTime = 0; }});
+
+                            track.style.transform = `translateX(-${{index * 100}}%)`;
+
+                            for (let i = 0; i < items; i++) {{
+                                const fill = document.getElementById(`fill-${{i}}`);
+                                if (i < index) {{
+                                    fill.style.transition = 'none';
+                                    fill.style.width = '100%';
+                                }} else if (i > index) {{
+                                    fill.style.transition = 'none';
+                                    fill.style.width = '0%';
+                                }}
                             }}
-                            const dots = dotsContainer.children;
-                            window.move = function(dir) {{
-                                document.querySelectorAll('video').forEach(v => v.pause());
-                                index += dir;
-                                if(index < 0) index = items - 1;
-                                if(index >= items) index = 0;
-                                track.style.transform = `translateX(-${{index * 100}}%)`;
-                                for(let d of dots) d.className = 'dot';
-                                dots[index].className = 'dot active';
+
+                            const currentSlide = track.children[index];
+                            const currentFill = document.getElementById(`fill-${{index}}`);
+                            currentFill.style.transition = 'none';
+                            currentFill.style.width = '0%';
+
+                            const video = currentSlide.querySelector('video');
+                            if (video) {{
+                                video.play().catch(() => {{}});
+                                video.ontimeupdate = () => {{
+                                    if (video.duration) {{
+                                        const pct = (video.currentTime / video.duration) * 100;
+                                        currentFill.style.transition = 'width 0.1s linear';
+                                        currentFill.style.width = pct + '%';
+                                    }}
+                                }};
+                                video.onended = () => {{
+                                    currentFill.style.width = '100%';
+                                    if (index < items - 1) window.move(1);
+                                }};
+                            }} else {{
+                                let start = Date.now();
+                                const duration = 5000;
+                                imgTimer = setInterval(() => {{
+                                    let elapsed = Date.now() - start;
+                                    let pct = Math.min(100, (elapsed / duration) * 100);
+                                    currentFill.style.transition = 'width 0.1s linear';
+                                    currentFill.style.width = pct + '%';
+                                    if (elapsed >= duration) {{
+                                        clearInterval(imgTimer);
+                                        if (index < items - 1) window.move(1);
+                                    }}
+                                }}, 100);
                             }}
-                        }} else {{
+                        }}
+
+                        window.move = function(dir) {{
+                            index += dir;
+                            if (index < 0) index = items - 1;
+                            if (index >= items) index = 0;
+                            updateSlide();
+                        }};
+
+                        if (items <= 1) {{
                             document.querySelectorAll('.btn').forEach(b => b.style.display = 'none');
                         }}
+
+                        updateSlide();
                     </script>
                 </body></html>
                 """
@@ -830,13 +980,13 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
 
                 first_base = sorted_bases[0]
                 first_files = bases[first_base]
-                first_primary = next((f for f in first_files if f.endswith(('.mp4', '.webm', '.mkv'))), None)
+                first_primary = next((f for f in first_files if f.endswith(('.mp4', '.webm', '.mkv', '.mov'))), None)
                 if not first_primary:
                     first_primary = next((f for f in first_files if f.endswith(('.jpg', '.jpeg', '.png', '.webp'))), first_files[0])
                 first_ext = first_primary.rsplit('.', 1)[1].lower()
                 if first_ext == 'jpeg': first_ext = 'jpg'
 
-                if first_ext in ['mp4', 'webm', 'mkv']:
+                if first_ext in ['mp4', 'webm', 'mkv', 'mov']:
                     subprocess.run(["ffmpeg", "-y", "-i", os.path.join(DOWNLOAD_DIR, f"{new_id}_0.{first_ext}"), "-ss", "00:00:00.100", "-vframes", "1", "-q:v", "2", f"{DOWNLOAD_DIR}/{new_id}.jpg"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 else:
                     try: shutil.copy(os.path.join(DOWNLOAD_DIR, f"{new_id}_0.{first_ext}"), os.path.join(DOWNLOAD_DIR, f"{new_id}.jpg"))

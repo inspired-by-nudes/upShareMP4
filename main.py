@@ -1,4 +1,4 @@
-import os, secrets, json, hashlib, subprocess, threading, logging, time, asyncio, shutil, re, html
+# import os, secrets, json, hashlib, subprocess, threading, logging, time, asyncio, shutil, re, html
 from urllib.parse import urlparse, urljoin, quote
 from fastapi import FastAPI, BackgroundTasks, UploadFile, File, Form, Depends, Request, Response
 from fastapi.staticfiles import StaticFiles
@@ -451,18 +451,21 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
             src = urljoin(url, src)
             cap = match.group(2).strip()
             
-            # SPLIT Delish // artifacts into structured lines
-            if cap and "|||" not in cap and "//" in cap:
-                parts = cap.split("//", 1)
-                cap = f"{parts[0].strip()}|||{parts[1].strip()}"
-                
             cap_lines = cap.split('|||') if cap else []
-            formatted_cap = ""
+            new_lines = []
             
-            if cap_lines:
-                formatted_cap = cap_lines[0]
-                if len(cap_lines) > 1:
-                    for line in cap_lines[1:]:
+            for line in cap_lines:
+                if "//" in line:
+                    parts = line.split("//", 1)
+                    new_lines.extend([parts[0].strip(), parts[1].strip()])
+                else:
+                    new_lines.append(line)
+            
+            formatted_cap = ""
+            if new_lines:
+                formatted_cap = new_lines[0]
+                if len(new_lines) > 1:
+                    for line in new_lines[1:]:
                         if not line.startswith('—') and not line.startswith('-'):
                             formatted_cap += f"<br>— {line}"
                         else:
@@ -887,10 +890,6 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                     body {{ margin: 0; background: #000; display: flex; align-items: center; justify-content: center; height: 100vh; overflow: hidden; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; user-select: none; }}
                     .carousel-container {{ position: relative; width: 100%; height: 100vh; overflow: hidden; display: flex; flex-direction: column; }}
                     
-                    .progress-bars {{ position: absolute; top: 12px; left: 10px; right: 10px; display: flex; gap: 6px; z-index: 100; pointer-events: none; }}
-                    .bar-segment {{ flex: 1; height: 3px; background: rgba(255, 255, 255, 0.35); border-radius: 2px; overflow: hidden; }}
-                    .bar-fill {{ height: 100%; width: 0%; background: #ffffff; transition: width 0.1s linear; }}
-
                     .carousel-track {{ display: flex; transition: transform 0.3s ease-in-out; height: 100%; width: 100%; }}
                     .carousel-item {{ min-width: 100%; width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; flex-shrink: 0; background: #000; }}
                     .carousel-item img, .carousel-item video {{ max-width: 100%; max-height: 100%; object-fit: contain; }}
@@ -899,27 +898,34 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                     .btn:hover {{ background: rgba(0,0,0,0.8); }}
                     .btn-prev {{ left: 15px; }}
                     .btn-next {{ right: 15px; }}
+                    
+                    .dots {{ position: absolute; bottom: 20px; width: 100%; display: flex; justify-content: center; gap: 8px; z-index: 10; }}
+                    .dot {{ width: 8px; height: 8px; background: rgba(255,255,255,0.3); border-radius: 4px; overflow: hidden; position: relative; transition: width 0.3s ease; }}
+                    .dot.active {{ width: 24px; background: rgba(255,255,255,0.3); }}
+                    .dot-fill {{ height: 100%; width: 0%; background: #ffffff; }}
                 </style>
                 </head><body>
                     <div class="carousel-container" id="carousel">
-                        <div class="progress-bars" id="progressBars"></div>
                         <div class="carousel-track" id="track">{carousel_tags}</div>
                         <button class="btn btn-prev" onclick="window.move(-1)">❮</button>
                         <button class="btn btn-next" onclick="window.move(1)">❯</button>
+                        <div class="dots" id="dots"></div>
                     </div>
                     <script>
                         const track = document.getElementById('track');
                         const items = track.children.length;
-                        const progressBars = document.getElementById('progressBars');
+                        const dotsContainer = document.getElementById('dots');
                         let index = 0;
                         let imgTimer = null;
 
                         for (let i = 0; i < items; i++) {{
-                            let seg = document.createElement('div');
-                            seg.className = 'bar-segment';
-                            seg.innerHTML = `<div class="bar-fill" id="fill-${{i}}"></div>`;
-                            progressBars.appendChild(seg);
+                            let d = document.createElement('div');
+                            d.className = 'dot' + (i === 0 ? ' active' : '');
+                            d.innerHTML = `<div class="dot-fill" id="fill-${{i}}"></div>`;
+                            dotsContainer.appendChild(d);
                         }}
+
+                        const dots = dotsContainer.children;
 
                         function updateSlide() {{
                             if (imgTimer) clearInterval(imgTimer);
@@ -928,22 +934,18 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                             track.style.transform = `translateX(-${{index * 100}}%)`;
 
                             for (let i = 0; i < items; i++) {{
+                                dots[i].className = 'dot';
                                 const fill = document.getElementById(`fill-${{i}}`);
-                                if (i < index) {{
-                                    fill.style.transition = 'none';
-                                    fill.style.width = '100%';
-                                }} else if (i > index) {{
-                                    fill.style.transition = 'none';
-                                    fill.style.width = '0%';
-                                }}
+                                fill.style.transition = 'none';
+                                fill.style.width = i < index ? '100%' : '0%';
                             }}
-
-                            const currentSlide = track.children[index];
+                            
+                            dots[index].className = 'dot active';
                             const currentFill = document.getElementById(`fill-${{index}}`);
-                            currentFill.style.transition = 'none';
-                            currentFill.style.width = '0%';
-
+                            
+                            const currentSlide = track.children[index];
                             const video = currentSlide.querySelector('video');
+                            
                             if (video) {{
                                 video.play().catch(() => {{}});
                                 video.ontimeupdate = () => {{
@@ -1022,7 +1024,36 @@ def convert_local_file(input_path: str, final_path: str, video_id: str, user_id:
     extract_true_duration(video_id, user_id, custom_title=original_filename, expire_days=expire_days)
     if task_id in active_downloads: del active_downloads[task_id]
 
-# --- LOGIN / LOGOUT ENDPOINTS ---
+# --- VIEWER, LOGIN, AND ENDPOINTS ---
+
+@app.get("/view/{video_id}")
+def view_media(video_id: str):
+    safe_id = os.path.basename(video_id)
+    with db_lock:
+        db = load_db()
+        vid = db["videos"].get(safe_id)
+    if not vid: return RedirectResponse("/")
+    
+    ext = vid.get("ext", ".mp4")
+    if ext == ".html":
+        return RedirectResponse(f"/videos/{safe_id}.html")
+        
+    media_url = f"/videos/{safe_id}{ext}"
+    title = html.escape(vid.get("title", safe_id))
+    
+    if ext in [".mp4", ".webm", ".mkv", ".mov"]:
+        content = f'<video src="{media_url}" controls autoplay playsinline style="max-width:100%; max-height:100%; object-fit:contain; outline:none;"></video>'
+    else:
+        content = f'<img src="{media_url}" style="max-width:100%; max-height:100%; object-fit:contain;">'
+        
+    html_content = f"""
+    <!DOCTYPE html>
+    <html><head><meta charset='utf-8'><meta name="viewport" content="width=device-width, initial-scale=1"><title>{title}</title>
+    <style>body {{ margin:0; background:#000; height:100vh; display:flex; align-items:center; justify-content:center; }}</style>
+    </head><body>{content}</body></html>
+    """
+    return HTMLResponse(html_content)
+
 @app.post("/api/login")
 def login(username: str = Form(...), password: str = Form(...)):
     hashed = hashlib.sha256(password.encode()).hexdigest()
@@ -1045,7 +1076,6 @@ def logout(response: Response):
     response.delete_cookie("upshare_session")
     return {"status": "success"}
 
-# --- FETCH & UPLOAD ENDPOINTS ---
 @app.post("/api/download_form")
 async def download_form(background_tasks: BackgroundTasks, url: str = Form(...), expire_days: int = Form(0), confirm_override: bool = Form(False), user: dict = Depends(verify_auth)):
     task_id = generate_secure_id()

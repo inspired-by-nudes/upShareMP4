@@ -50,12 +50,14 @@
 
         .video-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 20px; width: 100%; }
         .card { position: relative; background-color: #1e1e1e; border-left: 5px solid #00E676; border-radius: 8px; padding: 20px; display: flex; flex-direction: column; transition: border-color 0.2s; }
-        .card.deleting { border-left-color: #ff3333 !important; }
         .card.working { border-left-color: #ff8c00 !important; }
         
         .card.article-card { border-left-color: #ffffff !important; }
         .card.carousel-card { border-left-color: #2196F3 !important; } 
         .card.image-card { border-left-color: #9c27b0 !important; } 
+        
+        /* FIX: Ensure deleting hover styling overrides specific variants */
+        .card.deleting { border-left-color: #ff3333 !important; }
 
         .card-checkbox { opacity: 0; position: absolute; top: 10px; right: 10px; width: 20px; height: 20px; z-index: 10; cursor: pointer; transition: opacity 0.2s; pointer-events: none; }
         .card-checkbox:checked { opacity: 1; pointer-events: auto; }
@@ -75,13 +77,6 @@
         .card-content { flex-grow: 1; display: flex; flex-direction: column; }
         .thumbnail-wrapper { position: relative; width: 100%; height: 180px; margin-bottom: 10px; border-radius: 4px; overflow: hidden; background: #2a2a2a; }
         .thumbnail { width: 100%; height: 100%; object-fit: cover; display: flex; align-items: center; justify-content: center; color: #555; text-align: center; font-weight:bold;}
-        
-        /* FIX: Ensure Image and Carousel tiles never crop their photos */
-        .card.image-card .thumbnail, 
-        .card.carousel-card .thumbnail { 
-            object-fit: contain !important; 
-            background-color: #121212; 
-        }
 
         .date-badge { position: absolute; bottom: 8px; right: 8px; background: rgba(0,0,0,0.75); color: #fff; font-size: 0.75rem; padding: 3px 6px; border-radius: 4px; }
         .expire-badge { position: absolute; top: 8px; left: 8px; background: rgba(255, 51, 51, 0.85); color: #fff; font-size: 0.7rem; padding: 3px 6px; border-radius: 4px; }
@@ -451,7 +446,9 @@
             }
             
             activeVideosData.forEach(v => {
-                const url = window.location.origin + '/videos/' + v.filename;
+                // Point directly to the central viewer endpoint for a clean uncropped UI
+                const viewUrl = window.location.origin + '/view/' + v.id;
+                const shareUrl = window.location.origin + '/videos/' + v.filename;
                 
                 const isCarousel = v.engine === '🎠 Carousel';
                 const isArticle = v.type === 'article' && !isCarousel;
@@ -468,10 +465,10 @@
                 const promptTitle = safeTitle.replace(/'/g, "\\'");
 
                 let expBadge = v.expires_at > 0 ? `<div class="expire-badge countdown-badge" data-expires="${v.expires_at}">${getExpirationString(v.expires_at)}</div>` : '';
-                let editBtn = (!isArticle && !isCarousel && !isImage) ? `<button class="btn btn-edit" onclick="openEditorModal('${v.id}', '${url}')">✂️</button>` : '';
+                let editBtn = (!isArticle && !isCarousel && !isImage) ? `<button class="btn btn-edit" onclick="openEditorModal('${v.id}', '${shareUrl}')">✂️</button>` : '';
                 let timeDisplay = (isArticle || isCarousel || isImage) ? (v.engine || (isImage ? '🖼️ Direct' : '📄 Readability')) : `⏱️ ${v.duration}`;
 
-                let viewAction = `<a href="${url}" target="_blank" class="btn btn-view">View</a>`;
+                let viewAction = `<a href="${viewUrl}" target="_blank" class="btn btn-view">View</a>`;
 
                 htmlBuffer += `
                     <div class="${cardClass}">
@@ -483,7 +480,7 @@
                         <div class="card-bottom">
                             <div class="meta-tags"><div class="meta-tag">👁️ ${v.views}</div><div class="meta-tag">${timeDisplay}</div><div class="meta-tag">💾 ${formatBytes(v.size_bytes)}</div></div>
                             <div class="btn-group">
-                                <button class="btn btn-copy" onclick="copyLink('${url}')">Copy</button>
+                                <button class="btn btn-copy" onclick="copyLink('${shareUrl}')">Copy</button>
                                 ${viewAction}
                                 ${editBtn}
                                 <a href="/api/download/${v.id}" class="btn btn-download">📥</a>

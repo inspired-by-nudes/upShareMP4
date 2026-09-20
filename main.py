@@ -590,96 +590,97 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
         if task_id in active_downloads: del active_downloads[task_id]
 
 
-def bruteforce_instagram_html(url: str, cookies: object, task_id: str) -> list:
-    """The Ultimate Fallback: Downloads IG HTML and physically rips out CDN image/video URLs via Regex"""
-    extracted = []
-    try:
-        logger.info(f"[Instagram Task {task_id}] EXTREME FALLBACK: Engaging Regex HTML Brute-Forcer...")
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-            'Accept-Language': 'en-US,en;q=0.9',
-        }
-        r = requests.get(url, headers=headers, cookies=cookies, timeout=15)
-        html_text = r.text
-        
-        raw_urls = re.findall(r'(https?://scontent[^\s"\'\\]+)', html_text)
-        clean_urls = list(set([u.replace('\\/', '/').replace('\\u0026', '&').replace('&amp;', '&') for u in raw_urls]))
-        
-        for c in clean_urls:
-            if '150x150' in c or 'profile' in c or 'p320x320' in c: 
-                continue 
-                
-            if '.mp4' in c:
-                extracted.append({'is_video': True, 'vid_url': c, 'img_url': None, 'title': 'Instagram Media'})
-            elif '.jpg' in c or '.webp' in c:
-                extracted.append({'is_video': False, 'vid_url': None, 'img_url': c, 'title': 'Instagram Media'})
-                
-        logger.info(f"[Instagram Task {task_id}] Brute-Forcer successfully ripped {len(extracted)} valid CDN URLs from raw HTML.")
-    except Exception as e:
-        logger.error(f"[Instagram Task {task_id}] HTML Brute-Forcer crashed: {e}")
-        
-    return extracted
-
-def scrape_instagram_embed(url: str, task_id: str) -> list:
+def direct_instagram_scrape(url: str, cookies: object, task_id: str) -> list:
+    """Bypasses yt-dlp entirely by querying Instagram's internal JSON API / GraphQL web layer directly using user session cookies."""
     extracted = []
     try:
         shortcode_match = re.search(r'/(?:p|reel|tv)/([^/?#]+)', url)
         if not shortcode_match:
             return []
-            
         shortcode = shortcode_match.group(1)
-        logger.info(f"[Instagram Task {task_id}] Attempting No-Auth Embed API Scrape for {shortcode}...")
-        
-        embed_url = f"https://www.instagram.com/p/{shortcode}/embed/captioned/"
+        logger.info(f"[Instagram Task {task_id}] Direct Session Scraper: Querying shortcode {shortcode}...")
+
+        # Step 1: Hit the web JSON endpoint with proper browser headers & cookies
+        api_url = f"https://www.instagram.com/p/{shortcode}/?__a=1&__d=dis"
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-            'Accept-Language': 'en-US,en;q=0.5'
+            'X-IG-App-ID': '936619743392459',
+            'Accept': '*/*',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Referer': f'https://www.instagram.com/p/{shortcode}/'
         }
         
-        r = requests.get(embed_url, headers=headers, timeout=15)
+        r = requests.get(api_url, headers=headers, cookies=cookies, timeout=15)
+        logger.info(f"[Instagram Task {task_id}] Direct API Response Code: {r.status_code}")
+
+        items = []
+        caption = "Instagram Media"
         
         if r.status_code == 200:
-            json_match = re.search(r'window\.__additionalDataLoaded\([^,]+,\s*({.+?})\);', r.text)
-            if not json_match:
-                json_match = re.search(r'window\._sharedData\s*=\s*({.+?});', r.text)
-                
-            if json_match:
-                ig_data = json.loads(json_match.group(1))
-                media = ig_data.get('shortcode_media', ig_data.get('graphql', {}).get('shortcode_media', {}))
-                
-                if media:
-                    caption = "Instagram Media"
+            try:
+                data = r.json()
+                media_items = data.get('items', [])
+                if media_items:
+                    m = media_items[0]
+                    try: caption = m.get('caption', {}).get('text', 'Instagram Media')
+                    except: pass
+                    
+                    if 'carousel_media' in m:
+                        items = m['carousel_media']
+                    else:
+                        items = [m]
+            except Exception as e:
+                logger.error(f"[Instagram Task {task_id}] Failed to parse JSON response: {e}")
+
+        # Step 2: Fallback to embed page JSON parsing if API response failed or was empty
+        if not items:
+            logger.info(f"[Instagram Task {task_id}] API empty. Falling back to Embed JSON parse...")
+            embed_url = f"https://www.instagram.com/p/{shortcode}/embed/captioned/"
+            r_embed = requests.get(embed_url, headers=headers, cookies=cookies, timeout=15)
+            if r_embed.status_code == 200:
+                json_match = re.search(r'window\.__additionalDataLoaded\([^,]+,\s*({.+?})\);', r_embed.text)
+                if json_match:
+                    emb_data = json.loads(json_match.group(1))
+                    media = emb_data.get('shortcode_media', {})
                     try:
                         cap_edges = media.get('edge_media_to_caption', {}).get('edges', [])
                         if cap_edges: caption = cap_edges[0]['node']['text']
                     except: pass
                     
                     edges = media.get('edge_sidecar_to_children', {}).get('edges', [])
-                    items = [edge['node'] for edge in edges] if edges else [media]
-                    
-                    for item in items:
-                        vid_url = item.get('video_url')
-                        img_url = item.get('display_url')
-                        extracted.append({
-                            'is_video': item.get('is_video', False),
-                            'vid_url': html.unescape(vid_url).replace('\\/', '/') if vid_url else None,
-                            'img_url': html.unescape(img_url).replace('\\/', '/') if img_url else None,
-                            'title': caption
-                        })
-            else:
-                logger.warning(f"[Instagram Task {task_id}] Embed HTML loaded, but JSON payload obfuscated. Ripping CDN URLs directly...")
-                raw_urls = re.findall(r'(https?://scontent[^\s"\'\\]+)', r.text)
-                clean_urls = list(set([u.replace('\\/', '/').replace('\\u0026', '&').replace('&amp;', '&') for u in raw_urls]))
-                for c in clean_urls:
-                    if '150x150' in c or 'profile' in c: continue 
-                    if '.mp4' in c:
-                        extracted.append({'is_video': True, 'vid_url': c, 'img_url': None, 'title': 'Instagram Embed'})
-                    elif '.jpg' in c or '.webp' in c:
-                        extracted.append({'is_video': False, 'vid_url': None, 'img_url': c, 'title': 'Instagram Embed'})
+                    if edges:
+                        items = [e['node'] for e in edges]
+                    else:
+                        items = [media]
+
+        # Step 3: Extract media URLs from parsed items
+        for idx, item in enumerate(items):
+            is_vid = item.get('is_video', False) or 'video_url' in item or 'video_versions' in item
+            vid_url = item.get('video_url')
+            if not vid_url and 'video_versions' in item:
+                vid_url = item['video_versions'][0].get('url')
+
+            img_url = item.get('display_url')
+            if not img_url and 'image_versions2' in item:
+                cands = item['image_versions2'].get('candidates', [])
+                if cands: img_url = cands[0].get('url')
+            if not img_url and 'display_resources' in item:
+                res = item['display_resources']
+                if res: img_url = res[-1].get('src')
+
+            logger.info(f"[Instagram Task {task_id}] Item {idx} -> is_video: {is_vid}")
+            extracted.append({
+                'is_video': is_vid,
+                'vid_url': html.unescape(vid_url).replace('\\/', '/') if vid_url else None,
+                'img_url': html.unescape(img_url).replace('\\/', '/') if img_url else None,
+                'title': caption
+            })
+
     except Exception as e:
-        logger.error(f"[Instagram Task {task_id}] Embed API exception: {e}")
-        
+        logger.error(f"[Instagram Task {task_id}] Direct Instagram Scraper exception: {e}")
+
     return extracted
+
 
 def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
     if not is_social_media_url(url):
@@ -692,60 +693,44 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
     cj = get_requests_cookies(cookie_path)
 
     if "instagram.com" in url:
-        logger.info(f"[Instagram Task {task_id}] Processing URL: {url}")
+        logger.info(f"[Instagram Task {task_id}] Processing Instagram URL: {url}")
         headers_cdn = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36', 'Accept': '*/*'}
-        
-        # 1. EMBED SCRAPER (JSON or Raw Regex)
-        native_extracted = scrape_instagram_embed(url, task_id)
-        
-        # 2. NATIVE __a=1 API 
-        if not native_extracted:
-            try:
-                headers_ig = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36', 'X-IG-App-ID': '936619743392459', 'Accept': '*/*'}
-                r_json = requests.get(f"{url.split('?')[0].rstrip('/')}/?__a=1&__d=dis", headers=headers_ig, cookies=cj, timeout=10)
-                if r_json.status_code == 200:
-                    for slide in r_json.json().get('items', [{}])[0].get('carousel_media', [r_json.json().get('items', [{}])[0]]):
-                        is_vid = 'video_versions' in slide
-                        img_cands = slide.get('image_versions2', {}).get('candidates', [])
-                        native_extracted.append({
-                            'is_video': is_vid,
-                            'img_url': html.unescape(img_cands[0]['url']).replace('\\/', '/') if img_cands else None,
-                            'vid_url': html.unescape(slide.get('video_versions', [])[0]['url']).replace('\\/', '/') if is_vid and slide.get('video_versions') else None,
-                            'title': 'Instagram Media'
-                        })
-            except Exception: pass
 
-        # 3. ULTIMATE HTML REGEX BRUTE-FORCER
-        if not native_extracted:
-            native_extracted = bruteforce_instagram_html(url, cj, task_id)
+        # 1. DIRECT SESSION SCRAPER (Bypasses yt-dlp & gallery-dl completely)
+        native_items = direct_instagram_scrape(url, cj, task_id)
 
-        # DOWNLOAD THE PAYLOAD
-        if native_extracted:
+        if native_items:
             download_success = True
-            for idx, slide in enumerate(native_extracted):
+            for idx, slide in enumerate(native_items):
                 base_name = f"temp_yt_{task_id}_{idx:03d}"
-                item_success = False
+                item_saved = False
                 try:
                     if slide['is_video'] and slide['vid_url']:
-                        r_vid = requests.get(slide['vid_url'], headers=headers_cdn, cookies=cj, stream=True, timeout=20)
-                        if r_vid.status_code == 200:
+                        logger.info(f"[Instagram Task {task_id}] Downloading slide {idx} video...")
+                        r_v = requests.get(slide['vid_url'], headers=headers_cdn, cookies=cj, stream=True, timeout=25)
+                        if r_v.status_code == 200:
                             with open(f"{DOWNLOAD_DIR}/{base_name}.mp4", 'wb') as f:
-                                for chunk in r_vid.iter_content(chunk_size=8192): f.write(chunk)
+                                for chunk in r_v.iter_content(chunk_size=8192): f.write(chunk)
                             ensure_ios_compatible_video(f"{DOWNLOAD_DIR}/{base_name}.mp4")
-                            item_success = True
-                    
+                            item_saved = True
+
                     if slide['img_url']:
-                        r_img = requests.get(slide['img_url'], headers=headers_cdn, cookies=cj, timeout=15)
-                        if r_img.status_code == 200:
-                            with open(f"{DOWNLOAD_DIR}/{base_name}.jpg", 'wb') as f: f.write(r_img.content)
-                            if not slide['is_video'] or not item_success:
+                        logger.info(f"[Instagram Task {task_id}] Downloading slide {idx} image...")
+                        r_i = requests.get(slide['img_url'], headers=headers_cdn, cookies=cj, timeout=15)
+                        if r_i.status_code == 200:
+                            with open(f"{DOWNLOAD_DIR}/{base_name}.jpg", 'wb') as f: f.write(r_i.content)
+                            if not slide['is_video'] or not item_saved:
                                 ensure_jpg_image(f"{DOWNLOAD_DIR}/{base_name}.jpg")
-                                item_success = True
-                            
-                    if item_success:
-                        with open(f"{DOWNLOAD_DIR}/{base_name}.info.json", 'w', encoding='utf-8') as f: json.dump({'title': slide['title']}, f)
-                    else: download_success = False 
-                except Exception: download_success = False
+                                item_saved = True
+
+                    if item_saved:
+                        with open(f"{DOWNLOAD_DIR}/{base_name}.info.json", 'w', encoding='utf-8') as f:
+                            json.dump({'title': slide['title']}, f)
+                    else:
+                        download_success = False
+                except Exception as ex:
+                    logger.error(f"[Instagram Task {task_id}] Failed to save slide {idx}: {ex}")
+                    download_success = False
 
             if not download_success:
                 for f in os.listdir(DOWNLOAD_DIR):
@@ -753,22 +738,17 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                         try: os.remove(os.path.join(DOWNLOAD_DIR, f))
                         except: pass
 
-        # 4. FALLBACK: GALLERY-DL (With full logging enabled)
+        # 2. FALLBACK TO GALLERY-DL IF DIRECT SCRAPER FAILS
         if not download_success:
-            logger.info(f"[Instagram Task {task_id}] All native extractors failed. Executing gallery-dl...")
+            logger.info(f"[Instagram Task {task_id}] Direct scraper yielded no items. Falling back to gallery-dl...")
             try:
                 if shutil.which("gallery-dl"):
-                    active_downloads[task_id] = "Extracting with gallery-dl..."
                     temp_dl_dir = os.path.join(DOWNLOAD_DIR, f"gallery_dl_{task_id}")
                     os.makedirs(temp_dl_dir, exist_ok=True)
-                    
                     cmd = ["gallery-dl", "-D", temp_dl_dir, url]
                     if cookie_path: cmd.extend(["--cookies", cookie_path])
                     
                     res = subprocess.run(cmd, capture_output=True, text=True)
-                    logger.info(f"[Instagram Task {task_id}] gallery-dl return code: {res.returncode}")
-                    if res.stderr: logger.warning(f"[Instagram Task {task_id}] gallery-dl output: {res.stderr.strip()}")
-                    
                     extracted = []
                     if os.path.exists(temp_dl_dir):
                         for root, dirs, files in os.walk(temp_dl_dir):
@@ -777,7 +757,7 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                                     extracted.append(os.path.join(root, f))
                     
                     if extracted:
-                        extracted.sort() 
+                        extracted.sort()
                         for idx, filepath in enumerate(extracted):
                             ext = filepath.rsplit('.', 1)[-1].lower() if '.' in filepath else 'jpg'
                             if ext == 'jpeg': ext = 'jpg'
@@ -785,55 +765,13 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                             shutil.move(filepath, target_temp)
                             if ext in ['mp4', 'mov', 'mkv', 'webm']: ensure_ios_compatible_video(target_temp)
                             else: ensure_jpg_image(target_temp)
-                            with open(os.path.join(DOWNLOAD_DIR, f"temp_yt_{task_id}_{idx:03d}.info.json"), 'w', encoding='utf-8') as f: json.dump({'title': "Instagram Media"}, f)
+                            with open(os.path.join(DOWNLOAD_DIR, f"temp_yt_{task_id}_{idx:03d}.info.json"), 'w', encoding='utf-8') as f:
+                                json.dump({'title': 'Instagram Media'}, f)
                         download_success = True
                     shutil.rmtree(temp_dl_dir, ignore_errors=True)
             except Exception as e:
-                logger.error(f"[Instagram Task {task_id}] gallery-dl error: {e}")
+                logger.error(f"[Instagram Task {task_id}] gallery-dl exception: {e}")
 
-        # 5. FINAL FALLBACK: YT-DLP (Crash patched via extract_flat)
-        if not download_success:
-            logger.info(f"[Instagram Task {task_id}] gallery-dl failed. Fallback to yt-dlp...")
-            ydl_opts_ig = {
-                'outtmpl': f'{DOWNLOAD_DIR}/temp_yt_{task_id}_%(autonumber)03d_%(id)s.%(ext)s',
-                'format': 'best',
-                'extract_flat': 'in_playlist',  # THIS PREVENTS THE CRASH ON IMAGE SLIDES
-                'ignoreerrors': True,
-                'verbose': True
-            }
-            if cookie_path: ydl_opts_ig['cookiefile'] = cookie_path
-            
-            try:
-                with yt_dlp.YoutubeDL(ydl_opts_ig) as ydl:
-                    info = ydl.extract_info(url, download=False)
-                    
-                entries = [e for e in info.get('entries', []) if e] if (info and 'entries' in info) else ([info] if info else [])
-                for idx, e in enumerate(entries):
-                    is_vid = e.get('is_video') == True or e.get('ext') == 'mp4'
-                    base_name = f"temp_yt_{task_id}_{idx:03d}"
-                    
-                    if is_vid:
-                        dl_opts = {'outtmpl': os.path.join(DOWNLOAD_DIR, f"{base_name}.%(ext)s"), 'format': 'best', 'ignoreerrors': True, 'postprocessor_args': {'ffmpeg': ['-movflags', '+faststart']}}
-                        if cookie_path: dl_opts['cookiefile'] = cookie_path
-                        try:
-                            with yt_dlp.YoutubeDL(dl_opts) as ydl_vid: ydl_vid.download([e.get('url') or e.get('webpage_url') or url])
-                            vid_p = os.path.join(DOWNLOAD_DIR, f"{base_name}.mp4")
-                            if os.path.exists(vid_p): ensure_ios_compatible_video(vid_p)
-                            with open(os.path.join(DOWNLOAD_DIR, f"{base_name}.info.json"), 'w', encoding='utf-8') as f: json.dump({'title': "Instagram Video"}, f)
-                        except Exception: pass
-                    else:
-                        img_url = e.get('url') or e.get('thumbnail')
-                        if img_url:
-                            try:
-                                r_img = requests.get(img_url, headers=headers_cdn, timeout=15)
-                                if r_img.status_code == 200:
-                                    with open(os.path.join(DOWNLOAD_DIR, f"{base_name}.jpg"), 'wb') as f: f.write(r_img.content)
-                                    ensure_jpg_image(os.path.join(DOWNLOAD_DIR, f"{base_name}.jpg"))
-                                    with open(os.path.join(DOWNLOAD_DIR, f"{base_name}.info.json"), 'w', encoding='utf-8') as f: json.dump({'title': "Instagram Photo"}, f)
-                            except Exception: pass
-            except Exception as e:
-                logger.error(f"[Instagram Task {task_id}] yt-dlp metadata extraction error: {e}")
-            
     else:
         ydl_opts = {
             'outtmpl': f'{DOWNLOAD_DIR}/temp_yt_{task_id}_%(autonumber)03d_%(id)s.%(ext)s',

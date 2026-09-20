@@ -75,6 +75,13 @@
         .card-content { flex-grow: 1; display: flex; flex-direction: column; }
         .thumbnail-wrapper { position: relative; width: 100%; height: 180px; margin-bottom: 10px; border-radius: 4px; overflow: hidden; background: #2a2a2a; }
         .thumbnail { width: 100%; height: 100%; object-fit: cover; display: flex; align-items: center; justify-content: center; color: #555; text-align: center; font-weight:bold;}
+        
+        /* FIX: Ensure Image and Carousel tiles never crop their photos */
+        .card.image-card .thumbnail, 
+        .card.carousel-card .thumbnail { 
+            object-fit: contain !important; 
+            background-color: #121212; 
+        }
 
         .date-badge { position: absolute; bottom: 8px; right: 8px; background: rgba(0,0,0,0.75); color: #fff; font-size: 0.75rem; padding: 3px 6px; border-radius: 4px; }
         .expire-badge { position: absolute; top: 8px; left: 8px; background: rgba(255, 51, 51, 0.85); color: #fff; font-size: 0.7rem; padding: 3px 6px; border-radius: 4px; }

@@ -207,7 +207,7 @@ def ensure_ios_compatible_video(file_path: str):
         return file_path
 
 def ensure_jpg_image(file_path: str) -> str:
-    if file_path.endswith('.jpg'):
+    if file_path.lower().endswith(('.jpg', '.jpeg')):
         return file_path
     target_jpg = file_path.rsplit('.', 1)[0] + ".jpg"
     try:
@@ -324,7 +324,7 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
 
         orig_soup = BeautifulSoup(r.content, 'html.parser')
 
-        # DECOMPOSE ARTIFACTS & JUNK PROMPTS (Google follow banners, clocks, ads, social bars)
+        # DECOMPOSE ARTIFACTS & JUNK PROMPTS
         junk_selectors = [
             'script', 'style', 'nav', 'footer', 'header', 'form', 'aside', 'iframe', 'noscript',
             '[class*="google-news"]', '[class*="preferred-source"]', '[class*="google-follow"]',
@@ -370,7 +370,6 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
             alt = (img.get('alt') or '').lower()
             cls = ' '.join(img.get('class', [])).lower()
             
-            # Decompose UI icons, clock badges, and logos
             w, h = img.get('width'), img.get('height')
             is_small = False
             try:
@@ -387,7 +386,6 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
                 continue
             seen_srcs.add(src)
 
-            # Enhanced Caption & Credit Extraction for Delish / Hearst / General News
             container = img.find_parent(['figure', 'div', 'picture', 'section'], class_=re.compile(r'(caption|figure|media|photo|wp-caption|embed-image)', re.I))
             if not container: container = img.find_parent(['figure', 'picture'])
 
@@ -453,11 +451,24 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
             src = urljoin(url, src)
             cap = match.group(2).strip()
             
-            cap_lines = cap.split('|||')
-            formatted_cap = cap_lines[0]
-            if len(cap_lines) > 1:
-                for line in cap_lines[1:]:
-                    formatted_cap += f"<br>— {line}"
+            # SPLIT Delish // artifacts into structured lines
+            if cap and "|||" not in cap and "//" in cap:
+                parts = cap.split("//", 1)
+                cap = f"{parts[0].strip()}|||{parts[1].strip()}"
+                
+            cap_lines = cap.split('|||') if cap else []
+            formatted_cap = ""
+            
+            if cap_lines:
+                formatted_cap = cap_lines[0]
+                if len(cap_lines) > 1:
+                    for line in cap_lines[1:]:
+                        if not line.startswith('—') and not line.startswith('-'):
+                            formatted_cap += f"<br>— {line}"
+                        else:
+                            formatted_cap += f"<br>{line}"
+                elif formatted_cap.lower().endswith("images") or formatted_cap.lower().endswith("photo"):
+                    formatted_cap = f"— {formatted_cap}"
                     
             fig = f'<figure style="margin: 30px 0; display: flex; flex-direction: column; align-items: center;"><img src="{src}" style="max-width:100%; height:auto; border-radius:8px; box-shadow: 0 4px 12px rgba(0,0,0,0.2);">'
             if formatted_cap:
@@ -541,7 +552,7 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
 
     cookie_path = get_cookie_file_for_url(url)
     download_success = False
-    valid_media_exts = ('.jpg', '.jpeg', '.png', '.webp', '.mp4', '.mkv', '.webm', '.mov')
+    valid_media_exts = ('.jpg', '.jpeg', '.png', '.webp', '.heic', '.mp4', '.mkv', '.webm', '.mov')
 
     if "instagram.com" in url:
         try:
@@ -760,7 +771,7 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                 
                 primary = next((f for f in files if f.endswith(('.mp4', '.webm', '.mkv', '.mov'))), None)
                 if not primary:
-                    primary = next((f for f in files if f.endswith(('.jpg', '.jpeg', '.png', '.webp'))), files[0])
+                    primary = next((f for f in files if f.endswith(('.jpg', '.jpeg', '.png', '.webp', '.heic'))), files[0])
                 if not primary.endswith(valid_media_exts):
                     return
 
@@ -775,10 +786,10 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                 if ext_found in ['mp4', 'mov', 'mkv', 'webm']:
                     active_downloads[task_id] = "Optimizing for Mobile..."
                     new_media = ensure_ios_compatible_video(new_media)
-                    ext_found = 'mp4'
+                    ext_found = new_media.rsplit('.', 1)[1].lower()
                 else:
                     new_media = ensure_jpg_image(new_media)
-                    ext_found = 'jpg'
+                    ext_found = new_media.rsplit('.', 1)[1].lower()
                 
                 extracted_title = None
                 thumb_downloaded = False
@@ -814,7 +825,7 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                                 extracted_title = t
                     except: pass
                 
-                extract_true_duration(new_id, user_id, url, extracted_title, f".{ext_found}", expire_days, engine="🖼️ Image" if ext_found in ['jpg', 'png', 'webp'] else None)
+                extract_true_duration(new_id, user_id, url, extracted_title, f".{ext_found}", expire_days, engine="🖼️ Image" if ext_found in ['jpg', 'png', 'webp', 'jpeg'] else None)
 
             elif len(bases) > 1:
                 new_id = generate_secure_id()
@@ -828,7 +839,7 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                     files = bases[base]
                     primary = next((f for f in files if f.endswith(('.mp4', '.webm', '.mkv', '.mov'))), None)
                     if not primary:
-                        primary = next((f for f in files if f.endswith(('.jpg', '.jpeg', '.png', '.webp'))), files[0])
+                        primary = next((f for f in files if f.endswith(('.jpg', '.jpeg', '.png', '.webp', '.heic'))), files[0])
 
                     if not primary.endswith(valid_media_exts):
                         continue
@@ -842,12 +853,13 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                     if ext in ['mp4', 'mov', 'mkv', 'webm']:
                         active_downloads[task_id] = "Optimizing for Mobile..."
                         new_media_path = ensure_ios_compatible_video(new_media_path)
-                        new_media_name = f"{new_id}_{idx_counter}.mp4"
-                        ext = 'mp4'
+                        actual_ext = new_media_path.rsplit('.', 1)[1].lower()
+                        new_media_name = f"{new_id}_{idx_counter}.{actual_ext}"
                         carousel_tags += f"<div class='carousel-item' data-type='video'><video src='/videos/{new_media_name}' controls playsinline webkit-playsinline></video></div>"
                     else:
                         new_media_path = ensure_jpg_image(new_media_path)
-                        new_media_name = f"{new_id}_{idx_counter}.jpg"
+                        actual_ext = new_media_path.rsplit('.', 1)[1].lower()
+                        new_media_name = f"{new_id}_{idx_counter}.{actual_ext}"
                         carousel_tags += f"<div class='carousel-item' data-type='image'><img src='/videos/{new_media_name}'></div>"
                     idx_counter += 1
 

@@ -326,19 +326,11 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
 
         junk_selectors = [
             'script', 'style', 'nav', 'footer', 'header', 'form', 'aside', 'iframe', 'noscript',
-            '[class*="google-news"]', '[class*="preferred-source"]', '[class*="google-follow"]',
             '[class*="social-share"]', '[class*="share-bar"]', '[class*="newsletter"]',
-            '[class*="recirc"]', '[aria-label*="Google"]', '[data-testid*="google"]',
             '.ad-container', '.advertisement', '.mrf-article-body-ad'
         ]
         for sel in junk_selectors:
             for el in orig_soup.select(sel):
-                try: el.decompose()
-                except: pass
-
-        for el in list(orig_soup.find_all(['div', 'p', 'span', 'a', 'button'])):
-            txt = el.get_text(strip=True).lower()
-            if ("add" in txt and "preferred source" in txt and "google" in txt) or "add to google settings" in txt:
                 try: el.decompose()
                 except: pass
 
@@ -389,16 +381,34 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
             if not first_img_src:
                 first_img_src = src
 
-            # Target ONLY explicit image containers (<figure>, <picture>)
+            # Target explicit image containers only to prevent consuming whole article body (NY Post bug)
             container = img.find_parent(['figure', 'picture'])
+            if not container:
+                potentials = img.find_parents(['div'], class_=re.compile(r'(wp-caption|image-container|photo-wrapper|featured-image)', re.I))
+                for p_container in potentials:
+                    if len(p_container.get_text(strip=True)) < 250:
+                        container = p_container
+                        break
 
             cap_parts = []
             if container and container.name != 'body':
-                for el in container.find_all(['figcaption', 'span', 'p', 'div'], class_=re.compile(r'(caption|credit|byline|source)', re.I)):
-                    t = el.get_text(strip=True)
-                    if t and len(t) < 300 and t not in cap_parts:
-                        cap_parts.append(t)
-                        
+                # Separate Caption and Credit to prevent duplicates (Ars Technica bug)
+                cap_el = container.find(['figcaption']) or container.find(class_=re.compile(r'(caption)', re.I))
+                if cap_el:
+                    credit_el = cap_el.find(class_=re.compile(r'(credit|source|byline)', re.I))
+                    if credit_el:
+                        c_txt = credit_el.get_text(strip=True)
+                        credit_el.decompose()
+                        if c_txt: cap_parts.append(c_txt)
+                    
+                    cap_txt = cap_el.get_text(separator=' ', strip=True)
+                    if cap_txt: cap_parts.append(cap_txt)
+                else:
+                    for el in container.find_all(['span', 'p', 'div'], class_=re.compile(r'(caption|credit|byline|source)', re.I)):
+                        t = el.get_text(separator=' ', strip=True)
+                        if t and t not in cap_parts:
+                            cap_parts.append(t)
+                            
                 cap_text = "|||".join(cap_parts).replace('___', ' - ')
                 target_to_replace = container
             else:
@@ -412,8 +422,21 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
         doc = Document(str(orig_soup))
         title = doc.title()
         readable_html = doc.summary()
-
+        
+        # Failsafe if Readability strips NY Post completely
         soup = BeautifulSoup(readable_html, 'html.parser')
+        raw_html_str = str(soup)
+        
+        if len(BeautifulSoup(raw_html_str, 'html.parser').get_text(strip=True)) < 300:
+            logger.info(f"[{task_id}] Readability stripped too much. Attempting manual DOM extraction...")
+            article_body = orig_soup.find(['article', 'main']) or orig_soup.find(class_=re.compile(r'(article-body|entry-content|post-content|story-body|single__content)', re.I))
+            if article_body:
+                raw_html_str = str(article_body)
+            else:
+                raw_html_str = str(orig_soup.find('body') or orig_soup)
+                
+            soup = BeautifulSoup(raw_html_str, 'html.parser')
+
         for h1 in soup.find_all('h1'):
             if title.lower() in h1.get_text().lower() or h1.get_text().lower() in title.lower():
                 h1.decompose()
@@ -422,12 +445,7 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
             if txt.isdigit() and len(txt) <= 3:
                 a.decompose()
 
-        raw_html_str = str(soup)
-        if len(raw_html_str.strip()) < 100:
-            body = orig_soup.find('body')
-            raw_html_str = str(body) if body else str(orig_soup)
-
-        cleaned_html, engine = clean_html_with_ai(raw_html_str)
+        cleaned_html, engine = clean_html_with_ai(str(soup))
         final_html = cleaned_html
 
         def vid_repl(match):
@@ -453,11 +471,12 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
                     line = " / ".join(parts)
                     
                 clean_line = line.strip()
-                is_credit = bool(re.search(r'(getty|images|photo|courtesy|reuters|ap|afp|nurphoto|splash|shutterstock|instagram|twitter|facebook)', clean_line, re.I)) or clean_line.startswith('—') or clean_line.startswith('-') or ('/' in clean_line and len(clean_line) < 100)
+                is_credit = bool(re.search(r'(getty|images|photo|courtesy|reuters|ap|afp|nurphoto|splash|shutterstock|instagram|twitter|facebook|credit|via)', clean_line, re.I)) or clean_line.startswith('—') or clean_line.startswith('-') or ('/' in clean_line and len(clean_line) < 100)
                 
                 if is_credit:
                     clean_credit = re.sub(r'^[—\-\s]+', '', clean_line)
-                    credit_text.append(f"— {clean_credit}")
+                    if clean_credit and clean_credit not in credit_text:
+                        credit_text.append(f"— {clean_credit}")
                 else:
                     caption_text.append(clean_line)
 
@@ -480,13 +499,12 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
 
         ai_soup = BeautifulSoup(final_html, 'html.parser')
         
-        # Strictly target LEAF nodes under 150 chars for credit styling (prevents article wrapping)
+        # Orphaned Credit Post-Processor (Leaf nodes only)
         for p in list(ai_soup.find_all(['p', 'span', 'small'])):
             if p.find_all(['p', 'div', 'article', 'section']):
-                continue  # Skip parent elements!
-                
+                continue
             txt = p.get_text(strip=True)
-            if txt and len(txt) < 150 and ('//' in txt or (any(k in txt.lower() for k in ['getty images', 'nurphoto', 'shutterstock']) and len(txt) < 120)):
+            if txt and len(txt) < 150 and ('//' in txt or (any(k in txt.lower() for k in ['getty', 'nurphoto', 'shutterstock', 'credit:']) and len(txt) < 120)):
                 if not p.find_parent('figcaption'):
                     clean_credit = re.sub(r'\s*//\s*', ' / ', txt)
                     clean_credit = re.sub(r'^[—\-\s]+', '', clean_credit)
@@ -494,18 +512,14 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
                     prev_fig = p.find_previous('figure')
                     if prev_fig:
                         cap_el = prev_fig.find('figcaption')
-                        if cap_el:
+                        if cap_el and clean_credit not in cap_el.get_text():
                             cap_el.append(ai_soup.new_tag('br'))
                             cap_el.append(f"— {clean_credit}")
-                        else:
+                        elif not cap_el:
                             new_cap = ai_soup.new_tag('figcaption', attrs={'style': 'font-size: 0.85rem; color: #aaa; text-align: center; margin-top: 8px; font-style: italic; max-width: 90%; display: block; margin-left: auto; margin-right: auto;'})
                             new_cap.string = f"— {clean_credit}"
                             prev_fig.append(new_cap)
                         p.decompose()
-                    else:
-                        p.name = 'p'
-                        p['style'] = 'font-size: 0.85rem; color: #aaa; text-align: center; font-style: italic; margin-top: -15px; margin-bottom: 25px;'
-                        p.string = f"— {clean_credit}"
 
         bq_list = ai_soup.find_all('blockquote')
         for i in range(len(bq_list) - 1, 0, -1):
@@ -579,34 +593,6 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
     finally:
         if task_id in active_downloads: del active_downloads[task_id]
 
-def get_best_instagram_image_url(e: dict) -> str:
-    if not e or not isinstance(e, dict): return None
-    candidates = []
-    
-    if e.get('url'): candidates.append(e.get('url'))
-    if e.get('webpage_url') and 'cdninstagram' in e.get('webpage_url'): candidates.append(e.get('webpage_url'))
-    if e.get('display_url'): candidates.append(e.get('display_url'))
-    if e.get('thumbnail'): candidates.append(e.get('thumbnail'))
-    
-    if e.get('thumbnails') and isinstance(e.get('thumbnails'), list):
-        thumbs = [t for t in e.get('thumbnails') if isinstance(t, dict) and t.get('url')]
-        if thumbs:
-            thumbs.sort(key=lambda x: x.get('width', 0) or 0)
-            candidates.append(thumbs[-1].get('url'))
-            
-    if e.get('formats') and isinstance(e.get('formats'), list):
-        imgs = [f for f in e.get('formats') if isinstance(f, dict) and f.get('vcodec') == 'none' and f.get('url')]
-        if imgs:
-            candidates.append(imgs[-1].get('url'))
-            
-    for c in candidates:
-        if c:
-            c = c.replace('&amp;', '&')
-            if 'cdninstagram' in c or 'fbcdn' in c or c.endswith(('.jpg', '.jpeg', '.webp', '.png')):
-                return c
-                
-    return candidates[0].replace('&amp;', '&') if candidates else None
-
 def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
     if not is_social_media_url(url):
         extract_article(url, user_id, task_id, expire_days)
@@ -615,80 +601,137 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
     cookie_path = get_cookie_file_for_url(url)
     download_success = False
     valid_media_exts = ('.jpg', '.jpeg', '.png', '.webp', '.heic', '.mp4', '.mkv', '.webm', '.mov')
+    cj = get_requests_cookies(cookie_path)
 
     if "instagram.com" in url:
         logger.info(f"[Instagram Task {task_id}] Processing URL: {url}")
         
-        # 1. TRY GALLERY-DL
+        headers_cdn = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'Accept': '*/*'
+        }
+        
+        # 1. NATIVE INSTAGRAM API SCRAPER (Bypasses yt-dlp image omission bug)
+        native_extracted = []
         try:
-            if shutil.which("gallery-dl"):
-                active_downloads[task_id] = "Extracting with gallery-dl..."
-                logger.info(f"[Instagram Task {task_id}] Attempting extraction via gallery-dl...")
-                
-                temp_dl_dir = os.path.join(DOWNLOAD_DIR, f"gallery_dl_{task_id}")
-                os.makedirs(temp_dl_dir, exist_ok=True)
-                
-                cmd = ["gallery-dl", "-D", temp_dl_dir, url]
-                if cookie_path: cmd.extend(["--cookies", cookie_path])
-                
-                res = subprocess.run(cmd, capture_output=True, text=True)
-                logger.info(f"[Instagram Task {task_id}] gallery-dl returncode: {res.returncode}")
-                if res.stderr: logger.info(f"[Instagram Task {task_id}] gallery-dl stderr: {res.stderr[:300]}")
-                
-                extracted = []
-                if os.path.exists(temp_dl_dir):
-                    for root, dirs, files in os.walk(temp_dl_dir):
-                        for f in files:
-                            if f.lower().endswith(valid_media_exts):
-                                extracted.append(os.path.join(root, f))
-                
-                logger.info(f"[Instagram Task {task_id}] gallery-dl extracted {len(extracted)} files.")
-
-                if extracted:
-                    meta_title = "Instagram Media"
-                    try:
-                        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
-                        r_page = requests.get(url, headers=headers, timeout=10)
-                        if r_page.status_code != 200:
-                            cj = get_requests_cookies(cookie_path)
-                            r_page = requests.get(url, headers=headers, cookies=cj, timeout=10)
-                            
-                        soup = BeautifulSoup(r_page.content, 'html.parser')
-                        og_title = soup.find('meta', property='og:title')
-                        if og_title and og_title.get('content'):
-                            meta_title = og_title.get('content').split(' on Instagram')[0].strip()
-                    except: pass
+            logger.info(f"[Instagram Task {task_id}] Attempting Native IG API Extract...")
+            headers_ig = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'X-IG-App-ID': '936619743392459',
+                'Accept': '*/*'
+            }
+            json_url = f"{url.split('?')[0].rstrip('/')}/?__a=1&__d=dis"
+            r_json = requests.get(json_url, headers=headers_ig, cookies=cj, timeout=10)
+            logger.info(f"[Instagram Task {task_id}] Native API status: {r_json.status_code}")
+            
+            if r_json.status_code == 200:
+                data = r_json.json()
+                items = data.get('items', [])
+                if items:
+                    media = items[0]
+                    carousel = media.get('carousel_media') or [media]
                     
-                    idx = 0
-                    extracted.sort() 
+                    try: meta_title = media['caption']['text']
+                    except: meta_title = 'Instagram Media'
                     
-                    for filepath in extracted:
-                        ext = filepath.rsplit('.', 1)[-1].lower() if '.' in filepath else 'jpg'
-                        if ext == 'jpeg': ext = 'jpg'
+                    for slide in carousel:
+                        is_vid = 'video_versions' in slide
+                        img_cands = slide.get('image_versions2', {}).get('candidates', [])
+                        img_url = img_cands[0]['url'] if img_cands else None
+                        vid_url = slide.get('video_versions', [])[0]['url'] if is_vid and slide.get('video_versions') else None
                         
-                        target_temp = os.path.join(DOWNLOAD_DIR, f"temp_yt_{task_id}_{idx:03d}.{ext}")
-                        shutil.move(filepath, target_temp)
-                        
-                        if ext in ['mp4', 'mov', 'mkv', 'webm']:
-                            target_temp = ensure_ios_compatible_video(target_temp)
-                        else:
-                            target_temp = ensure_jpg_image(target_temp)
-
-                        with open(os.path.join(DOWNLOAD_DIR, f"temp_yt_{task_id}_{idx:03d}.info.json"), 'w', encoding='utf-8') as f:
-                            json.dump({'title': meta_title}, f)
-                            
-                        idx += 1
-                    download_success = True
-                    
-                shutil.rmtree(temp_dl_dir, ignore_errors=True)
-            else:
-                logger.warning(f"[Instagram Task {task_id}] gallery-dl binary not found on system.")
+                        native_extracted.append({
+                            'is_video': is_vid,
+                            'img_url': html.unescape(img_url).replace('\\/', '/') if img_url else None,
+                            'vid_url': html.unescape(vid_url).replace('\\/', '/') if vid_url else None,
+                            'title': meta_title
+                        })
         except Exception as e:
-            logger.error(f"[Instagram Task {task_id}] gallery-dl execution error: {e}")
+            logger.error(f"[Instagram Task {task_id}] Native API error: {e}")
 
-        # 2. FALLBACK TO YT-DLP + REQUESTS DIRECT FETCH
+        if native_extracted:
+            logger.info(f"[Instagram Task {task_id}] Native API successfully found {len(native_extracted)} slides.")
+            download_success = True
+            idx = 0
+            for slide in native_extracted:
+                base_name = f"temp_yt_{task_id}_{idx:03d}"
+                try:
+                    if slide['is_video'] and slide['vid_url']:
+                        r_vid = requests.get(slide['vid_url'], headers=headers_cdn, cookies=cj, stream=True, timeout=15)
+                        with open(f"{DOWNLOAD_DIR}/{base_name}.mp4", 'wb') as f:
+                            for chunk in r_vid.iter_content(chunk_size=8192): f.write(chunk)
+                        ensure_ios_compatible_video(f"{DOWNLOAD_DIR}/{base_name}.mp4")
+                    
+                    if slide['img_url']:
+                        r_img = requests.get(slide['img_url'], headers=headers_cdn, cookies=cj, timeout=10)
+                        with open(f"{DOWNLOAD_DIR}/{base_name}.jpg", 'wb') as f:
+                            f.write(r_img.content)
+                        if not slide['is_video']: ensure_jpg_image(f"{DOWNLOAD_DIR}/{base_name}.jpg")
+                            
+                    with open(f"{DOWNLOAD_DIR}/{base_name}.info.json", 'w', encoding='utf-8') as f:
+                        json.dump({'title': slide['title']}, f)
+                    idx += 1
+                except Exception as e:
+                    logger.error(f"[Instagram Task {task_id}] Native download error on slide {idx}: {e}")
+                    download_success = False
+
+        # 2. FALLBACK TO GALLERY-DL -> YT-DLP
         if not download_success:
-            logger.info(f"[Instagram Task {task_id}] Falling back to yt-dlp extraction...")
+            logger.info(f"[Instagram Task {task_id}] Native IG Extractor failed. Falling back to yt-dlp/gallery-dl...")
+            try:
+                if shutil.which("gallery-dl"):
+                    active_downloads[task_id] = "Extracting with gallery-dl..."
+                    temp_dl_dir = os.path.join(DOWNLOAD_DIR, f"gallery_dl_{task_id}")
+                    os.makedirs(temp_dl_dir, exist_ok=True)
+                    
+                    cmd = ["gallery-dl", "-D", temp_dl_dir, url]
+                    if cookie_path: cmd.extend(["--cookies", cookie_path])
+                    
+                    res = subprocess.run(cmd, capture_output=True, text=True)
+                    
+                    extracted = []
+                    if os.path.exists(temp_dl_dir):
+                        for root, dirs, files in os.walk(temp_dl_dir):
+                            for f in files:
+                                if f.lower().endswith(valid_media_exts):
+                                    extracted.append(os.path.join(root, f))
+                    
+                    if extracted:
+                        meta_title = "Instagram Media"
+                        try:
+                            headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+                            r_page = requests.get(url, headers=headers, cookies=cj, timeout=10)
+                            soup = BeautifulSoup(r_page.content, 'html.parser')
+                            og_title = soup.find('meta', property='og:title')
+                            if og_title and og_title.get('content'):
+                                meta_title = og_title.get('content').split(' on Instagram')[0].strip()
+                        except: pass
+                        
+                        idx = 0
+                        extracted.sort() 
+                        
+                        for filepath in extracted:
+                            ext = filepath.rsplit('.', 1)[-1].lower() if '.' in filepath else 'jpg'
+                            if ext == 'jpeg': ext = 'jpg'
+                            
+                            target_temp = os.path.join(DOWNLOAD_DIR, f"temp_yt_{task_id}_{idx:03d}.{ext}")
+                            shutil.move(filepath, target_temp)
+                            
+                            if ext in ['mp4', 'mov', 'mkv', 'webm']:
+                                ensure_ios_compatible_video(target_temp)
+                            else:
+                                ensure_jpg_image(target_temp)
+    
+                            with open(os.path.join(DOWNLOAD_DIR, f"temp_yt_{task_id}_{idx:03d}.info.json"), 'w', encoding='utf-8') as f:
+                                json.dump({'title': meta_title}, f)
+                                
+                            idx += 1
+                        download_success = True
+                    shutil.rmtree(temp_dl_dir, ignore_errors=True)
+            except Exception as e:
+                logger.error(f"[Instagram Task {task_id}] gallery-dl error: {e}")
+
+        if not download_success:
             ydl_opts_ig = {
                 'outtmpl': f'{DOWNLOAD_DIR}/temp_yt_{task_id}_%(autonumber)03d_%(id)s.%(ext)s',
                 'format': 'best',
@@ -704,130 +747,56 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                 with yt_dlp.YoutubeDL(ydl_opts_ig) as ydl:
                     info = ydl.extract_info(url, download=False)
             except Exception as e:
-                logger.error(f"[Instagram Task {task_id}] yt-dlp info extraction error: {e}")
+                logger.error(f"[Instagram Task {task_id}] yt-dlp error: {e}")
                 
-            entries = []
-            if info:
-                if isinstance(info, dict) and 'entries' in info and info['entries']:
-                    entries = [e for e in info['entries'] if e]
-                elif isinstance(info, dict):
-                    entries = [info]
-            
-            logger.info(f"[Instagram Task {task_id}] yt-dlp found {len(entries)} candidate entries.")
+            entries = [e for e in info.get('entries', []) if e] if (info and 'entries' in info) else ([info] if info else [])
                     
             idx = 0
-            headers_cdn = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-                'Accept-Encoding': 'gzip, deflate, br',
-                'Accept-Language': 'en-US,en;q=0.9',
-            }
-            cj = get_requests_cookies(cookie_path)
-            
             for e in entries:
                 if not e or not isinstance(e, dict): continue
-                
                 is_vid = e.get('is_video') == True or e.get('ext') == 'mp4' or (e.get('vcodec') and e.get('vcodec') != 'none')
                 base_name = f"temp_yt_{task_id}_{idx:03d}"
-                logger.info(f"[Instagram Task {task_id}] Item {idx} -> is_video: {is_vid}, ext: {e.get('ext')}")
                 
                 if is_vid:
                     v_url = e.get('url') or e.get('webpage_url') or url
                     dl_opts = {
                         'outtmpl': os.path.join(DOWNLOAD_DIR, f"{base_name}.%(ext)s"),
-                        'format': 'bestvideo[vcodec^=avc]+bestaudio[ext=m4a]/best[ext=mp4]/best',
-                        'merge_output_format': 'mp4',
+                        'format': 'best',
                         'ignoreerrors': True,
                         'postprocessor_args': {'ffmpeg': ['-movflags', '+faststart']}
                     }
                     if cookie_path: dl_opts['cookiefile'] = cookie_path
                     try:
-                        with yt_dlp.YoutubeDL(dl_opts) as ydl_vid:
-                            ydl_vid.download([v_url])
-                        
+                        with yt_dlp.YoutubeDL(dl_opts) as ydl_vid: ydl_vid.download([v_url])
                         vid_p = os.path.join(DOWNLOAD_DIR, f"{base_name}.mp4")
-                        if os.path.exists(vid_p):
-                            ensure_ios_compatible_video(vid_p)
+                        if os.path.exists(vid_p): ensure_ios_compatible_video(vid_p)
 
-                        meta_title = e.get('title') or (info.get('title') if info else None) or (info.get('description') if info else None) or "Instagram Video"
+                        meta_title = e.get('title') or (info.get('title') if info else None) or "Instagram Video"
                         with open(os.path.join(DOWNLOAD_DIR, f"{base_name}.info.json"), 'w', encoding='utf-8') as f:
                             json.dump({'title': meta_title}, f)
                         
-                        img_url = get_best_instagram_image_url(e)
+                        img_url = e.get('thumbnail')
                         if img_url:
-                            logger.info(f"[Instagram Task {task_id}] Item {idx} downloading video poster: {img_url[:80]}...")
                             r_img = requests.get(img_url, headers=headers_cdn, timeout=15)
-                            logger.info(f"[Instagram Task {task_id}] Item {idx} poster fetch HTTP status: {r_img.status_code}")
                             if r_img.status_code == 200:
                                 with open(os.path.join(DOWNLOAD_DIR, f"{base_name}.jpg"), 'wb') as f:
                                     f.write(r_img.content)
                     except Exception as ex:
-                        logger.error(f"[Instagram Task {task_id}] Error downloading video entry {idx}: {ex}")
+                        logger.error(f"[Instagram Task {task_id}] yt-dlp video fail: {ex}")
                 else:
-                    img_url = get_best_instagram_image_url(e)
-                    logger.info(f"[Instagram Task {task_id}] Item {idx} candidate image URL: {img_url[:80] if img_url else 'None'}")
+                    img_url = e.get('url') or e.get('thumbnail')
                     if img_url:
                         try:
                             r_img = requests.get(img_url, headers=headers_cdn, timeout=15)
-                            logger.info(f"[Instagram Task {task_id}] Item {idx} image fetch HTTP status: {r_img.status_code}")
-                            
-                            if r_img.status_code != 200:
-                                logger.info(f"[Instagram Task {task_id}] Retrying item {idx} with session cookies...")
-                                r_img = requests.get(img_url, headers=headers_cdn, cookies=cj, timeout=15)
-                                logger.info(f"[Instagram Task {task_id}] Item {idx} retry HTTP status: {r_img.status_code}")
-                                
                             if r_img.status_code == 200 and len(r_img.content) > 100:
                                 with open(os.path.join(DOWNLOAD_DIR, f"{base_name}.jpg"), 'wb') as f:
                                     f.write(r_img.content)
                                 ensure_jpg_image(os.path.join(DOWNLOAD_DIR, f"{base_name}.jpg"))
-                                meta_title = e.get('title') or (info.get('title') if info else None) or (info.get('description') if info else None) or "Instagram Photo"
+                                meta_title = e.get('title') or "Instagram Photo"
                                 with open(os.path.join(DOWNLOAD_DIR, f"{base_name}.info.json"), 'w', encoding='utf-8') as f:
                                     json.dump({'title': meta_title}, f)
-                                logger.info(f"[Instagram Task {task_id}] Item {idx} photo saved successfully.")
-                            else:
-                                logger.error(f"[Instagram Task {task_id}] Item {idx} photo fetch failed with length {len(r_img.content) if r_img else 0}")
-                        except Exception as ex:
-                            logger.error(f"[Instagram Task {task_id}] Error downloading image entry {idx}: {ex}")
+                        except Exception as ex: pass
                 idx += 1
-
-            if idx == 0:
-                logger.info(f"[Instagram Task {task_id}] 0 items extracted by yt-dlp. Executing direct HTML scrape fallback...")
-                try:
-                    headers_ig = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'}
-                    r_pg = requests.get(url, headers=headers_ig, cookies=cj, timeout=10)
-                    soup = BeautifulSoup(r_pg.content, 'html.parser')
-                    
-                    found_imgs = []
-                    for og in soup.find_all('meta', property=re.compile(r'^(og:image|twitter:image)')):
-                        c = og.get('content')
-                        if c and 'cdninstagram' in c and c not in found_imgs:
-                            found_imgs.append(c)
-                            
-                    for script in soup.find_all('script', type='application/ld+json'):
-                        try:
-                            ld = json.loads(script.string)
-                            imgs = ld.get('image') or []
-                            if isinstance(imgs, str): imgs = [imgs]
-                            for img_u in imgs:
-                                if img_u and img_u not in found_imgs: found_imgs.append(img_u)
-                        except: pass
-                        
-                    logger.info(f"[Instagram Task {task_id}] Direct HTML scrape found {len(found_imgs)} image links.")
-                    
-                    for f_url in found_imgs:
-                        base_name = f"temp_yt_{task_id}_{idx:03d}"
-                        f_url = f_url.replace('&amp;', '&')
-                        r_img = requests.get(f_url, headers=headers_cdn, timeout=15)
-                        logger.info(f"[Instagram Task {task_id}] Direct scrape fetch HTTP status: {r_img.status_code}")
-                        if r_img.status_code == 200:
-                            with open(os.path.join(DOWNLOAD_DIR, f"{base_name}.jpg"), 'wb') as f:
-                                f.write(r_img.content)
-                            ensure_jpg_image(os.path.join(DOWNLOAD_DIR, f"{base_name}.jpg"))
-                            with open(os.path.join(DOWNLOAD_DIR, f"{base_name}.info.json"), 'w', encoding='utf-8') as f:
-                                json.dump({'title': "Instagram Photo"}, f)
-                            idx += 1
-                except Exception as ex:
-                    logger.error(f"[Instagram Task {task_id}] Fallback page scrape error: {ex}")
             
     else:
         ydl_opts = {
@@ -1504,7 +1473,7 @@ def change_password(target_username: str, req: Request, password: str = Form(...
 def get_env():
     with db_lock:
         db = load_db()
-        return {"login_msg": db.get("settings", {}).get("login_msg", os.parseenv("LOGIN_CONTACT_MSG", ""))}
+        return {"login_msg": db.get("settings", {}).get("login_msg", os.getenv("LOGIN_CONTACT_MSG", ""))}
         
 @app.get("/icon.svg")
 def get_favicon(): return FileResponse("icon.svg")

@@ -56,7 +56,6 @@
         .card.carousel-card { border-left-color: #2196F3 !important; } 
         .card.image-card { border-left-color: #9c27b0 !important; } 
         
-        /* FIX: Ensure deleting hover styling overrides specific variants */
         .card.deleting { border-left-color: #ff3333 !important; }
 
         .card-checkbox { opacity: 0; position: absolute; top: 10px; right: 10px; width: 20px; height: 20px; z-index: 10; cursor: pointer; transition: opacity 0.2s; pointer-events: none; }
@@ -446,7 +445,6 @@
             }
             
             activeVideosData.forEach(v => {
-                // Point directly to the central viewer endpoint for a clean uncropped UI
                 const viewUrl = window.location.origin + '/view/' + v.id;
                 const shareUrl = window.location.origin + '/videos/' + v.filename;
                 

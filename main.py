@@ -324,7 +324,6 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
 
         orig_soup = BeautifulSoup(r.content, 'html.parser')
 
-        # DECOMPOSE ARTIFACTS & JUNK PROMPTS
         junk_selectors = [
             'script', 'style', 'nav', 'footer', 'header', 'form', 'aside', 'iframe', 'noscript',
             '[class*="google-news"]', '[class*="preferred-source"]', '[class*="google-follow"]',
@@ -451,28 +450,29 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
             src = urljoin(url, src)
             cap = match.group(2).strip()
             
-            cap_lines = cap.split('|||') if cap else []
-            new_lines = []
+            cap_lines = [c.strip() for c in cap.split('|||') if c.strip()] if cap else []
             
+            caption_text = []
+            credit_text = []
+
             for line in cap_lines:
-                if "//" in line:
-                    parts = line.split("//", 1)
-                    new_lines.extend([parts[0].strip(), parts[1].strip()])
+                clean_line = re.sub(r'\s*//\s*', ' / ', line)
+                is_credit = bool(re.search(r'(getty|images|photo|courtesy|reuters|ap|afp|nurphoto|splash|shutterstock|instagram|twitter|facebook)', clean_line, re.I)) or clean_line.startswith('—') or clean_line.startswith('-')
+                
+                if is_credit:
+                    clean_credit = re.sub(r'^[—\-\s]+', '', clean_line)
+                    credit_text.append(f"— {clean_credit}")
                 else:
-                    new_lines.append(line)
-            
-            formatted_cap = ""
-            if new_lines:
-                formatted_cap = new_lines[0]
-                if len(new_lines) > 1:
-                    for line in new_lines[1:]:
-                        if not line.startswith('—') and not line.startswith('-'):
-                            formatted_cap += f"<br>— {line}"
-                        else:
-                            formatted_cap += f"<br>{line}"
-                elif formatted_cap.lower().endswith("images") or formatted_cap.lower().endswith("photo"):
-                    formatted_cap = f"— {formatted_cap}"
-                    
+                    caption_text.append(clean_line)
+
+            final_cap_parts = []
+            if caption_text:
+                final_cap_parts.append(" ".join(caption_text))
+            if credit_text:
+                final_cap_parts.extend(credit_text)
+
+            formatted_cap = "<br>".join(final_cap_parts) if final_cap_parts else ""
+
             fig = f'<figure style="margin: 30px 0; display: flex; flex-direction: column; align-items: center;"><img src="{src}" style="max-width:100%; height:auto; border-radius:8px; box-shadow: 0 4px 12px rgba(0,0,0,0.2);">'
             if formatted_cap:
                 fig += f'<figcaption style="font-size: 0.85rem; color: #aaa; text-align: center; margin-top: 8px; font-style: italic; max-width: 90%;">{formatted_cap}</figcaption>'
@@ -643,92 +643,69 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                 elif isinstance(info, dict):
                     entries = [info]
                     
-            if not entries:
-                try:
-                    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
-                    cj = get_requests_cookies(cookie_path)
-                    r = requests.get(url, headers=headers, cookies=cj, timeout=10)
-                    soup = BeautifulSoup(r.content, 'html.parser')
-                    
-                    og_img = soup.find('meta', property='og:image')
-                    if og_img:
-                        img_url = og_img.get('content')
+            idx = 0
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Referer': 'https://www.instagram.com/',
+                'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8'
+            }
+            cj = get_requests_cookies(cookie_path)
+            
+            for e in entries:
+                if not e or not isinstance(e, dict): continue
+                
+                is_vid = e.get('is_video') == True or e.get('ext') == 'mp4' or e.get('vcodec') not in [None, 'none']
+                base_name = f"temp_yt_{task_id}_{idx:03d}"
+                
+                if is_vid:
+                    v_url = e.get('url') or e.get('webpage_url') or url
+                    dl_opts = {
+                        'outtmpl': os.path.join(DOWNLOAD_DIR, f"{base_name}.%(ext)s"),
+                        'format': 'bestvideo[vcodec^=avc]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+                        'merge_output_format': 'mp4',
+                        'ignoreerrors': True,
+                        'postprocessor_args': {'ffmpeg': ['-movflags', '+faststart']}
+                    }
+                    if cookie_path: dl_opts['cookiefile'] = cookie_path
+                    try:
+                        with yt_dlp.YoutubeDL(dl_opts) as ydl_vid:
+                            ydl_vid.download([v_url])
+                        
+                        vid_p = os.path.join(DOWNLOAD_DIR, f"{base_name}.mp4")
+                        if os.path.exists(vid_p):
+                            ensure_ios_compatible_video(vid_p)
+
+                        meta_title = e.get('title') or (info.get('title') if info else None) or (info.get('description') if info else None) or "Instagram Video"
+                        with open(os.path.join(DOWNLOAD_DIR, f"{base_name}.info.json"), 'w', encoding='utf-8') as f:
+                            json.dump({'title': meta_title}, f)
+                        
+                        img_url = None
+                        if e.get('thumbnails'): img_url = e.get('thumbnails')[-1].get('url')
                         if img_url:
-                            base_name = f"temp_yt_{task_id}_000"
                             r_img = requests.get(img_url, headers=headers, cookies=cj, timeout=10)
                             if r_img.status_code == 200:
                                 with open(os.path.join(DOWNLOAD_DIR, f"{base_name}.jpg"), 'wb') as f:
                                     f.write(r_img.content)
-                                
-                                og_title = soup.find('meta', property='og:title')
-                                meta_title = og_title.get('content') if og_title else "Instagram Photo"
-                                meta_title = meta_title.split(' on Instagram')[0].strip()
-                                
+                    except Exception as ex:
+                        logger.error(f"Error downloading Instagram video entry: {ex}")
+                else:
+                    img_url = None
+                    if e.get('thumbnails'): img_url = e.get('thumbnails')[-1].get('url')
+                    if not img_url and e.get('url'): img_url = e.get('url')
+                    if not img_url and e.get('display_url'): img_url = e.get('display_url')
+                    
+                    if img_url:
+                        try:
+                            r_img = requests.get(img_url, headers=headers, cookies=cj, timeout=10)
+                            if r_img.status_code == 200:
+                                with open(os.path.join(DOWNLOAD_DIR, f"{base_name}.jpg"), 'wb') as f:
+                                    f.write(r_img.content)
+                                meta_title = e.get('title') or (info.get('title') if info else None) or (info.get('description') if info else None) or "Instagram Photo"
                                 with open(os.path.join(DOWNLOAD_DIR, f"{base_name}.info.json"), 'w', encoding='utf-8') as f:
                                     json.dump({'title': meta_title}, f)
-                except Exception as e:
-                    logger.error(f"Fallback IG scrape failed: {e}")
-            else:
-                idx = 0
-                for e in entries:
-                    if not e or not isinstance(e, dict): continue
-                    
-                    is_vid = e.get('is_video') == True or e.get('ext') == 'mp4'
-                    base_name = f"temp_yt_{task_id}_{idx:03d}"
-                    
-                    if is_vid:
-                        v_url = e.get('url') or e.get('webpage_url') or url
-                        dl_opts = {
-                            'outtmpl': os.path.join(DOWNLOAD_DIR, f"{base_name}.%(ext)s"),
-                            'format': 'bestvideo[vcodec^=avc]+bestaudio[ext=m4a]/best[ext=mp4]/best',
-                            'merge_output_format': 'mp4',
-                            'ignoreerrors': True,
-                            'postprocessor_args': {'ffmpeg': ['-movflags', '+faststart']}
-                        }
-                        if cookie_path: dl_opts['cookiefile'] = cookie_path
-                        try:
-                            with yt_dlp.YoutubeDL(dl_opts) as ydl_vid:
-                                ydl_vid.download([v_url])
-                            
-                            vid_p = os.path.join(DOWNLOAD_DIR, f"{base_name}.mp4")
-                            if os.path.exists(vid_p):
-                                ensure_ios_compatible_video(vid_p)
-
-                            meta_title = e.get('title') or (info.get('title') if info else None) or (info.get('description') if info else None) or "Instagram Video"
-                            with open(os.path.join(DOWNLOAD_DIR, f"{base_name}.info.json"), 'w', encoding='utf-8') as f:
-                                json.dump({'title': meta_title}, f)
-                            
-                            img_url = None
-                            if e.get('thumbnails'): img_url = e.get('thumbnails')[-1].get('url')
-                            if img_url:
-                                headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
-                                cj = get_requests_cookies(cookie_path)
-                                r_img = requests.get(img_url, headers=headers, cookies=cj, timeout=10)
-                                if r_img.status_code == 200:
-                                    with open(os.path.join(DOWNLOAD_DIR, f"{base_name}.jpg"), 'wb') as f:
-                                        f.write(r_img.content)
                         except Exception as ex:
-                            logger.error(f"Error downloading Instagram video entry: {ex}")
-                    else:
-                        img_url = None
-                        if e.get('thumbnails'): img_url = e.get('thumbnails')[-1].get('url')
-                        if not img_url and e.get('url'): img_url = e.get('url')
-                        if not img_url and e.get('display_url'): img_url = e.get('display_url')
-                        
-                        if img_url:
-                            try:
-                                headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
-                                cj = get_requests_cookies(cookie_path)
-                                r_img = requests.get(img_url, headers=headers, cookies=cj, timeout=10)
-                                if r_img.status_code == 200:
-                                    with open(os.path.join(DOWNLOAD_DIR, f"{base_name}.jpg"), 'wb') as f:
-                                        f.write(r_img.content)
-                                    meta_title = e.get('title') or (info.get('title') if info else None) or (info.get('description') if info else None) or "Instagram Photo"
-                                    with open(os.path.join(DOWNLOAD_DIR, f"{base_name}.info.json"), 'w', encoding='utf-8') as f:
-                                        json.dump({'title': meta_title}, f)
-                            except Exception as ex:
-                                logger.error(f"Error downloading Instagram image entry: {ex}")
-                    idx += 1
+                            logger.error(f"Error downloading Instagram image entry: {ex}")
+                idx += 1
             
     else:
         ydl_opts = {
@@ -884,31 +861,39 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                     except: pass
 
                 gallery_html = f"""
-                <html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'>
+                <!DOCTYPE html>
+                <html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover'>
                 <title>{html.escape(extracted_title)}</title>
                 <style>
-                    body {{ margin: 0; background: #000; display: flex; align-items: center; justify-content: center; height: 100vh; overflow: hidden; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; user-select: none; }}
-                    .carousel-container {{ position: relative; width: 100%; height: 100vh; overflow: hidden; display: flex; flex-direction: column; }}
+                    * {{ box-sizing: border-box; -webkit-tap-highlight-color: transparent; }}
+                    html, body {{ margin: 0; padding: 0; background: #000; width: 100vw; height: 100dvh; min-height: -webkit-fill-available; overflow: hidden; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; user-select: none; }}
                     
-                    .carousel-track {{ display: flex; transition: transform 0.3s ease-in-out; height: 100%; width: 100%; }}
-                    .carousel-item {{ min-width: 100%; width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; flex-shrink: 0; background: #000; }}
-                    .carousel-item img, .carousel-item video {{ max-width: 100%; max-height: 100%; object-fit: contain; }}
+                    .carousel-container {{ position: relative; width: 100vw; height: 100dvh; min-height: -webkit-fill-available; overflow: hidden; display: flex; align-items: center; justify-content: center; }}
+                    .carousel-track {{ display: flex; transition: transform 0.3s cubic-bezier(0.25, 1, 0.5, 1); height: 100%; width: 100%; }}
+                    .carousel-item {{ min-width: 100vw; width: 100vw; height: 100dvh; display: flex; align-items: center; justify-content: center; flex-shrink: 0; background: #000; position: relative; }}
+                    .carousel-item img, .carousel-item video {{ max-width: 100vw; max-height: 100dvh; width: auto; height: auto; object-fit: contain; display: block; margin: auto; }}
 
-                    .btn {{ position: absolute; top: 50%; transform: translateY(-50%); background: rgba(0,0,0,0.5); color: white; border: none; padding: 15px 12px; cursor: pointer; border-radius: 50%; font-size: 18px; transition: background 0.2s; z-index: 10; }}
-                    .btn:hover {{ background: rgba(0,0,0,0.8); }}
+                    .btn {{ position: absolute; top: 50%; transform: translateY(-50%); background: rgba(0,0,0,0.6); color: white; border: 1px solid rgba(255,255,255,0.2); padding: 14px 16px; cursor: pointer; border-radius: 50%; font-size: 20px; z-index: 20; transition: all 0.2s; display: flex; align-items: center; justify-content: center; }}
+                    .btn:hover {{ background: rgba(0,0,0,0.9); scale: 1.1; }}
                     .btn-prev {{ left: 15px; }}
                     .btn-next {{ right: 15px; }}
                     
-                    .dots {{ position: absolute; bottom: 20px; width: 100%; display: flex; justify-content: center; gap: 8px; z-index: 10; }}
-                    .dot {{ width: 8px; height: 8px; background: rgba(255,255,255,0.3); border-radius: 4px; overflow: hidden; position: relative; transition: width 0.3s ease; }}
-                    .dot.active {{ width: 24px; background: rgba(255,255,255,0.3); }}
-                    .dot-fill {{ height: 100%; width: 0%; background: #ffffff; }}
+                    .dots {{ position: absolute; bottom: calc(20px + env(safe-area-inset-bottom, 0px)); width: 100%; display: flex; justify-content: center; align-items: center; gap: 8px; z-index: 20; pointer-events: auto; }}
+                    .dot {{ width: 10px; height: 10px; background: rgba(255,255,255,0.35); border-radius: 5px; overflow: hidden; position: relative; cursor: pointer; transition: all 0.3s ease; }}
+                    .dot.active {{ width: 28px; background: rgba(255,255,255,0.35); }}
+                    .dot-fill {{ height: 100%; width: 0%; background: #ffffff; border-radius: 5px; }}
+                    
+                    .tap-zone {{ position: absolute; top: 0; bottom: 0; width: 35%; z-index: 15; }}
+                    .tap-left {{ left: 0; }}
+                    .tap-right {{ right: 0; }}
                 </style>
                 </head><body>
                     <div class="carousel-container" id="carousel">
+                        <div class="tap-zone tap-left" id="tapLeft"></div>
+                        <div class="tap-zone tap-right" id="tapRight"></div>
                         <div class="carousel-track" id="track">{carousel_tags}</div>
-                        <button class="btn btn-prev" onclick="window.move(-1)">❮</button>
-                        <button class="btn btn-next" onclick="window.move(1)">❯</button>
+                        <button class="btn btn-prev" id="btnPrev" onclick="window.move(-1)">❮</button>
+                        <button class="btn btn-next" id="btnNext" onclick="window.move(1)">❯</button>
                         <div class="dots" id="dots"></div>
                     </div>
                     <script>
@@ -921,6 +906,7 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                         for (let i = 0; i < items; i++) {{
                             let d = document.createElement('div');
                             d.className = 'dot' + (i === 0 ? ' active' : '');
+                            d.onclick = (e) => {{ e.stopPropagation(); window.goTo(i); }};
                             d.innerHTML = `<div class="dot-fill" id="fill-${{i}}"></div>`;
                             dotsContainer.appendChild(d);
                         }}
@@ -931,13 +917,15 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                             if (imgTimer) clearInterval(imgTimer);
                             document.querySelectorAll('video').forEach(v => {{ v.pause(); v.currentTime = 0; }});
 
-                            track.style.transform = `translateX(-${{index * 100}}%)`;
+                            track.style.transform = `translateX(-${{index * 100}}vw)`;
 
                             for (let i = 0; i < items; i++) {{
                                 dots[i].className = 'dot';
                                 const fill = document.getElementById(`fill-${{i}}`);
-                                fill.style.transition = 'none';
-                                fill.style.width = i < index ? '100%' : '0%';
+                                if (fill) {{
+                                    fill.style.transition = 'none';
+                                    fill.style.width = i < index ? '100%' : '0%';
+                                }}
                             }}
                             
                             dots[index].className = 'dot active';
@@ -949,14 +937,14 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                             if (video) {{
                                 video.play().catch(() => {{}});
                                 video.ontimeupdate = () => {{
-                                    if (video.duration) {{
+                                    if (video.duration && currentFill) {{
                                         const pct = (video.currentTime / video.duration) * 100;
                                         currentFill.style.transition = 'width 0.1s linear';
                                         currentFill.style.width = pct + '%';
                                     }}
                                 }};
                                 video.onended = () => {{
-                                    currentFill.style.width = '100%';
+                                    if (currentFill) currentFill.style.width = '100%';
                                     if (index < items - 1) window.move(1);
                                 }};
                             }} else {{
@@ -965,8 +953,10 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                                 imgTimer = setInterval(() => {{
                                     let elapsed = Date.now() - start;
                                     let pct = Math.min(100, (elapsed / duration) * 100);
-                                    currentFill.style.transition = 'width 0.1s linear';
-                                    currentFill.style.width = pct + '%';
+                                    if (currentFill) {{
+                                        currentFill.style.transition = 'width 0.1s linear';
+                                        currentFill.style.width = pct + '%';
+                                    }}
                                     if (elapsed >= duration) {{
                                         clearInterval(imgTimer);
                                         if (index < items - 1) window.move(1);
@@ -982,8 +972,44 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                             updateSlide();
                         }};
 
+                        window.goTo = function(i) {{
+                            index = i;
+                            updateSlide();
+                        }};
+
+                        let touchStartX = 0;
+                        let touchEndX = 0;
+                        const container = document.getElementById('carousel');
+
+                        container.addEventListener('touchstart', e => {{
+                            touchStartX = e.changedTouches[0].screenX;
+                        }}, {{ passive: true }});
+
+                        container.addEventListener('touchend', e => {{
+                            touchEndX = e.changedTouches[0].screenX;
+                            handleSwipe();
+                        }}, {{ passive: true }});
+
+                        function handleSwipe() {{
+                            const diff = touchStartX - touchEndX;
+                            if (Math.abs(diff) > 40) {{
+                                if (diff > 0) window.move(1);
+                                else window.move(-1);
+                            }}
+                        }}
+
+                        document.getElementById('tapLeft').onclick = (e) => {{ e.stopPropagation(); window.move(-1); }};
+                        document.getElementById('tapRight').onclick = (e) => {{ e.stopPropagation(); window.move(1); }};
+
+                        document.addEventListener('keydown', e => {{
+                            if (e.key === 'ArrowLeft') window.move(-1);
+                            if (e.key === 'ArrowRight' || e.key === ' ') window.move(1);
+                        }});
+
                         if (items <= 1) {{
                             document.querySelectorAll('.btn').forEach(b => b.style.display = 'none');
+                            document.querySelectorAll('.tap-zone').forEach(tz => tz.style.display = 'none');
+                            document.getElementById('dots').style.display = 'none';
                         }}
 
                         updateSlide();
@@ -1042,14 +1068,17 @@ def view_media(video_id: str):
     title = html.escape(vid.get("title", safe_id))
     
     if ext in [".mp4", ".webm", ".mkv", ".mov"]:
-        content = f'<video src="{media_url}" controls autoplay playsinline style="max-width:100%; max-height:100%; object-fit:contain; outline:none;"></video>'
+        content = f'<video src="{media_url}" controls autoplay playsinline style="max-width:100vw; max-height:100dvh; width:auto; height:auto; object-fit:contain; outline:none;"></video>'
     else:
-        content = f'<img src="{media_url}" style="max-width:100%; max-height:100%; object-fit:contain;">'
+        content = f'<img src="{media_url}" style="max-width:100vw; max-height:100dvh; width:auto; height:auto; object-fit:contain; display:block; margin:auto;">'
         
     html_content = f"""
     <!DOCTYPE html>
-    <html><head><meta charset='utf-8'><meta name="viewport" content="width=device-width, initial-scale=1"><title>{title}</title>
-    <style>body {{ margin:0; background:#000; height:100vh; display:flex; align-items:center; justify-content:center; }}</style>
+    <html><head><meta charset='utf-8'><meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"><title>{title}</title>
+    <style>
+        * {{ box-sizing: border-box; }}
+        html, body {{ margin:0; padding:0; background:#000; width:100vw; height:100dvh; min-height:-webkit-fill-available; display:flex; align-items:center; justify-content:center; overflow:hidden; }}
+    </style>
     </head><body>{content}</body></html>
     """
     return HTMLResponse(html_content)

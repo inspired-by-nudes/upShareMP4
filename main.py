@@ -309,7 +309,7 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
     try:
         active_downloads[task_id] = "Parsing Article..."
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8'
         }
         r = requests.get(url, headers=headers, timeout=10)
@@ -385,33 +385,33 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
                 continue
             seen_srcs.add(src)
 
-            container = img.find_parent(['figure', 'div', 'picture', 'section'], class_=re.compile(r'(caption|figure|media|photo|wp-caption|embed-image)', re.I))
+            container = img.find_parent(['figure', 'div', 'picture', 'section'], class_=re.compile(r'(caption|figure|media|photo|wp-caption|embed-image|em-media|image|content-element|standard-header)', re.I))
             if not container: container = img.find_parent(['figure', 'picture'])
 
-            cap_text = ""
+            cap_parts = []
             if container and container.name != 'body':
-                caption_el = container.find(class_=re.compile(r'(caption-text|caption|description)', re.I)) or container.find('figcaption')
-                credit_el = container.find(class_=re.compile(r'(credit|byline|source)', re.I))
-                
-                cap_parts = []
-                if caption_el:
-                    t = caption_el.get_text(strip=True)
-                    if t and len(t) < 300: cap_parts.append(t)
-                if credit_el:
-                    c = credit_el.get_text(strip=True)
-                    if c and len(c) < 150 and c not in cap_parts: cap_parts.append(c)
-                    
-                if not cap_parts:
-                    for cap in container.find_all(['figcaption', 'span', 'p']):
-                        if cap.name == 'figcaption' or re.search(r'(caption|credit|byline)', str(cap.get('class', '')), re.I):
-                            t = cap.get_text(strip=True)
-                            if t and len(t) < 300 and t not in cap_parts:
-                                cap_parts.append(t)
-                                
+                for el in container.find_all(['figcaption', 'span', 'p', 'div'], class_=re.compile(r'(caption|credit|byline|source)', re.I)):
+                    t = el.get_text(strip=True)
+                    if t and len(t) < 300 and t not in cap_parts:
+                        cap_parts.append(t)
+                        
+                curr = container
+                for _ in range(2):
+                    nxt = curr.find_next_sibling()
+                    if nxt and (nxt.name in ['span', 'div', 'p', 'figcaption']):
+                        nxt_cls = ' '.join(nxt.get('class', [])).lower()
+                        nxt_txt = nxt.get_text(strip=True)
+                        if any(k in nxt_cls for k in ['credit', 'caption', 'source', 'byline']) or ('//' in nxt_txt) or any(k in nxt_txt.lower() for k in ['getty', 'nurphoto', 'shutterstock', 'photo']):
+                            if nxt_txt and len(nxt_txt) < 300 and nxt_txt not in cap_parts:
+                                cap_parts.append(nxt_txt)
+                            nxt.decompose()
+                            break
+
                 cap_text = "|||".join(cap_parts).replace('___', ' - ')
                 target_to_replace = container
             else:
                 target_to_replace = img
+                cap_text = ""
 
             marker = orig_soup.new_tag('p')
             marker.string = f"___UPSHARE_IMAGE___SRC:{src}___CAPTION:{cap_text}___"
@@ -456,8 +456,12 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
             credit_text = []
 
             for line in cap_lines:
-                clean_line = re.sub(r'\s*//\s*', ' / ', line)
-                is_credit = bool(re.search(r'(getty|images|photo|courtesy|reuters|ap|afp|nurphoto|splash|shutterstock|instagram|twitter|facebook)', clean_line, re.I)) or clean_line.startswith('—') or clean_line.startswith('-')
+                if '//' in line:
+                    parts = [p.strip() for p in line.split('//') if p.strip()]
+                    line = " / ".join(parts)
+                    
+                clean_line = line.strip()
+                is_credit = bool(re.search(r'(getty|images|photo|courtesy|reuters|ap|afp|nurphoto|splash|shutterstock|instagram|twitter|facebook)', clean_line, re.I)) or clean_line.startswith('—') or clean_line.startswith('-') or ('/' in clean_line and len(clean_line) < 100)
                 
                 if is_credit:
                     clean_credit = re.sub(r'^[—\-\s]+', '', clean_line)
@@ -473,9 +477,9 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
 
             formatted_cap = "<br>".join(final_cap_parts) if final_cap_parts else ""
 
-            fig = f'<figure style="margin: 30px 0; display: flex; flex-direction: column; align-items: center;"><img src="{src}" style="max-width:100%; height:auto; border-radius:8px; box-shadow: 0 4px 12px rgba(0,0,0,0.2);">'
+            fig = f'<figure style="margin: 30px 0; display: flex; flex-direction: column; align-items: center; text-align: center;"><img src="{src}" style="max-width:100%; height:auto; border-radius:8px; box-shadow: 0 4px 12px rgba(0,0,0,0.2); display: block; margin: 0 auto;">'
             if formatted_cap:
-                fig += f'<figcaption style="font-size: 0.85rem; color: #aaa; text-align: center; margin-top: 8px; font-style: italic; max-width: 90%;">{formatted_cap}</figcaption>'
+                fig += f'<figcaption style="font-size: 0.85rem; color: #aaa; text-align: center; margin-top: 8px; font-style: italic; max-width: 90%; display: block; margin-left: auto; margin-right: auto;">{formatted_cap}</figcaption>'
             fig += '</figure>'
             return fig
 
@@ -483,6 +487,31 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
         final_html = re.sub(r'___UPSHARE_IMAGE___SRC:(.*?)___CAPTION:(.*?)___', img_repl, final_html)
 
         ai_soup = BeautifulSoup(final_html, 'html.parser')
+        
+        # Post-process orphaned credit paragraphs (e.g. Delish credits outside figure)
+        for p in list(ai_soup.find_all(['p', 'span', 'div'])):
+            txt = p.get_text(strip=True)
+            if txt and ('//' in txt or (any(k in txt.lower() for k in ['getty images', 'nurphoto', 'shutterstock']) and len(txt) < 120)):
+                if not p.find_parent('figcaption'):
+                    clean_credit = re.sub(r'\s*//\s*', ' / ', txt)
+                    clean_credit = re.sub(r'^[—\-\s]+', '', clean_credit)
+                    
+                    prev_fig = p.find_previous('figure')
+                    if prev_fig:
+                        cap_el = prev_fig.find('figcaption')
+                        if cap_el:
+                            cap_el.append(ai_soup.new_tag('br'))
+                            cap_el.append(f"— {clean_credit}")
+                        else:
+                            new_cap = ai_soup.new_tag('figcaption', attrs={'style': 'font-size: 0.85rem; color: #aaa; text-align: center; margin-top: 8px; font-style: italic; max-width: 90%; display: block; margin-left: auto; margin-right: auto;'})
+                            new_cap.string = f"— {clean_credit}"
+                            prev_fig.append(new_cap)
+                        p.decompose()
+                    else:
+                        p.name = 'p'
+                        p['style'] = 'font-size: 0.85rem; color: #aaa; text-align: center; font-style: italic; margin-top: -15px; margin-bottom: 25px;'
+                        p.string = f"— {clean_credit}"
+
         bq_list = ai_soup.find_all('blockquote')
         for i in range(len(bq_list) - 1, 0, -1):
             curr_bq = bq_list[i]
@@ -534,6 +563,8 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
             a:hover {{text-decoration: underline;}}
             blockquote {{border-left: 4px solid #ff8c00; margin: 25px 0; padding-left: 20px; color: #fff; font-style: italic; font-size: 1.1rem; background: #1a1a1a; padding-top: 10px; padding-bottom: 10px; border-radius: 0 6px 6px 0;}}
             p {{margin-bottom: 18px;}}
+            figure {{ margin: 30px 0; display: flex; flex-direction: column; align-items: center; text-align: center; }}
+            figcaption {{ font-size: 0.85rem; color: #aaa; text-align: center; margin-top: 8px; font-style: italic; max-width: 90%; display: block; margin-left: auto; margin-right: auto; }}
         </style>
         </head><body>
             {logo_html}
@@ -547,6 +578,26 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
         logger.error(f"Article parse failed: {e}")
     finally:
         if task_id in active_downloads: del active_downloads[task_id]
+
+def get_best_instagram_image_url(e: dict) -> str:
+    if not e or not isinstance(e, dict): return None
+    if e.get('display_url') and 'cdninstagram' in e.get('display_url'):
+        return e.get('display_url')
+    if e.get('display_resources') and isinstance(e.get('display_resources'), list):
+        res = e.get('display_resources')
+        if res and isinstance(res[-1], dict) and res[-1].get('src'):
+            return res[-1].get('src')
+    if e.get('thumbnails') and isinstance(e.get('thumbnails'), list):
+        thumbs = [t for t in e.get('thumbnails') if isinstance(t, dict) and t.get('url')]
+        if thumbs:
+            thumbs.sort(key=lambda x: x.get('width', 0) or 0)
+            return thumbs[-1].get('url')
+    if e.get('thumbnail') and 'cdninstagram' in e.get('thumbnail'):
+        return e.get('thumbnail')
+    u = e.get('url')
+    if u and ('cdninstagram' in u or 'fbcdn' in u or u.endswith(('.jpg', '.jpeg', '.webp', '.png'))):
+        return u
+    return None
 
 def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
     if not is_social_media_url(url):
@@ -644,17 +695,20 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                     entries = [info]
                     
             idx = 0
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            headers_cdn = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
                 'Referer': 'https://www.instagram.com/',
-                'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8'
+                'Accept': 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
+                'Sec-Fetch-Dest': 'image',
+                'Sec-Fetch-Mode': 'no-cors',
+                'Sec-Fetch-Site': 'cross-site'
             }
             cj = get_requests_cookies(cookie_path)
             
             for e in entries:
                 if not e or not isinstance(e, dict): continue
                 
-                is_vid = e.get('is_video') == True or e.get('ext') == 'mp4' or e.get('vcodec') not in [None, 'none']
+                is_vid = e.get('is_video') == True or e.get('ext') == 'mp4' or (e.get('vcodec') and e.get('vcodec') != 'none')
                 base_name = f"temp_yt_{task_id}_{idx:03d}"
                 
                 if is_vid:
@@ -679,33 +733,67 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                         with open(os.path.join(DOWNLOAD_DIR, f"{base_name}.info.json"), 'w', encoding='utf-8') as f:
                             json.dump({'title': meta_title}, f)
                         
-                        img_url = None
-                        if e.get('thumbnails'): img_url = e.get('thumbnails')[-1].get('url')
+                        img_url = get_best_instagram_image_url(e)
                         if img_url:
-                            r_img = requests.get(img_url, headers=headers, cookies=cj, timeout=10)
+                            r_img = requests.get(img_url, headers=headers_cdn, timeout=15)
                             if r_img.status_code == 200:
                                 with open(os.path.join(DOWNLOAD_DIR, f"{base_name}.jpg"), 'wb') as f:
                                     f.write(r_img.content)
                     except Exception as ex:
                         logger.error(f"Error downloading Instagram video entry: {ex}")
                 else:
-                    img_url = None
-                    if e.get('thumbnails'): img_url = e.get('thumbnails')[-1].get('url')
-                    if not img_url and e.get('url'): img_url = e.get('url')
-                    if not img_url and e.get('display_url'): img_url = e.get('display_url')
-                    
+                    img_url = get_best_instagram_image_url(e)
                     if img_url:
                         try:
-                            r_img = requests.get(img_url, headers=headers, cookies=cj, timeout=10)
+                            r_img = requests.get(img_url, headers=headers_cdn, timeout=15)
+                            if r_img.status_code != 200:
+                                r_img = requests.get(img_url, headers=headers_cdn, cookies=cj, timeout=15)
+                                
                             if r_img.status_code == 200:
                                 with open(os.path.join(DOWNLOAD_DIR, f"{base_name}.jpg"), 'wb') as f:
                                     f.write(r_img.content)
+                                ensure_jpg_image(os.path.join(DOWNLOAD_DIR, f"{base_name}.jpg"))
                                 meta_title = e.get('title') or (info.get('title') if info else None) or (info.get('description') if info else None) or "Instagram Photo"
                                 with open(os.path.join(DOWNLOAD_DIR, f"{base_name}.info.json"), 'w', encoding='utf-8') as f:
                                     json.dump({'title': meta_title}, f)
                         except Exception as ex:
                             logger.error(f"Error downloading Instagram image entry: {ex}")
                 idx += 1
+
+            # Fallback if yt-dlp extracted no images or entries
+            if idx == 0:
+                try:
+                    headers_ig = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'}
+                    r_pg = requests.get(url, headers=headers_ig, cookies=cj, timeout=10)
+                    soup = BeautifulSoup(r_pg.content, 'html.parser')
+                    
+                    found_imgs = []
+                    for og in soup.find_all('meta', property=re.compile(r'^(og:image|twitter:image)')):
+                        c = og.get('content')
+                        if c and 'cdninstagram' in c and c not in found_imgs:
+                            found_imgs.append(c)
+                            
+                    for script in soup.find_all('script', type='application/ld+json'):
+                        try:
+                            ld = json.loads(script.string)
+                            imgs = ld.get('image') or []
+                            if isinstance(imgs, str): imgs = [imgs]
+                            for img_u in imgs:
+                                if img_u and img_u not in found_imgs: found_imgs.append(img_u)
+                        except: pass
+                        
+                    for f_url in found_imgs:
+                        base_name = f"temp_yt_{task_id}_{idx:03d}"
+                        r_img = requests.get(f_url, headers=headers_cdn, timeout=15)
+                        if r_img.status_code == 200:
+                            with open(os.path.join(DOWNLOAD_DIR, f"{base_name}.jpg"), 'wb') as f:
+                                f.write(r_img.content)
+                            ensure_jpg_image(os.path.join(DOWNLOAD_DIR, f"{base_name}.jpg"))
+                            with open(os.path.join(DOWNLOAD_DIR, f"{base_name}.info.json"), 'w', encoding='utf-8') as f:
+                                json.dump({'title': "Instagram Photo"}, f)
+                            idx += 1
+                except Exception as ex:
+                    logger.error(f"Fallback page scrape error: {ex}")
             
     else:
         ydl_opts = {
@@ -870,8 +958,8 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                     
                     .carousel-container {{ position: relative; width: 100vw; height: 100dvh; min-height: -webkit-fill-available; overflow: hidden; display: flex; align-items: center; justify-content: center; }}
                     .carousel-track {{ display: flex; transition: transform 0.3s cubic-bezier(0.25, 1, 0.5, 1); height: 100%; width: 100%; }}
-                    .carousel-item {{ min-width: 100vw; width: 100vw; height: 100dvh; display: flex; align-items: center; justify-content: center; flex-shrink: 0; background: #000; position: relative; }}
-                    .carousel-item img, .carousel-item video {{ max-width: 100vw; max-height: 100dvh; width: auto; height: auto; object-fit: contain; display: block; margin: auto; }}
+                    .carousel-item {{ min-width: 100vw; width: 100vw; height: 100dvh; display: flex; align-items: center; justify-content: center; flex-shrink: 0; background: #000; position: relative; padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }}
+                    .carousel-item img, .carousel-item video {{ max-width: 100%; max-height: 100%; width: auto; height: auto; object-fit: contain !important; display: block; margin: auto; }}
 
                     .btn {{ position: absolute; top: 50%; transform: translateY(-50%); background: rgba(0,0,0,0.6); color: white; border: 1px solid rgba(255,255,255,0.2); padding: 14px 16px; cursor: pointer; border-radius: 50%; font-size: 20px; z-index: 20; transition: all 0.2s; display: flex; align-items: center; justify-content: center; }}
                     .btn:hover {{ background: rgba(0,0,0,0.9); scale: 1.1; }}
@@ -1068,18 +1156,19 @@ def view_media(video_id: str):
     title = html.escape(vid.get("title", safe_id))
     
     if ext in [".mp4", ".webm", ".mkv", ".mov"]:
-        content = f'<video src="{media_url}" controls autoplay playsinline style="max-width:100vw; max-height:100dvh; width:auto; height:auto; object-fit:contain; outline:none;"></video>'
+        content = f'<video src="{media_url}" controls autoplay playsinline style="max-width:100%; max-height:100%; width:auto; height:auto; object-fit:contain; outline:none; display:block; margin:auto;"></video>'
     else:
-        content = f'<img src="{media_url}" style="max-width:100vw; max-height:100dvh; width:auto; height:auto; object-fit:contain; display:block; margin:auto;">'
+        content = f'<img src="{media_url}" style="max-width:100%; max-height:100%; width:auto; height:auto; object-fit:contain; display:block; margin:auto;">'
         
     html_content = f"""
     <!DOCTYPE html>
     <html><head><meta charset='utf-8'><meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"><title>{title}</title>
     <style>
         * {{ box-sizing: border-box; }}
-        html, body {{ margin:0; padding:0; background:#000; width:100vw; height:100dvh; min-height:-webkit-fill-available; display:flex; align-items:center; justify-content:center; overflow:hidden; }}
+        html, body {{ margin:0; padding:0; background:#000; width:100vw; height:100vh; height:100dvh; min-height:-webkit-fill-available; display:flex; align-items:center; justify-content:center; overflow:hidden; }}
+        .media-container {{ width:100vw; height:100vh; height:100dvh; display:flex; align-items:center; justify-content:center; padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }}
     </style>
-    </head><body>{content}</body></html>
+    </head><body><div class="media-container">{content}</div></body></html>
     """
     return HTMLResponse(html_content)
 

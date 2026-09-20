@@ -389,14 +389,8 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
             if not first_img_src:
                 first_img_src = src
 
+            # Target ONLY explicit image containers (<figure>, <picture>)
             container = img.find_parent(['figure', 'picture'])
-            if not container:
-                potentials = img.find_parents(['div', 'section'], class_=re.compile(r'(caption|figure|media|photo|wp-caption|embed-image|em-media|image|content-element)', re.I))
-                for p_container in potentials:
-                    text_len = len(p_container.get_text(strip=True))
-                    if text_len < 400: 
-                        container = p_container
-                        break
 
             cap_parts = []
             if container and container.name != 'body':
@@ -405,19 +399,6 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
                     if t and len(t) < 300 and t not in cap_parts:
                         cap_parts.append(t)
                         
-                curr = container
-                for _ in range(2):
-                    nxt = curr.find_next_sibling()
-                    if nxt and (nxt.name in ['span', 'div', 'p', 'figcaption', 'small']):
-                        nxt_cls = ' '.join(nxt.get('class', [])).lower()
-                        nxt_txt = nxt.get_text(strip=True)
-                        if any(k in nxt_cls for k in ['credit', 'caption', 'source', 'byline']) or ('//' in nxt_txt) or any(k in nxt_txt.lower() for k in ['getty', 'nurphoto', 'shutterstock', 'photo']):
-                            if nxt_txt and len(nxt_txt) < 300 and nxt_txt not in cap_parts:
-                                cap_parts.append(nxt_txt)
-                            nxt.decompose()
-                            break
-                        curr = nxt
-
                 cap_text = "|||".join(cap_parts).replace('___', ' - ')
                 target_to_replace = container
             else:
@@ -499,9 +480,13 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
 
         ai_soup = BeautifulSoup(final_html, 'html.parser')
         
-        for p in list(ai_soup.find_all(['p', 'span', 'div', 'small'])):
+        # Strictly target LEAF nodes under 150 chars for credit styling (prevents article wrapping)
+        for p in list(ai_soup.find_all(['p', 'span', 'small'])):
+            if p.find_all(['p', 'div', 'article', 'section']):
+                continue  # Skip parent elements!
+                
             txt = p.get_text(strip=True)
-            if txt and ('//' in txt or (any(k in txt.lower() for k in ['getty images', 'nurphoto', 'shutterstock']) and len(txt) < 120)):
+            if txt and len(txt) < 150 and ('//' in txt or (any(k in txt.lower() for k in ['getty images', 'nurphoto', 'shutterstock']) and len(txt) < 120)):
                 if not p.find_parent('figcaption'):
                     clean_credit = re.sub(r'\s*//\s*', ' / ', txt)
                     clean_credit = re.sub(r'^[—\-\s]+', '', clean_credit)
@@ -632,9 +617,13 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
     valid_media_exts = ('.jpg', '.jpeg', '.png', '.webp', '.heic', '.mp4', '.mkv', '.webm', '.mov')
 
     if "instagram.com" in url:
+        logger.info(f"[Instagram Task {task_id}] Processing URL: {url}")
+        
+        # 1. TRY GALLERY-DL
         try:
             if shutil.which("gallery-dl"):
                 active_downloads[task_id] = "Extracting with gallery-dl..."
+                logger.info(f"[Instagram Task {task_id}] Attempting extraction via gallery-dl...")
                 
                 temp_dl_dir = os.path.join(DOWNLOAD_DIR, f"gallery_dl_{task_id}")
                 os.makedirs(temp_dl_dir, exist_ok=True)
@@ -642,7 +631,9 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                 cmd = ["gallery-dl", "-D", temp_dl_dir, url]
                 if cookie_path: cmd.extend(["--cookies", cookie_path])
                 
-                subprocess.run(cmd, capture_output=True, text=True)
+                res = subprocess.run(cmd, capture_output=True, text=True)
+                logger.info(f"[Instagram Task {task_id}] gallery-dl returncode: {res.returncode}")
+                if res.stderr: logger.info(f"[Instagram Task {task_id}] gallery-dl stderr: {res.stderr[:300]}")
                 
                 extracted = []
                 if os.path.exists(temp_dl_dir):
@@ -651,6 +642,8 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                             if f.lower().endswith(valid_media_exts):
                                 extracted.append(os.path.join(root, f))
                 
+                logger.info(f"[Instagram Task {task_id}] gallery-dl extracted {len(extracted)} files.")
+
                 if extracted:
                     meta_title = "Instagram Media"
                     try:
@@ -689,11 +682,13 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                     
                 shutil.rmtree(temp_dl_dir, ignore_errors=True)
             else:
-                logger.warning("gallery-dl not found, falling back to yt-dlp")
+                logger.warning(f"[Instagram Task {task_id}] gallery-dl binary not found on system.")
         except Exception as e:
-            logger.error(f"gallery-dl failed, falling back to yt-dlp: {e}")
+            logger.error(f"[Instagram Task {task_id}] gallery-dl execution error: {e}")
 
+        # 2. FALLBACK TO YT-DLP + REQUESTS DIRECT FETCH
         if not download_success:
+            logger.info(f"[Instagram Task {task_id}] Falling back to yt-dlp extraction...")
             ydl_opts_ig = {
                 'outtmpl': f'{DOWNLOAD_DIR}/temp_yt_{task_id}_%(autonumber)03d_%(id)s.%(ext)s',
                 'format': 'best',
@@ -709,7 +704,7 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                 with yt_dlp.YoutubeDL(ydl_opts_ig) as ydl:
                     info = ydl.extract_info(url, download=False)
             except Exception as e:
-                logger.error(f"Instagram info extraction error: {e}")
+                logger.error(f"[Instagram Task {task_id}] yt-dlp info extraction error: {e}")
                 
             entries = []
             if info:
@@ -717,6 +712,8 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                     entries = [e for e in info['entries'] if e]
                 elif isinstance(info, dict):
                     entries = [info]
+            
+            logger.info(f"[Instagram Task {task_id}] yt-dlp found {len(entries)} candidate entries.")
                     
             idx = 0
             headers_cdn = {
@@ -732,6 +729,7 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                 
                 is_vid = e.get('is_video') == True or e.get('ext') == 'mp4' or (e.get('vcodec') and e.get('vcodec') != 'none')
                 base_name = f"temp_yt_{task_id}_{idx:03d}"
+                logger.info(f"[Instagram Task {task_id}] Item {idx} -> is_video: {is_vid}, ext: {e.get('ext')}")
                 
                 if is_vid:
                     v_url = e.get('url') or e.get('webpage_url') or url
@@ -757,32 +755,43 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                         
                         img_url = get_best_instagram_image_url(e)
                         if img_url:
+                            logger.info(f"[Instagram Task {task_id}] Item {idx} downloading video poster: {img_url[:80]}...")
                             r_img = requests.get(img_url, headers=headers_cdn, timeout=15)
+                            logger.info(f"[Instagram Task {task_id}] Item {idx} poster fetch HTTP status: {r_img.status_code}")
                             if r_img.status_code == 200:
                                 with open(os.path.join(DOWNLOAD_DIR, f"{base_name}.jpg"), 'wb') as f:
                                     f.write(r_img.content)
                     except Exception as ex:
-                        logger.error(f"Error downloading Instagram video entry: {ex}")
+                        logger.error(f"[Instagram Task {task_id}] Error downloading video entry {idx}: {ex}")
                 else:
                     img_url = get_best_instagram_image_url(e)
+                    logger.info(f"[Instagram Task {task_id}] Item {idx} candidate image URL: {img_url[:80] if img_url else 'None'}")
                     if img_url:
                         try:
                             r_img = requests.get(img_url, headers=headers_cdn, timeout=15)
+                            logger.info(f"[Instagram Task {task_id}] Item {idx} image fetch HTTP status: {r_img.status_code}")
+                            
                             if r_img.status_code != 200:
+                                logger.info(f"[Instagram Task {task_id}] Retrying item {idx} with session cookies...")
                                 r_img = requests.get(img_url, headers=headers_cdn, cookies=cj, timeout=15)
+                                logger.info(f"[Instagram Task {task_id}] Item {idx} retry HTTP status: {r_img.status_code}")
                                 
-                            if r_img.status_code == 200:
+                            if r_img.status_code == 200 and len(r_img.content) > 100:
                                 with open(os.path.join(DOWNLOAD_DIR, f"{base_name}.jpg"), 'wb') as f:
                                     f.write(r_img.content)
                                 ensure_jpg_image(os.path.join(DOWNLOAD_DIR, f"{base_name}.jpg"))
                                 meta_title = e.get('title') or (info.get('title') if info else None) or (info.get('description') if info else None) or "Instagram Photo"
                                 with open(os.path.join(DOWNLOAD_DIR, f"{base_name}.info.json"), 'w', encoding='utf-8') as f:
                                     json.dump({'title': meta_title}, f)
+                                logger.info(f"[Instagram Task {task_id}] Item {idx} photo saved successfully.")
+                            else:
+                                logger.error(f"[Instagram Task {task_id}] Item {idx} photo fetch failed with length {len(r_img.content) if r_img else 0}")
                         except Exception as ex:
-                            logger.error(f"Error downloading Instagram image entry: {ex}")
+                            logger.error(f"[Instagram Task {task_id}] Error downloading image entry {idx}: {ex}")
                 idx += 1
 
             if idx == 0:
+                logger.info(f"[Instagram Task {task_id}] 0 items extracted by yt-dlp. Executing direct HTML scrape fallback...")
                 try:
                     headers_ig = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'}
                     r_pg = requests.get(url, headers=headers_ig, cookies=cj, timeout=10)
@@ -803,10 +812,13 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                                 if img_u and img_u not in found_imgs: found_imgs.append(img_u)
                         except: pass
                         
+                    logger.info(f"[Instagram Task {task_id}] Direct HTML scrape found {len(found_imgs)} image links.")
+                    
                     for f_url in found_imgs:
                         base_name = f"temp_yt_{task_id}_{idx:03d}"
                         f_url = f_url.replace('&amp;', '&')
                         r_img = requests.get(f_url, headers=headers_cdn, timeout=15)
+                        logger.info(f"[Instagram Task {task_id}] Direct scrape fetch HTTP status: {r_img.status_code}")
                         if r_img.status_code == 200:
                             with open(os.path.join(DOWNLOAD_DIR, f"{base_name}.jpg"), 'wb') as f:
                                 f.write(r_img.content)
@@ -815,7 +827,7 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                                 json.dump({'title': "Instagram Photo"}, f)
                             idx += 1
                 except Exception as ex:
-                    logger.error(f"Fallback page scrape error: {ex}")
+                    logger.error(f"[Instagram Task {task_id}] Fallback page scrape error: {ex}")
             
     else:
         ydl_opts = {
@@ -1492,7 +1504,7 @@ def change_password(target_username: str, req: Request, password: str = Form(...
 def get_env():
     with db_lock:
         db = load_db()
-        return {"login_msg": db.get("settings", {}).get("login_msg", os.getenv("LOGIN_CONTACT_MSG", ""))}
+        return {"login_msg": db.get("settings", {}).get("login_msg", os.parseenv("LOGIN_CONTACT_MSG", ""))}
         
 @app.get("/icon.svg")
 def get_favicon(): return FileResponse("icon.svg")

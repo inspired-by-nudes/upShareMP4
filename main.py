@@ -358,6 +358,7 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
                 iframe.decompose()
 
         seen_srcs = set()
+        first_img_src = None
         junk_img_keywords = ['logo', 'icon', 'badge', 'clock', 'avatar', 'button', 'google', 'facebook', 'twitter', 'instagram', 'pinterest', 'share', 'pixel', 'sprite', 'svg']
         
         for img in list(orig_soup.find_all('img')):
@@ -384,9 +385,18 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
                 img.decompose()
                 continue
             seen_srcs.add(src)
+            
+            if not first_img_src:
+                first_img_src = src
 
-            container = img.find_parent(['figure', 'div', 'picture', 'section'], class_=re.compile(r'(caption|figure|media|photo|wp-caption|embed-image|em-media|image|content-element|standard-header)', re.I))
-            if not container: container = img.find_parent(['figure', 'picture'])
+            container = img.find_parent(['figure', 'picture'])
+            if not container:
+                potentials = img.find_parents(['div', 'section'], class_=re.compile(r'(caption|figure|media|photo|wp-caption|embed-image|em-media|image|content-element)', re.I))
+                for p_container in potentials:
+                    text_len = len(p_container.get_text(strip=True))
+                    if text_len < 400: 
+                        container = p_container
+                        break
 
             cap_parts = []
             if container and container.name != 'body':
@@ -398,7 +408,7 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
                 curr = container
                 for _ in range(2):
                     nxt = curr.find_next_sibling()
-                    if nxt and (nxt.name in ['span', 'div', 'p', 'figcaption']):
+                    if nxt and (nxt.name in ['span', 'div', 'p', 'figcaption', 'small']):
                         nxt_cls = ' '.join(nxt.get('class', [])).lower()
                         nxt_txt = nxt.get_text(strip=True)
                         if any(k in nxt_cls for k in ['credit', 'caption', 'source', 'byline']) or ('//' in nxt_txt) or any(k in nxt_txt.lower() for k in ['getty', 'nurphoto', 'shutterstock', 'photo']):
@@ -406,6 +416,7 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
                                 cap_parts.append(nxt_txt)
                             nxt.decompose()
                             break
+                        curr = nxt
 
                 cap_text = "|||".join(cap_parts).replace('___', ' - ')
                 target_to_replace = container
@@ -442,8 +453,8 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
             src = match.group(1).strip()
             return f'<div style="position:relative; padding-bottom:56.25%; height:0; overflow:hidden; margin:30px 0; border-radius:8px; box-shadow:0 4px 12px rgba(0,0,0,0.3);"><iframe src="{src}" style="position:absolute; top:0; left:0; width:100%; height:100%; border:0;" allowfullscreen="true"></iframe></div>'
 
-        final_html = re.sub(r'<p[^>]*>\s*___UPSHARE_VIDEO___SRC:(.*?)___\s*</p>', vid_repl, final_html)
-        final_html = re.sub(r'___UPSHARE_VIDEO___SRC:(.*?)___', vid_repl, final_html)
+        final_html = re.sub(r'<p[^>]*>\s*___UPSHARE_VIDEO___SRC:([\s\S]*?)___\s*</p>', vid_repl, final_html)
+        final_html = re.sub(r'___UPSHARE_VIDEO___SRC:([\s\S]*?)___', vid_repl, final_html)
 
         def img_repl(match):
             src = match.group(1).strip()
@@ -483,13 +494,12 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
             fig += '</figure>'
             return fig
 
-        final_html = re.sub(r'<p[^>]*>\s*___UPSHARE_IMAGE___SRC:(.*?)___CAPTION:(.*?)___\s*</p>', img_repl, final_html)
-        final_html = re.sub(r'___UPSHARE_IMAGE___SRC:(.*?)___CAPTION:(.*?)___', img_repl, final_html)
+        final_html = re.sub(r'<p[^>]*>\s*___UPSHARE_IMAGE___SRC:([\s\S]*?)___CAPTION:([\s\S]*?)___\s*</p>', img_repl, final_html)
+        final_html = re.sub(r'___UPSHARE_IMAGE___SRC:([\s\S]*?)___CAPTION:([\s\S]*?)___', img_repl, final_html)
 
         ai_soup = BeautifulSoup(final_html, 'html.parser')
         
-        # Post-process orphaned credit paragraphs (e.g. Delish credits outside figure)
-        for p in list(ai_soup.find_all(['p', 'span', 'div'])):
+        for p in list(ai_soup.find_all(['p', 'span', 'div', 'small'])):
             txt = p.get_text(strip=True)
             if txt and ('//' in txt or (any(k in txt.lower() for k in ['getty images', 'nurphoto', 'shutterstock']) and len(txt) < 120)):
                 if not p.find_parent('figcaption'):
@@ -537,12 +547,17 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
 
         safe_title = html.escape(title)
 
+        if not article_img_url: 
+            article_img_url = first_img_src
+            
         if article_img_url:
+            article_img_url = urljoin(url, article_img_url)
             try:
-                img_data = requests.get(article_img_url, headers=headers, timeout=5).content
+                img_data = requests.get(article_img_url, headers=headers, timeout=10).content
                 with open(os.path.join(DOWNLOAD_DIR, f"{new_id}.jpg"), "wb") as img_f:
                     img_f.write(img_data)
-            except: pass
+            except Exception as e:
+                logger.error(f"Thumbnail download failed: {e}")
 
         og_image_meta = f'<meta property="og:image" content="/videos/{new_id}.jpg"><meta name="twitter:image" content="/videos/{new_id}.jpg">' if os.path.exists(os.path.join(DOWNLOAD_DIR, f"{new_id}.jpg")) else ''
 
@@ -581,23 +596,31 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
 
 def get_best_instagram_image_url(e: dict) -> str:
     if not e or not isinstance(e, dict): return None
-    if e.get('display_url') and 'cdninstagram' in e.get('display_url'):
-        return e.get('display_url')
-    if e.get('display_resources') and isinstance(e.get('display_resources'), list):
-        res = e.get('display_resources')
-        if res and isinstance(res[-1], dict) and res[-1].get('src'):
-            return res[-1].get('src')
+    candidates = []
+    
+    if e.get('url'): candidates.append(e.get('url'))
+    if e.get('webpage_url') and 'cdninstagram' in e.get('webpage_url'): candidates.append(e.get('webpage_url'))
+    if e.get('display_url'): candidates.append(e.get('display_url'))
+    if e.get('thumbnail'): candidates.append(e.get('thumbnail'))
+    
     if e.get('thumbnails') and isinstance(e.get('thumbnails'), list):
         thumbs = [t for t in e.get('thumbnails') if isinstance(t, dict) and t.get('url')]
         if thumbs:
             thumbs.sort(key=lambda x: x.get('width', 0) or 0)
-            return thumbs[-1].get('url')
-    if e.get('thumbnail') and 'cdninstagram' in e.get('thumbnail'):
-        return e.get('thumbnail')
-    u = e.get('url')
-    if u and ('cdninstagram' in u or 'fbcdn' in u or u.endswith(('.jpg', '.jpeg', '.webp', '.png'))):
-        return u
-    return None
+            candidates.append(thumbs[-1].get('url'))
+            
+    if e.get('formats') and isinstance(e.get('formats'), list):
+        imgs = [f for f in e.get('formats') if isinstance(f, dict) and f.get('vcodec') == 'none' and f.get('url')]
+        if imgs:
+            candidates.append(imgs[-1].get('url'))
+            
+    for c in candidates:
+        if c:
+            c = c.replace('&amp;', '&')
+            if 'cdninstagram' in c or 'fbcdn' in c or c.endswith(('.jpg', '.jpeg', '.webp', '.png')):
+                return c
+                
+    return candidates[0].replace('&amp;', '&') if candidates else None
 
 def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
     if not is_social_media_url(url):
@@ -674,6 +697,7 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
             ydl_opts_ig = {
                 'outtmpl': f'{DOWNLOAD_DIR}/temp_yt_{task_id}_%(autonumber)03d_%(id)s.%(ext)s',
                 'format': 'best',
+                'extract_flat': False,
                 'ignoreerrors': True, 
                 'ignorenoformats': True,
                 'postprocessor_args': {'ffmpeg': ['-movflags', '+faststart']}
@@ -697,11 +721,9 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
             idx = 0
             headers_cdn = {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-                'Referer': 'https://www.instagram.com/',
-                'Accept': 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
-                'Sec-Fetch-Dest': 'image',
-                'Sec-Fetch-Mode': 'no-cors',
-                'Sec-Fetch-Site': 'cross-site'
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+                'Accept-Encoding': 'gzip, deflate, br',
+                'Accept-Language': 'en-US,en;q=0.9',
             }
             cj = get_requests_cookies(cookie_path)
             
@@ -760,7 +782,6 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                             logger.error(f"Error downloading Instagram image entry: {ex}")
                 idx += 1
 
-            # Fallback if yt-dlp extracted no images or entries
             if idx == 0:
                 try:
                     headers_ig = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'}
@@ -784,6 +805,7 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                         
                     for f_url in found_imgs:
                         base_name = f"temp_yt_{task_id}_{idx:03d}"
+                        f_url = f_url.replace('&amp;', '&')
                         r_img = requests.get(f_url, headers=headers_cdn, timeout=15)
                         if r_img.status_code == 200:
                             with open(os.path.join(DOWNLOAD_DIR, f"{base_name}.jpg"), 'wb') as f:

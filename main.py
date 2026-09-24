@@ -584,61 +584,101 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
         if task_id in active_downloads: del active_downloads[task_id]
 
 
-def scrape_cobalt_proxy(url: str, task_id: str) -> list:
-    """Uses Cobalt Open API to bypass local IP bans."""
+def scrape_third_party_proxies(url: str, task_id: str) -> list:
+    """The Mega-Proxy: Strips tracking params and orchestrates multiple public scraper APIs to perfectly bypass Datadome and extract mixed carousels."""
+    clean_url = url.split('?')[0]  # CRITICAL: Strips ?stkn= params which break Cobalt & FastDL
     extracted = []
+    
+    # 1. COBALT
     endpoints = [
         "https://api.cobalt.tools/",
-        "https://co.wuk.sh/api/json"
+        "https://api.cobalt.tools/api/json"
     ]
-    
-    headers = {
+    headers_cobalt = {
         "Accept": "application/json",
         "Content-Type": "application/json",
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         "Origin": "https://cobalt.tools",
         "Referer": "https://cobalt.tools/"
     }
-    payload = {"url": url}
-    
     for ep in endpoints:
         try:
-            logger.info(f"[Instagram Task {task_id}] Proxying via Cobalt API ({ep})...")
-            r = requests.post(ep, json=payload, headers=headers, timeout=20)
+            logger.info(f"[Instagram Task {task_id}] Proxying via Cobalt ({ep})...")
+            r = requests.post(ep, json={"url": clean_url}, headers=headers_cobalt, timeout=15)
             logger.info(f"[Instagram Task {task_id}] Cobalt response: {r.status_code}")
-            
             if r.status_code in [200, 201, 202]:
                 data = r.json()
                 status = data.get("status")
-                
                 if status in ["success", "stream", "redirect"]:
                     u = data.get("url")
-                    if u:
-                        is_vid = data.get("type") == "video" or ".mp4" in u
-                        extracted.append({'is_video': is_vid, 'vid_url': u if is_vid else None, 'img_url': u if not is_vid else None, 'title': 'Instagram Media'})
-                        break
+                    is_vid = data.get("type") == "video" or (u and ".mp4" in u.lower())
+                    extracted.append({'is_video': is_vid, 'vid_url': u if is_vid else None, 'img_url': u if not is_vid else None, 'title': 'Instagram Media'})
+                    return extracted
                 elif status == "picker":
                     for item in data.get("picker", []):
                         u = item.get("url")
                         if u:
-                            is_vid = item.get("type") == "video"
+                            is_vid = item.get("type") == "video" or ".mp4" in u.lower()
                             extracted.append({'is_video': is_vid, 'vid_url': u if is_vid else None, 'img_url': u if not is_vid else None, 'title': 'Instagram Media'})
-                    break
+                    if extracted: return extracted
         except Exception as e:
-            logger.error(f"[Instagram Task {task_id}] Cobalt API failed on {ep}: {e}")
-            
+            logger.error(f"[Instagram Task {task_id}] Cobalt error: {e}")
+
+    # 2. FASTDL / SAVEIG / SNAPINSTA (AJAX HTML Parsers - The Ultimate Backup)
+    ajax_proxies = [
+        ("https://fastdl.app/api/ajaxSearch", "https://fastdl.app/en"),
+        ("https://saveig.app/api/ajaxSearch", "https://saveig.app/en"),
+        ("https://snapinsta.app/api/ajaxSearch", "https://snapinsta.app/en")
+    ]
+    
+    for api_url, referer in ajax_proxies:
+        try:
+            logger.info(f"[Instagram Task {task_id}] Proxying via {urlparse(api_url).netloc}...")
+            headers_ajax = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                "Accept": "*/*",
+                "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+                "Origin": referer.rsplit('/', 1)[0],
+                "Referer": referer,
+                "X-Requested-With": "XMLHttpRequest"
+            }
+            r = requests.post(api_url, data={"q": clean_url, "t": "media", "lang": "en"}, headers=headers_ajax, timeout=15)
+            logger.info(f"[Instagram Task {task_id}] {urlparse(api_url).netloc} response: {r.status_code}")
+            if r.status_code == 200:
+                resp = r.json()
+                html_data = resp.get("data", "")
+                if html_data:
+                    soup = BeautifulSoup(html_data, "html.parser")
+                    items = soup.find_all("div", class_="download-items")
+                    for item in items:
+                        a_tag = item.find("a", href=True)
+                        if a_tag:
+                            link = a_tag["href"]
+                            link_lower = link.lower()
+                            is_vid = ".mp4" in link_lower or "video" in a_tag.get_text().lower()
+                            extracted.append({
+                                'is_video': is_vid,
+                                'vid_url': link if is_vid else None,
+                                'img_url': link if not is_vid else None,
+                                'title': "Instagram Media"
+                            })
+                    if extracted:
+                        logger.info(f"[Instagram Task {task_id}] Successfully extracted {len(extracted)} mixed items from {urlparse(api_url).netloc}")
+                        return extracted
+        except Exception as e:
+            logger.error(f"[Instagram Task {task_id}] {urlparse(api_url).netloc} error: {e}")
+
     return extracted
 
 
 def scrape_mobile_ig_api(url: str, cookies: object, task_id: str) -> list:
-    """The Ultimate Bypass: Mathematically decodes shortcodes and spoofs the Android app API to avoid Web Datadome blocks & yt-dlp image crashes."""
     extracted = []
     try:
-        shortcode_match = re.search(r'/(?:p|reel|tv)/([^/?#]+)', url)
+        clean_url = url.split('?')[0]
+        shortcode_match = re.search(r'/(?:p|reel|tv)/([^/?#]+)', clean_url)
         if not shortcode_match: return []
         shortcode = shortcode_match.group(1)
         
-        # Decode the shortcode to the raw database media_id integer
         alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_'
         media_id = 0
         for char in shortcode:
@@ -678,7 +718,6 @@ def scrape_mobile_ig_api(url: str, cookies: object, task_id: str) -> list:
                     'img_url': html.unescape(img_url).replace('\\/', '/') if img_url else None,
                     'title': caption
                 })
-            logger.info(f"[Instagram Task {task_id}] Mobile API successfully extracted {len(extracted)} items (Full Mixed Support).")
     except Exception as e:
         logger.error(f"[Instagram Task {task_id}] Mobile API Error: {e}")
     return extracted
@@ -698,12 +737,12 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
         logger.info(f"[Instagram Task {task_id}] Processing Instagram URL: {url}")
         headers_cdn = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36', 'Accept': '*/*'}
 
-        # 1. MOBILE APP API SPOOFER (Bypasses Web Datadome & yt-dlp image crash)
+        # 1. MOBILE APP API SPOOFER 
         native_items = scrape_mobile_ig_api(url, cj, task_id)
 
-        # 2. COBALT API PROXY (Fallback if mobile API changes)
+        # 2. MEGA THIRD PARTY PROXIES (Cobalt + FastDL + SaveIG + SnapInsta)
         if not native_items:
-            native_items = scrape_cobalt_proxy(url, task_id)
+            native_items = scrape_third_party_proxies(url, task_id)
 
         if native_items:
             download_success = True

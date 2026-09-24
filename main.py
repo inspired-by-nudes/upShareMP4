@@ -300,7 +300,6 @@ def clean_html_with_ai(raw_html: str) -> tuple:
     return raw_html, "📄 Readability"
 
 def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
-    # (Article parser omitted for brevity in response context, but remains untouched natively)
     try:
         active_downloads[task_id] = "Parsing Article..."
         headers = {
@@ -586,7 +585,7 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
 
 
 def scrape_cobalt_proxy(url: str, task_id: str) -> list:
-    """Uses Cobalt Open API to completely bypass local IP bans and login walls on Instagram."""
+    """Uses Cobalt Open API to bypass local IP bans."""
     extracted = []
     endpoints = [
         "https://api.cobalt.tools/",
@@ -596,7 +595,7 @@ def scrape_cobalt_proxy(url: str, task_id: str) -> list:
     headers = {
         "Accept": "application/json",
         "Content-Type": "application/json",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         "Origin": "https://cobalt.tools",
         "Referer": "https://cobalt.tools/"
     }
@@ -631,65 +630,57 @@ def scrape_cobalt_proxy(url: str, task_id: str) -> list:
     return extracted
 
 
-def direct_instagram_scrape(url: str, cookies: object, task_id: str) -> list:
-    """Fallback: Queries Instagram's internal JSON API directly using user session cookies."""
+def scrape_mobile_ig_api(url: str, cookies: object, task_id: str) -> list:
+    """The Ultimate Bypass: Mathematically decodes shortcodes and spoofs the Android app API to avoid Web Datadome blocks & yt-dlp image crashes."""
     extracted = []
     try:
         shortcode_match = re.search(r'/(?:p|reel|tv)/([^/?#]+)', url)
         if not shortcode_match: return []
         shortcode = shortcode_match.group(1)
         
-        api_url = f"https://www.instagram.com/p/{shortcode}/?__a=1&__d=dis"
+        # Decode the shortcode to the raw database media_id integer
+        alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_'
+        media_id = 0
+        for char in shortcode:
+            media_id = (media_id * 64) + alphabet.index(char)
+            
+        api_url = f"https://i.instagram.com/api/v1/media/{media_id}/info/"
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'User-Agent': 'Instagram 219.0.0.12.117 Android (29/10; 300dpi; 720x1440; generic; android; qcom; en_US; 314664538)',
             'X-IG-App-ID': '936619743392459',
-            'Accept': '*/*',
+            'Accept-Language': 'en-US',
+            'Accept': '*/*'
         }
         
+        logger.info(f"[Instagram Task {task_id}] Querying Mobile API via i.instagram.com for media_id {media_id}...")
         r = requests.get(api_url, headers=headers, cookies=cookies, timeout=15)
-        items = []
-        caption = "Instagram Media"
+        logger.info(f"[Instagram Task {task_id}] Mobile API response: {r.status_code}")
         
         if r.status_code == 200:
-            try:
-                data = r.json()
-                media_items = data.get('items', [])
-                if media_items:
-                    m = media_items[0]
-                    try: caption = m.get('caption', {}).get('text', 'Instagram Media')
-                    except: pass
-                    items = m.get('carousel_media', [m])
-            except Exception: pass
-
-        if not items:
-            embed_url = f"https://www.instagram.com/p/{shortcode}/embed/captioned/"
-            r_embed = requests.get(embed_url, headers=headers, cookies=cookies, timeout=15)
-            if r_embed.status_code == 200:
-                json_match = re.search(r'window\.__additionalDataLoaded\([^,]+,\s*({.+?})\);', r_embed.text)
-                if json_match:
-                    emb_data = json.loads(json_match.group(1))
-                    media = emb_data.get('shortcode_media', {})
-                    edges = media.get('edge_sidecar_to_children', {}).get('edges', [])
-                    items = [e['node'] for e in edges] if edges else [media]
-
-        for item in items:
-            is_vid = item.get('is_video', False) or 'video_url' in item or 'video_versions' in item
-            vid_url = item.get('video_url')
-            if not vid_url and 'video_versions' in item: vid_url = item['video_versions'][0].get('url')
-
-            img_url = item.get('display_url')
-            if not img_url and 'image_versions2' in item:
-                cands = item['image_versions2'].get('candidates', [])
-                if cands: img_url = cands[0].get('url')
-
-            extracted.append({
-                'is_video': is_vid,
-                'vid_url': html.unescape(vid_url).replace('\\/', '/') if vid_url else None,
-                'img_url': html.unescape(img_url).replace('\\/', '/') if img_url else None,
-                'title': caption
-            })
-
-    except Exception: pass
+            data = r.json()
+            items = data.get('items', [])
+            if not items: return []
+            
+            m = items[0]
+            caption = "Instagram Media"
+            try: caption = m.get('caption', {}).get('text', 'Instagram Media')
+            except: pass
+            
+            carousel = m.get('carousel_media', [m])
+            for item in carousel:
+                is_vid = 'video_versions' in item
+                vid_url = item['video_versions'][0].get('url') if is_vid and item.get('video_versions') else None
+                img_url = item['image_versions2']['candidates'][0].get('url') if item.get('image_versions2', {}).get('candidates') else None
+                
+                extracted.append({
+                    'is_video': is_vid,
+                    'vid_url': html.unescape(vid_url).replace('\\/', '/') if vid_url else None,
+                    'img_url': html.unescape(img_url).replace('\\/', '/') if img_url else None,
+                    'title': caption
+                })
+            logger.info(f"[Instagram Task {task_id}] Mobile API successfully extracted {len(extracted)} items (Full Mixed Support).")
+    except Exception as e:
+        logger.error(f"[Instagram Task {task_id}] Mobile API Error: {e}")
     return extracted
 
 
@@ -707,13 +698,12 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
         logger.info(f"[Instagram Task {task_id}] Processing Instagram URL: {url}")
         headers_cdn = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36', 'Accept': '*/*'}
 
-        # 1. COBALT API PROXY (Absolute priority. Bypasses IP bans & login walls perfectly)
-        native_items = scrape_cobalt_proxy(url, task_id)
+        # 1. MOBILE APP API SPOOFER (Bypasses Web Datadome & yt-dlp image crash)
+        native_items = scrape_mobile_ig_api(url, cj, task_id)
 
-        # 2. DIRECT SESSION SCRAPER (Fallback if proxy goes down)
+        # 2. COBALT API PROXY (Fallback if mobile API changes)
         if not native_items:
-            logger.info(f"[Instagram Task {task_id}] Proxy failed. Falling back to Direct Authenticated Scraper...")
-            native_items = direct_instagram_scrape(url, cj, task_id)
+            native_items = scrape_cobalt_proxy(url, task_id)
 
         if native_items:
             download_success = True
@@ -752,7 +742,7 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                         try: os.remove(os.path.join(DOWNLOAD_DIR, f))
                         except: pass
 
-        # 3. FALLBACK TO GALLERY-DL (In case APIs are down)
+        # 3. FALLBACK TO GALLERY-DL 
         if not download_success:
             logger.info(f"[Instagram Task {task_id}] Web extractors failed. Falling back to gallery-dl...")
             try:
@@ -786,7 +776,7 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
             except Exception as e:
                 logger.error(f"[Instagram Task {task_id}] gallery-dl exception: {e}")
 
-        # 4. FINAL FALLBACK: YT-DLP (Restored & wrapped to catch Extractor errors gracefully)
+        # 4. FINAL FALLBACK: YT-DLP 
         if not download_success:
             logger.info(f"[Instagram Task {task_id}] gallery-dl failed. Final Fallback to yt-dlp...")
             ydl_opts_ig = {

@@ -49,11 +49,12 @@
         }
 
         .video-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 20px; width: 100%; }
-        .card { position: relative; background-color: #1e1e1e; border-left: 5px solid #00E676; border-radius: 8px; padding: 20px; display: flex; flex-direction: column; transition: border-color 0.2s; }
+        .card { position: relative; background-color: #1e1e1e; border-left: 5px solid #00E676; border-radius: 8px; padding: 20px; display: flex; flex-direction: column; transition: border-color 0.2s, background-color 0.2s; }
         .card.working { border-left-color: #ff8c00 !important; }
         
         .card.article-card { border-left-color: #ffffff !important; }
-        .card.carousel-card { border-left-color: #2196F3 !important; } 
+        .card.carousel-media-card { border-left-color: #2196F3 !important; } 
+        .card.carousel-image-card { border-left-color: teal !important; background-color: rgba(0, 128, 128, 0.15); } 
         .card.image-card { border-left-color: #9c27b0 !important; } 
         
         .card.deleting { border-left-color: #ff3333 !important; }
@@ -139,8 +140,8 @@
         <div id="login-screen">
             <h3 style="margin-top:0;">Authentication</h3>
             <form onsubmit="handleLogin(event)">
-                <input type="text" id="username" placeholder="Username" required>
-                <input type="password" id="password" placeholder="Password" required>
+                <input type="text" id="username" placeholder="Username" required autocomplete="username">
+                <input type="password" id="password" placeholder="Password" required autocomplete="current-password">
                 <button type="submit" class="btn-submit">Login ➔</button>
             </form>
         </div>
@@ -169,7 +170,7 @@
 
                 <form id="uploadForm" onsubmit="uploadFile(event)" class="tab-content" style="display:none;">
                     <div class="form-row">
-                        <input type="file" id="localFile" accept="video/*" required>
+                        <input type="file" id="localFile" accept="video/*,image/*" multiple required>
                     </div>
                     <div class="form-row options">
                         <select id="fileExpire" class="expire-drop">
@@ -218,9 +219,7 @@
     <div id="settingsModal" class="modal" onclick="closeSettingsModal(event)">
         <div class="dialog-box">
             <div class="tabs-header">
-                <div class="tabs" id="settings-tabs">
-                    <!-- Tabs generated dynamically in openSettings() -->
-                </div>
+                <div class="tabs" id="settings-tabs"></div>
             </div>
 
             <div id="tab-mystats" class="tab-pane">
@@ -247,8 +246,8 @@
                 <details class="admin-group">
                     <summary>Create New Account</summary>
                     <div class="form-section">
-                        <input type="text" id="newUsername" placeholder="New Username" style="margin-bottom:10px;">
-                        <input type="text" id="newUserPass" placeholder="Password" style="margin-bottom:10px;">
+                        <input type="text" id="newUsername" placeholder="New Username" style="margin-bottom:10px;" autocomplete="off">
+                        <input type="text" id="newUserPass" placeholder="Password" style="margin-bottom:10px;" autocomplete="off">
                         <button class="btn" style="background:#ff8c00; color:#fff; width:100%;" onclick="createUser()">Create Account</button>
                     </div>
                 </details>
@@ -266,7 +265,7 @@
     </div>
 
     <div id="msgModal" class="modal" onclick="closeMsgModal(event)">
-        <div class="dialog-box" style="border-top-color:#00E676; text-align:center;">
+        <div class="dialog-box" style="border-top: 3px solid #00E676; text-align:center;">
             <h3 style="margin-top:0;">Welcome</h3>
             <p id="loginMsgText" style="color:#ccc; line-height:1.5;"></p>
             <button class="btn btn-submit" style="margin-top:20px; width:100%;" onclick="closeMsgModal(null, true)">Close</button>
@@ -377,15 +376,28 @@
             e.preventDefault();
             const fi = document.getElementById('localFile'), exp = document.getElementById('fileExpire').value;
             if (!fi.files.length) return;
-            currentTasks["temp_up_" + Date.now()] = "Uploading..."; renderUnifiedGrid();
-            const fd = new FormData(); fd.append('file', fi.files[0]); fd.append('expire_days', exp);
-            await fetch('/api/upload', { method: 'POST', body: fd }); fi.value = '';
+            
+            const tempTaskId = "temp_up_" + Date.now();
+            currentTasks[tempTaskId] = "Uploading..."; 
+            renderUnifiedGrid();
+            
+            const fd = new FormData(); 
+            for (let i = 0; i < fi.files.length; i++) {
+                fd.append('file', fi.files[i]);
+            }
+            fd.append('expire_days', exp);
+            
+            await fetch('/api/upload', { method: 'POST', body: fd }); 
+            fi.value = '';
+            
+            delete currentTasks[tempTaskId];
+            checkAuthAndLoad();
         }
 
         function triggerDelete(videoId, btnElement) {
             if(confirm("Permanently delete?")) {
                 btnElement.closest('.card').classList.add('deleting');
-                fetch('/api/videos/' + videoId, { method: 'DELETE' }).then(() => checkAuthAndLoad());
+                fetch('/api/videos/' + encodeURIComponent(videoId), { method: 'DELETE' }).then(() => checkAuthAndLoad());
             }
         }
 
@@ -395,7 +407,7 @@
                 nt = nt.trim().substring(0, 100);
                 if (nt && nt !== oldText) {
                     const fd = new FormData(); fd.append('new_title', nt);
-                    await fetch(`/api/videos/${videoId}/title`, {method: 'PUT', body: fd});
+                    await fetch(`/api/videos/${encodeURIComponent(videoId)}/title`, {method: 'PUT', body: fd});
                     lastVideosString = ""; checkAuthAndLoad();
                 }
             }
@@ -444,31 +456,47 @@
                 htmlBuffer += `<div class="card working"><div class="card-content"><div class="thumbnail-wrapper"><div class="thumbnail">${msg}</div></div><div class="card-header"><div class="video-title">Working...</div></div></div></div>`;
             }
             
-activeVideosData.forEach(v => {
-                const viewUrl = window.location.origin + '/view/' + v.id;
-                const shareUrl = window.location.origin + '/videos/' + v.filename;
+            activeVideosData.forEach(v => {
+                const viewUrl = window.location.origin + '/view/' + encodeURIComponent(v.id);
+                const shareUrl = window.location.origin + '/videos/' + encodeURIComponent(v.filename);
                 
-                const isCarousel = v.engine === '🎠 Carousel';
-                const isArticle = v.type === 'article' && !isCarousel;
-                const isImage = v.type === 'image';
+                const type = v.type;
+                const isCarouselImage = type === 'carousel_image';
+                const isCarouselMedia = type === 'carousel_media';
+                const isCarousel = isCarouselImage || isCarouselMedia;
+                const isArticle = type === 'article';
+                const isImage = type === 'image';
                 
                 let cardClass = 'card';
                 if (isArticle) cardClass += ' article-card';
-                if (isCarousel) cardClass += ' carousel-card';
-                if (isImage) cardClass += ' image-card';
+                else if (isCarouselImage) cardClass += ' carousel-image-card';
+                else if (isCarouselMedia) cardClass += ' carousel-media-card';
+                else if (isImage) cardClass += ' image-card';
 
-                const thumbImage = v.thumbnail ? `<img src="/videos/${v.thumbnail}" class="thumbnail">` : `<div class="thumbnail" style="font-size:1.5rem;">${isArticle ? '📝<br>Article' : (isCarousel ? '🎠<br>Carousel' : (isImage ? '🖼️<br>Image' : 'No Thumb'))}</div>`;
-                const thumb = `<a href="${viewUrl}" target="_blank" style="display:block; width:100%; height:100%; text-decoration:none;">${thumbImage}</a>`;
+                let thumbText = 'No Thumb';
+                if (isArticle) thumbText = '📝<br>Article';
+                else if (isCarousel) thumbText = '🎡<br>Carousel';
+                else if (isImage) thumbText = '🖼️<br>Image';
+                else thumbText = '▶️<br>Video';
 
-                const favicon = v.domain !== 'unknown' ? `<a href="${v.original_url}" target="_blank"><img src="https://www.google.com/s2/favicons?domain=${v.domain}&sz=32" class="favicon" onerror="this.style.display='none'"></a>` : '';
-                const safeTitle = v.title.replace(/"/g, '&quot;');
+                const thumbImage = v.thumbnail ? `<img src="/videos/${encodeURIComponent(v.thumbnail)}" class="thumbnail" loading="lazy" alt="Thumbnail">` : `<div class="thumbnail" style="font-size:1.5rem;">${thumbText}</div>`;
+                const thumb = `<a href="${viewUrl}" target="_blank" rel="noopener noreferrer" style="display:block; width:100%; height:100%; text-decoration:none;">${thumbImage}</a>`;
+
+                const favicon = v.domain !== 'unknown' ? `<a href="${encodeURI(v.original_url)}" target="_blank" rel="noopener noreferrer"><img src="https://www.google.com/s2/favicons?domain=${encodeURIComponent(v.domain)}&sz=32" class="favicon" onerror="this.style.display='none'" alt="Source"></a>` : '';
+                
+                const d = document.createElement('div');
+                d.innerText = v.title;
+                const safeTitle = d.innerHTML.replace(/"/g, '&quot;');
                 const promptTitle = safeTitle.replace(/'/g, "\\'");
 
                 let expBadge = v.expires_at > 0 ? `<div class="expire-badge countdown-badge" data-expires="${v.expires_at}">${getExpirationString(v.expires_at)}</div>` : '';
-                let editBtn = (!isArticle && !isCarousel && !isImage) ? `<button class="btn btn-edit" onclick="openEditorModal('${v.id}', '${shareUrl}')">✂️</button>` : '';
-                let timeDisplay = (isArticle || isCarousel || isImage) ? (v.engine || (isImage ? '🖼️ Direct' : '📄 Readability')) : `⏱️ ${v.duration}`;
+                let editBtn = (!isArticle && !isCarousel && !isImage) ? `<button class="btn btn-edit" onclick="openEditorModal('${encodeURIComponent(v.id)}', '${shareUrl}')">✂️</button>` : '';
+                
+                let displayEngine = v.engine || '';
+                if (isCarousel) displayEngine = '🎡 Carousel';
 
-                let viewAction = `<a href="${viewUrl}" target="_blank" class="btn btn-view">View</a>`;
+                let timeDisplay = (isArticle || isCarousel || isImage) ? (displayEngine || (isImage ? '🖼️ Direct' : '📄 Readability')) : `⏱️ ${v.duration}`;
+                let viewAction = `<a href="${viewUrl}" target="_blank" rel="noopener noreferrer" class="btn btn-view">View</a>`;
 
                 htmlBuffer += `
                     <div class="${cardClass}">
@@ -483,7 +511,7 @@ activeVideosData.forEach(v => {
                                 <button class="btn btn-copy" onclick="copyLink('${shareUrl}')">Copy</button>
                                 ${viewAction}
                                 ${editBtn}
-                                <a href="/api/download/${v.id}" class="btn btn-download">📥</a>
+                                <a href="/api/download/${encodeURIComponent(v.id)}" class="btn btn-download">📥</a>
                                 <button class="btn btn-delete" onmouseenter="this.closest('.card').classList.add('deleting')" onmouseleave="this.closest('.card').classList.remove('deleting')" onclick="triggerDelete('${v.id}', this)">✖</button>
                             </div>
                         </div>
@@ -546,7 +574,7 @@ activeVideosData.forEach(v => {
         async function submitEdit(mode) {
             const id = document.getElementById('editorVideoId').value;
             const fd = new FormData(); fd.append('start', tStart.value); fd.append('end', tEnd.value); fd.append('mode', mode);
-            await fetch(`/api/edit/${id}`, {method:'POST', body: fd});
+            await fetch(`/api/edit/${encodeURIComponent(id)}`, {method:'POST', body: fd});
             document.getElementById('editor-modal').style.display = 'none';
             document.body.classList.remove('modal-open');
             currentTasks["temp_edit"] = "Clipping Media..."; renderUnifiedGrid();
@@ -599,7 +627,7 @@ activeVideosData.forEach(v => {
 
         async function changePass() { const np = document.getElementById('newPass').value; if(np){ const fd = new FormData(); fd.append("password", np); await fetch('/api/stats'); alert("Password updated."); document.getElementById('newPass').value = ''; } }
         async function createUser() { const un = document.getElementById('newUsername').value, pw = document.getElementById('newUserPass').value; if(un&&pw){ const fd = new FormData(); fd.append("new_username", un); fd.append("new_password", pw); const r = await fetch(`/api/users`, {method:'POST', body:fd}); if(r.ok) alert("Created."); else alert("Error.");} }
-        async function resetUserPass() { const un = document.getElementById('resetUsername').value, pw = document.getElementById('resetPass').value; if(un&&pw){ const fd = new FormData(); fd.append("password", pw); const r = await fetch(`/api/users/${un}/password`, {method:'POST', body:fd}); if(r.ok) alert("Reset."); else alert("Not found.");} }
+        async function resetUserPass() { const un = document.getElementById('resetUsername').value, pw = document.getElementById('resetPass').value; if(un&&pw){ const fd = new FormData(); fd.append("password", pw); const r = await fetch(`/api/users/${encodeURIComponent(un)}/password`, {method:'POST', body:fd}); if(r.ok) alert("Reset."); else alert("Not found.");} }
 
         function copyLink(text) {
             let textArea = document.createElement("textarea");

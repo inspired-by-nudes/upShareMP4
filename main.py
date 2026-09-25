@@ -329,13 +329,22 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
                 except: pass
 
         # ARTIFACT ASSASSIN: Nuke Google news prompts, preferred source links, etc.
-        google_artifacts = ['Add Delish as a preferred source', 'Use your Google account to add this', 'Google search results', 'preferred source in your Google']
+        google_artifacts = [
+            'Add Delish as a preferred source', 
+            'Use your Google account to add this', 
+            'Google search results', 
+            'preferred source in your Google',
+            'Add to Google Settings'
+        ]
         for el in orig_soup.find_all(string=True):
             text = el.text.strip()
             if any(art in text for art in google_artifacts):
-                p = el.find_parent(['p', 'div', 'aside'])
-                if p: p.decompose()
-                else: el.extract()
+                # Climb up the DOM tree and nuke the entire container block (removes the text AND the button)
+                parent_block = el.find_parent(['div', 'aside', 'section'])
+                if parent_block: 
+                    parent_block.decompose()
+                else: 
+                    el.extract()
 
         og_img = orig_soup.find('meta', property='og:image')
         article_img_url = None
@@ -593,6 +602,50 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
         if task_id in active_downloads: del active_downloads[task_id]
 
 
+def scrape_instaloader(url: str, task_id: str) -> list:
+    """The Gold Standard GitHub Library: Instaloader."""
+    try:
+        import instaloader
+    except ImportError:
+        logger.warning(f"[Instagram Task {task_id}] Instaloader not installed. Run 'pip install instaloader' in your Docker container!")
+        return []
+
+    extracted = []
+    try:
+        shortcode_match = re.search(r'/(?:p|reel|tv)/([^/?#]+)', url)
+        if not shortcode_match: return []
+        shortcode = shortcode_match.group(1)
+
+        logger.info(f"[Instagram Task {task_id}] Querying Instaloader (GitHub Native Library)...")
+        L = instaloader.Instaloader(quiet=True, download_pictures=False, download_video_thumbnails=False, download_videos=False)
+        post = instaloader.Post.from_shortcode(L.context, shortcode)
+        
+        caption = post.caption or "Instagram Media"
+        
+        if post.typename == 'GraphSidecar':
+            for node in post.get_sidecar_nodes():
+                extracted.append({
+                    'is_video': node.is_video,
+                    'vid_url': node.video_url if node.is_video else None,
+                    'img_url': node.display_url,
+                    'title': caption
+                })
+        else:
+            extracted.append({
+                'is_video': post.is_video,
+                'vid_url': post.video_url if post.is_video else None,
+                'img_url': post.url,
+                'title': caption
+            })
+            
+        if extracted:
+            logger.info(f"[Instagram Task {task_id}] Instaloader successfully extracted {len(extracted)} items (Full Carousel Support).")
+            return extracted
+    except Exception as e:
+        logger.error(f"[Instagram Task {task_id}] Instaloader Error: {e}")
+    return extracted
+
+
 def scrape_instagram_embed(url: str, task_id: str) -> list:
     """The Pi-Hole Bypass: Uses Instagram's native public embed endpoints which are fully exposed, unblocked by Datadome, and avoid yt-dlp image crashes."""
     extracted = []
@@ -781,12 +834,16 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
 
         # 1. MOBILE APP API SPOOFER 
         native_items = scrape_mobile_ig_api(url, cj, task_id)
+        
+        # 2. INSTALOADER (The GitHub Native Library)
+        if not native_items:
+            native_items = scrape_instaloader(url, task_id)
 
-        # 2. NATIVE EMBED SCRAPER (Bypasses Pi-Hole and yt-dlp completely)
+        # 3. NATIVE EMBED SCRAPER
         if not native_items:
             native_items = scrape_instagram_embed(url, task_id)
             
-        # 3. COBALT PROXY FLEET (Last Resort APIs)
+        # 4. COBALT PROXY FLEET
         if not native_items:
             native_items = scrape_cobalt_fleet(url, task_id)
 
@@ -806,7 +863,6 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
 
                     if slide['img_url']:
                         r_i = requests.get(slide['img_url'], headers=headers_cdn, cookies=cj, timeout=15)
-                        # PREVENT HTML BLANK SCREENS BY CHECKING MIME TYPE
                         if r_i.status_code == 200 and 'image' in r_i.headers.get('Content-Type', '').lower():
                             with open(f"{DOWNLOAD_DIR}/{base_name}.jpg", 'wb') as f: f.write(r_i.content)
                             if not slide['is_video'] or not item_saved:
@@ -828,6 +884,41 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                         try: os.remove(os.path.join(DOWNLOAD_DIR, f))
                         except: pass
 
+        # 5. GALLERY-DL
+        if not download_success:
+            logger.info(f"[Instagram Task {task_id}] Primary extractors failed. Falling back to gallery-dl...")
+            try:
+                if shutil.which("gallery-dl"):
+                    temp_dl_dir = os.path.join(DOWNLOAD_DIR, f"gallery_dl_{task_id}")
+                    os.makedirs(temp_dl_dir, exist_ok=True)
+                    cmd = ["gallery-dl", "-D", temp_dl_dir, url]
+                    if cookie_path: cmd.extend(["--cookies", cookie_path])
+                    
+                    res = subprocess.run(cmd, capture_output=True, text=True)
+                    extracted = []
+                    if os.path.exists(temp_dl_dir):
+                        for root, dirs, files in os.walk(temp_dl_dir):
+                            for f in files:
+                                if f.lower().endswith(valid_media_exts):
+                                    extracted.append(os.path.join(root, f))
+                    
+                    if extracted:
+                        extracted.sort()
+                        for idx, filepath in enumerate(extracted):
+                            ext = filepath.rsplit('.', 1)[-1].lower() if '.' in filepath else 'jpg'
+                            if ext == 'jpeg': ext = 'jpg'
+                            target_temp = os.path.join(DOWNLOAD_DIR, f"temp_yt_{task_id}_{idx:03d}.{ext}")
+                            shutil.move(filepath, target_temp)
+                            if ext in ['mp4', 'mov', 'mkv', 'webm']: ensure_ios_compatible_video(target_temp)
+                            else: ensure_jpg_image(target_temp)
+                            with open(os.path.join(DOWNLOAD_DIR, f"temp_yt_{task_id}_{idx:03d}.info.json"), 'w', encoding='utf-8') as f:
+                                json.dump({'title': 'Instagram Media'}, f)
+                        download_success = True
+                    shutil.rmtree(temp_dl_dir, ignore_errors=True)
+            except Exception as e:
+                logger.error(f"[Instagram Task {task_id}] gallery-dl exception: {e}")
+
+        # 6. YT-DLP FALLBACK
         if not download_success:
             logger.info(f"[Instagram Task {task_id}] Proxies are blocked by Pi-Hole. Routing directly via yt-dlp...")
             ydl_opts_ig = {
@@ -896,7 +987,6 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
 
                                 if img_url:
                                     r_img = requests.get(img_url, headers=headers_cdn, timeout=15)
-                                    # PREVENT HTML BLANK SCREENS BY CHECKING MIME TYPE
                                     if r_img.status_code == 200 and 'image' in r_img.headers.get('Content-Type', '').lower():
                                         with open(os.path.join(DOWNLOAD_DIR, f"{base_name}.jpg"), 'wb') as f: f.write(r_img.content)
                                         ensure_jpg_image(os.path.join(DOWNLOAD_DIR, f"{base_name}.jpg"))

@@ -584,98 +584,79 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
         if task_id in active_downloads: del active_downloads[task_id]
 
 
-def scrape_third_party_proxies(url: str, task_id: str) -> list:
-    """The Mega-Proxy: Strips tracking params and orchestrates multiple public scraper APIs to perfectly bypass Datadome and extract mixed carousels."""
-    clean_url = url.split('?')[0]  # CRITICAL: Strips ?stkn= params which break Cobalt & FastDL
+def scrape_instagram_embed(url: str, task_id: str) -> list:
+    """The Pi-Hole Bypass: Uses Instagram's native public embed endpoints which are fully exposed, unblocked by Datadome, and avoid yt-dlp image crashes."""
     extracted = []
-    
-    # 1. COBALT
-    endpoints = [
-        "https://api.cobalt.tools/",
-        "https://api.cobalt.tools/api/json"
-    ]
-    headers_cobalt = {
-        "Accept": "application/json",
-        "Content-Type": "application/json",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        "Origin": "https://cobalt.tools",
-        "Referer": "https://cobalt.tools/"
-    }
-    for ep in endpoints:
-        try:
-            logger.info(f"[Instagram Task {task_id}] Proxying via Cobalt ({ep})...")
-            r = requests.post(ep, json={"url": clean_url}, headers=headers_cobalt, timeout=15)
-            logger.info(f"[Instagram Task {task_id}] Cobalt response: {r.status_code}")
-            if r.status_code in [200, 201, 202]:
-                data = r.json()
-                status = data.get("status")
-                if status in ["success", "stream", "redirect"]:
-                    u = data.get("url")
-                    is_vid = data.get("type") == "video" or (u and ".mp4" in u.lower())
-                    extracted.append({'is_video': is_vid, 'vid_url': u if is_vid else None, 'img_url': u if not is_vid else None, 'title': 'Instagram Media'})
-                    return extracted
-                elif status == "picker":
-                    for item in data.get("picker", []):
-                        u = item.get("url")
-                        if u:
-                            is_vid = item.get("type") == "video" or ".mp4" in u.lower()
-                            extracted.append({'is_video': is_vid, 'vid_url': u if is_vid else None, 'img_url': u if not is_vid else None, 'title': 'Instagram Media'})
-                    if extracted: return extracted
-        except Exception as e:
-            logger.error(f"[Instagram Task {task_id}] Cobalt error: {e}")
+    try:
+        shortcode_match = re.search(r'/(?:p|reel|tv)/([^/?#]+)', url)
+        if not shortcode_match: return []
+        shortcode = shortcode_match.group(1)
+        
+        embed_url = f"https://www.instagram.com/p/{shortcode}/embed/captioned/"
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8'
+        }
+        
+        logger.info(f"[Instagram Task {task_id}] Querying Native Embed API (Bypasses Pi-hole & Login Walls)...")
+        r = requests.get(embed_url, headers=headers, timeout=15)
+        
+        if r.status_code == 200:
+            json_data = None
+            
+            # Method 1: additionalDataLoaded JSON
+            match = re.search(r'window\.__additionalDataLoaded\([^,]+,\s*({.+?})\);', r.text)
+            if match:
+                json_data = json.loads(match.group(1))
+                
+            # Method 2: embedded script tags
+            if not json_data:
+                soup = BeautifulSoup(r.text, 'html.parser')
+                for script in soup.find_all('script'):
+                    if script.string and 'shortcode_media' in script.string:
+                        try:
+                            m = re.search(r'({.*"shortcode_media".*})', script.string)
+                            if m: json_data = json.loads(m.group(1))
+                        except: pass
 
-    # 2. FASTDL / SAVEIG / SNAPINSTA (AJAX HTML Parsers - The Ultimate Backup)
-    ajax_proxies = [
-        ("https://fastdl.app/api/ajaxSearch", "https://fastdl.app/en"),
-        ("https://saveig.app/api/ajaxSearch", "https://saveig.app/en"),
-        ("https://snapinsta.app/api/ajaxSearch", "https://snapinsta.app/en")
-    ]
-    
-    for api_url, referer in ajax_proxies:
-        try:
-            logger.info(f"[Instagram Task {task_id}] Proxying via {urlparse(api_url).netloc}...")
-            headers_ajax = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                "Accept": "*/*",
-                "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-                "Origin": referer.rsplit('/', 1)[0],
-                "Referer": referer,
-                "X-Requested-With": "XMLHttpRequest"
-            }
-            r = requests.post(api_url, data={"q": clean_url, "t": "media", "lang": "en"}, headers=headers_ajax, timeout=15)
-            logger.info(f"[Instagram Task {task_id}] {urlparse(api_url).netloc} response: {r.status_code}")
-            if r.status_code == 200:
-                resp = r.json()
-                html_data = resp.get("data", "")
-                if html_data:
-                    soup = BeautifulSoup(html_data, "html.parser")
-                    items = soup.find_all("div", class_="download-items")
+            if json_data:
+                media = json_data.get('shortcode_media', {})
+                if not media:
+                    media = json_data.get('graphql', {}).get('shortcode_media', {})
+                    
+                if media:
+                    caption_text = "Instagram Media"
+                    try:
+                        edges = media.get('edge_media_to_caption', {}).get('edges', [])
+                        if edges: caption_text = edges[0]['node']['text']
+                    except: pass
+                    
+                    children = media.get('edge_sidecar_to_children', {}).get('edges', [])
+                    items = [child['node'] for child in children] if children else [media]
+                    
                     for item in items:
-                        a_tag = item.find("a", href=True)
-                        if a_tag:
-                            link = a_tag["href"]
-                            link_lower = link.lower()
-                            is_vid = ".mp4" in link_lower or "video" in a_tag.get_text().lower()
-                            extracted.append({
-                                'is_video': is_vid,
-                                'vid_url': link if is_vid else None,
-                                'img_url': link if not is_vid else None,
-                                'title': "Instagram Media"
-                            })
-                    if extracted:
-                        logger.info(f"[Instagram Task {task_id}] Successfully extracted {len(extracted)} mixed items from {urlparse(api_url).netloc}")
-                        return extracted
-        except Exception as e:
-            logger.error(f"[Instagram Task {task_id}] {urlparse(api_url).netloc} error: {e}")
-
+                        is_vid = item.get('is_video', False)
+                        vid_url = item.get('video_url')
+                        img_url = item.get('display_url')
+                        
+                        extracted.append({
+                            'is_video': is_vid,
+                            'vid_url': html.unescape(vid_url).replace('\\/', '/') if vid_url else None,
+                            'img_url': html.unescape(img_url).replace('\\/', '/') if img_url else None,
+                            'title': caption_text
+                        })
+                    logger.info(f"[Instagram Task {task_id}] Native Embed API successfully extracted {len(extracted)} items (Full Mixed Support).")
+                    return extracted
+        logger.info(f"[Instagram Task {task_id}] Native Embed API yielded no data.")
+    except Exception as e:
+        logger.error(f"[Instagram Task {task_id}] Native Embed API Error: {e}")
     return extracted
 
 
 def scrape_mobile_ig_api(url: str, cookies: object, task_id: str) -> list:
     extracted = []
     try:
-        clean_url = url.split('?')[0]
-        shortcode_match = re.search(r'/(?:p|reel|tv)/([^/?#]+)', clean_url)
+        shortcode_match = re.search(r'/(?:p|reel|tv)/([^/?#]+)', url)
         if not shortcode_match: return []
         shortcode = shortcode_match.group(1)
         
@@ -723,6 +704,44 @@ def scrape_mobile_ig_api(url: str, cookies: object, task_id: str) -> list:
     return extracted
 
 
+def scrape_cobalt_proxy(url: str, task_id: str) -> list:
+    extracted = []
+    endpoints = [
+        "https://api.cobalt.tools/",
+        "https://api.cobalt.tools/api/json"
+    ]
+    headers_cobalt = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Origin": "https://cobalt.tools",
+        "Referer": "https://cobalt.tools/"
+    }
+    for ep in endpoints:
+        try:
+            logger.info(f"[Instagram Task {task_id}] Proxying via Cobalt ({ep})...")
+            r = requests.post(ep, json={"url": url}, headers=headers_cobalt, timeout=15)
+            logger.info(f"[Instagram Task {task_id}] Cobalt response: {r.status_code}")
+            if r.status_code in [200, 201, 202]:
+                data = r.json()
+                status = data.get("status")
+                if status in ["success", "stream", "redirect"]:
+                    u = data.get("url")
+                    is_vid = data.get("type") == "video" or (u and ".mp4" in u.lower())
+                    extracted.append({'is_video': is_vid, 'vid_url': u if is_vid else None, 'img_url': u if not is_vid else None, 'title': 'Instagram Media'})
+                    return extracted
+                elif status == "picker":
+                    for item in data.get("picker", []):
+                        u = item.get("url")
+                        if u:
+                            is_vid = item.get("type") == "video" or ".mp4" in u.lower()
+                            extracted.append({'is_video': is_vid, 'vid_url': u if is_vid else None, 'img_url': u if not is_vid else None, 'title': 'Instagram Media'})
+                    if extracted: return extracted
+        except Exception as e:
+            logger.error(f"[Instagram Task {task_id}] Cobalt error: {e}")
+    return extracted
+
+
 def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
     if not is_social_media_url(url):
         extract_article(url, user_id, task_id, expire_days)
@@ -734,15 +753,22 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
     cj = get_requests_cookies(cookie_path)
 
     if "instagram.com" in url:
-        logger.info(f"[Instagram Task {task_id}] Processing Instagram URL: {url}")
+        # STRIP THE TRACKERS ONCE AND FOR ALL BEFORE ANY FUNCTION GETS IT
+        url = url.split('?')[0]
+        logger.info(f"[Instagram Task {task_id}] Processing Cleaned Instagram URL: {url}")
+        
         headers_cdn = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36', 'Accept': '*/*'}
 
         # 1. MOBILE APP API SPOOFER 
         native_items = scrape_mobile_ig_api(url, cj, task_id)
 
-        # 2. MEGA THIRD PARTY PROXIES (Cobalt + FastDL + SaveIG + SnapInsta)
+        # 2. NATIVE EMBED SCRAPER (Bypasses Pi-Hole and yt-dlp completely)
         if not native_items:
-            native_items = scrape_third_party_proxies(url, task_id)
+            native_items = scrape_instagram_embed(url, task_id)
+            
+        # 3. COBALT PROXY (Last Resort API)
+        if not native_items:
+            native_items = scrape_cobalt_proxy(url, task_id)
 
         if native_items:
             download_success = True
@@ -781,7 +807,7 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                         try: os.remove(os.path.join(DOWNLOAD_DIR, f))
                         except: pass
 
-        # 3. FALLBACK TO GALLERY-DL 
+        # 4. FALLBACK TO GALLERY-DL 
         if not download_success:
             logger.info(f"[Instagram Task {task_id}] Web extractors failed. Falling back to gallery-dl...")
             try:
@@ -815,7 +841,7 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
             except Exception as e:
                 logger.error(f"[Instagram Task {task_id}] gallery-dl exception: {e}")
 
-        # 4. FINAL FALLBACK: YT-DLP 
+        # 5. FINAL FALLBACK: YT-DLP 
         if not download_success:
             logger.info(f"[Instagram Task {task_id}] gallery-dl failed. Final Fallback to yt-dlp...")
             ydl_opts_ig = {

@@ -1,4 +1,5 @@
 import os, secrets, json, hashlib, subprocess, threading, logging, time, asyncio, shutil, re, html
+from typing import List
 from urllib.parse import urlparse, urljoin, quote
 from fastapi import FastAPI, BackgroundTasks, UploadFile, File, Form, Depends, Request, Response
 from fastapi.staticfiles import StaticFiles
@@ -11,13 +12,13 @@ from bs4 import BeautifulSoup
 from readability import Document
 
 logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
-logger = logging.getLogger("upshare")
+logger = logging.getLogger("upsharemedia")
 logger.setLevel(logging.INFO)
 ch = logging.StreamHandler()
 ch.setFormatter(logging.Formatter('%(asctime)s - %(message)s', "%Y-%m-%d %H:%M:%S"))
 logger.addHandler(ch)
 
-app = FastAPI(title="upShareMedia 1.0")
+app = FastAPI(title="upShareMedia")
 
 @app.exception_handler(404)
 async def custom_404_handler(request: Request, exc):
@@ -27,8 +28,6 @@ PORT = int(os.getenv("PORT", "29738"))
 DOWNLOAD_DIR = os.getenv("DOWNLOAD_DIR", "/downloads")
 CONFIG_DIR = os.getenv("CONFIG_DIR", "/config")
 SESSION_DAYS = int(os.getenv("SESSION_DAYS", "30"))
-YTDLP_COOKIES = os.getenv("YTDLP_COOKIES", "")
-TIKTOK_COOKIES = os.getenv("TIKTOK_COOKIES", "")
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 INFERENCE_TEXT_MODEL = os.getenv("INFERENCE_TEXT_MODEL", "qwen2.5:14b")
@@ -36,24 +35,18 @@ OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
 
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 os.makedirs(CONFIG_DIR, exist_ok=True)
-DB_OLD_V2 = os.path.join(CONFIG_DIR, "v2_db.json")
-DB_OLD_V3 = os.path.join(CONFIG_DIR, "v3_db.json")
 DB_FILE = os.path.join(CONFIG_DIR, "upsharemedia.json")
 COOKIE_FILE = os.path.join(CONFIG_DIR, "cookies.txt")
-TIKTOK_COOKIE_FILE = os.path.join(CONFIG_DIR, "tiktok_cookies.txt")
 
 db_lock = threading.Lock()
 view_lock = threading.Lock()
 active_downloads = {}
 recent_views = {}
 
-if YTDLP_COOKIES:
-    with open(COOKIE_FILE, "w") as f: f.write(YTDLP_COOKIES.replace("\\n", "\n"))
-if TIKTOK_COOKIES:
-    with open(TIKTOK_COOKIE_FILE, "w") as f: f.write(TIKTOK_COOKIES.replace("\\n", "\n"))
+if os.getenv("YTDLP_COOKIES"):
+    with open(COOKIE_FILE, "w") as f: f.write(os.getenv("YTDLP_COOKIES").replace("\\n", "\n"))
 
 def get_cookie_file_for_url(url: str):
-    if "tiktok.com" in url and os.path.exists(TIKTOK_COOKIE_FILE): return TIKTOK_COOKIE_FILE
     if os.path.exists(COOKIE_FILE): return COOKIE_FILE
     return None
 
@@ -75,14 +68,6 @@ def is_social_media_url(url: str) -> bool:
 def load_db():
     if os.path.exists(DB_FILE):
         with open(DB_FILE, "r") as f: return json.load(f)
-    
-    for legacy_db in [DB_OLD_V3, DB_OLD_V2]:
-        if os.path.exists(legacy_db):
-            with open(legacy_db, "r") as f: data = json.load(f)
-            save_db(data)
-            try: os.remove(legacy_db)
-            except: pass
-            return data
 
     initial_username = os.getenv("APP_USERNAME", "admin")
     default_db = {
@@ -175,7 +160,6 @@ def generate_secure_id(): return f"vid_{secrets.token_urlsafe(8)}"
 def ensure_ios_compatible_video(file_path: str):
     if not file_path.endswith(('.mp4', '.mov', '.mkv', '.webm')):
         return file_path
-    
     try:
         res = subprocess.run([
             "ffprobe", "-v", "error", "-select_streams", "v:0",
@@ -207,8 +191,7 @@ def ensure_ios_compatible_video(file_path: str):
         return file_path
 
 def ensure_jpg_image(file_path: str) -> str:
-    if file_path.lower().endswith(('.jpg', '.jpeg')):
-        return file_path
+    if file_path.lower().endswith(('.jpg', '.jpeg')): return file_path
     target_jpg = file_path.rsplit('.', 1)[0] + ".jpg"
     try:
         res = subprocess.run(["ffmpeg", "-y", "-i", file_path, "-q:v", "2", target_jpg], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -220,7 +203,7 @@ def ensure_jpg_image(file_path: str) -> str:
     except Exception: pass
     return file_path
 
-def extract_true_duration(video_id: str, user_id: str, url: str = "#", custom_title: str = None, ext: str = ".mp4", expire_days: int = 0, engine: str = None):
+def extract_true_duration(video_id: str, user_id: str, url: str = "#", custom_title: str = None, ext: str = ".mp4", expire_days: int = 0, engine: str = None, carousel_type: str = None):
     file_path = os.path.join(DOWNLOAD_DIR, f"{video_id}{ext}")
     duration = 0.0
     if ext == ".mp4":
@@ -245,9 +228,159 @@ def extract_true_duration(video_id: str, user_id: str, url: str = "#", custom_ti
             "title": title,
             "ext": ext,
             "engine": engine,
+            "carousel_type": carousel_type,
             "expires_at": expires_at
         }
         save_db(db)
+
+def generate_carousel_html(carousel_tags: str, extracted_title: str) -> str:
+    return f"""
+    <!DOCTYPE html>
+    <html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover'>
+    <title>{html.escape(extracted_title)}</title>
+    <style>
+        * {{ box-sizing: border-box; -webkit-tap-highlight-color: transparent; }}
+        html, body {{ margin: 0; padding: 0; background: #000; width: 100vw; height: 100dvh; min-height: -webkit-fill-available; overflow: hidden; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; user-select: none; }}
+        
+        .carousel-container {{ position: relative; width: 100vw; height: 100dvh; min-height: -webkit-fill-available; overflow: hidden; display: flex; align-items: center; justify-content: center; }}
+        .carousel-track {{ display: flex; transition: transform 0.3s cubic-bezier(0.25, 1, 0.5, 1); height: 100%; width: 100%; }}
+        .carousel-item {{ min-width: 100vw; width: 100vw; height: 100dvh; display: flex; align-items: center; justify-content: center; flex-shrink: 0; background: #000; position: relative; padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }}
+        .carousel-item img, .carousel-item video {{ max-width: 100%; max-height: 100%; width: auto; height: auto; object-fit: contain !important; display: block; margin: auto; }}
+
+        .btn {{ position: absolute; top: 50%; transform: translateY(-50%); background: rgba(0,0,0,0.6); color: white; border: 1px solid rgba(255,255,255,0.2); width: 44px; height: 44px; padding: 0; display: flex; align-items: center; justify-content: center; cursor: pointer; border-radius: 50%; font-size: 20px; z-index: 20; transition: all 0.2s; aspect-ratio: 1/1; box-sizing: border-box; flex-shrink: 0; line-height: 1; }}
+        .btn:hover {{ background: rgba(0,0,0,0.9); scale: 1.1; }}
+        .btn-prev {{ left: 15px; }}
+        .btn-next {{ right: 15px; }}
+        
+        .dots {{ position: absolute; bottom: calc(20px + env(safe-area-inset-bottom, 0px)); width: 100%; display: flex; justify-content: center; align-items: center; gap: 8px; z-index: 20; pointer-events: auto; }}
+        .dot {{ width: 10px; height: 10px; background: rgba(255,255,255,0.35); border-radius: 5px; overflow: hidden; position: relative; cursor: pointer; transition: all 0.3s ease; }}
+        .dot.active {{ width: 28px; background: rgba(255,255,255,0.35); }}
+        .dot-fill {{ height: 100%; width: 0%; background: #ffffff; border-radius: 5px; }}
+        
+        .tap-zone {{ position: absolute; top: 0; bottom: 0; width: 35%; z-index: 15; }}
+        .tap-left {{ left: 0; }}
+        .tap-right {{ right: 0; }}
+    </style>
+    </head><body>
+        <div class="carousel-container" id="carousel">
+            <div class="tap-zone tap-left" id="tapLeft"></div>
+            <div class="tap-zone tap-right" id="tapRight"></div>
+            <div class="carousel-track" id="track">{carousel_tags}</div>
+            <button class="btn btn-prev" id="btnPrev" onclick="window.move(-1)">❮</button>
+            <button class="btn btn-next" id="btnNext" onclick="window.move(1)">❯</button>
+            <div class="dots" id="dots"></div>
+        </div>
+        <script>
+            const track = document.getElementById('track');
+            const items = track.children.length;
+            const dotsContainer = document.getElementById('dots');
+            let index = 0;
+            let imgTimer = null;
+
+            for (let i = 0; i < items; i++) {{
+                let d = document.createElement('div');
+                d.className = 'dot' + (i === 0 ? ' active' : '');
+                d.onclick = (e) => {{ e.stopPropagation(); window.goTo(i); }};
+                d.innerHTML = `<div class="dot-fill" id="fill-${{i}}"></div>`;
+                dotsContainer.appendChild(d);
+            }}
+
+            const dots = dotsContainer.children;
+
+            function updateSlide() {{
+                if (imgTimer) clearInterval(imgTimer);
+                document.querySelectorAll('video').forEach(v => {{ v.pause(); v.currentTime = 0; }});
+
+                track.style.transform = `translateX(-${{index * 100}}vw)`;
+
+                for (let i = 0; i < items; i++) {{
+                    dots[i].className = 'dot';
+                    const fill = document.getElementById(`fill-${{i}}`);
+                    if (fill) {{ fill.style.transition = 'none'; fill.style.width = i < index ? '100%' : '0%'; }}
+                }}
+                
+                dots[index].className = 'dot active';
+                const currentFill = document.getElementById(`fill-${{index}}`);
+                
+                const currentSlide = track.children[index];
+                const video = currentSlide.querySelector('video');
+                
+                if (video) {{
+                    video.play().catch(() => {{}});
+                    video.ontimeupdate = () => {{
+                        if (video.duration && currentFill) {{
+                            const pct = (video.currentTime / video.duration) * 100;
+                            currentFill.style.transition = 'width 0.1s linear';
+                            currentFill.style.width = pct + '%';
+                        }}
+                    }};
+                    video.onended = () => {{
+                        if (currentFill) currentFill.style.width = '100%';
+                        if (index < items - 1) window.move(1);
+                    }};
+                }} else {{
+                    let start = Date.now();
+                    const duration = 5000;
+                    imgTimer = setInterval(() => {{
+                        let elapsed = Date.now() - start;
+                        let pct = Math.min(100, (elapsed / duration) * 100);
+                        if (currentFill) {{
+                            currentFill.style.transition = 'width 0.1s linear';
+                            currentFill.style.width = pct + '%';
+                        }}
+                        if (elapsed >= duration) {{
+                            clearInterval(imgTimer);
+                            if (index < items - 1) window.move(1);
+                        }}
+                    }}, 100);
+                }}
+            }}
+
+            window.move = function(dir) {{
+                index += dir;
+                if (index < 0) index = items - 1;
+                if (index >= items) index = 0;
+                updateSlide();
+            }};
+
+            window.goTo = function(i) {{
+                index = i;
+                updateSlide();
+            }};
+
+            let touchStartX = 0;
+            let touchEndX = 0;
+            const container = document.getElementById('carousel');
+
+            container.addEventListener('touchstart', e => {{ touchStartX = e.changedTouches[0].screenX; }}, {{ passive: true }});
+            container.addEventListener('touchend', e => {{ touchEndX = e.changedTouches[0].screenX; handleSwipe(); }}, {{ passive: true }});
+
+            function handleSwipe() {{
+                const diff = touchStartX - touchEndX;
+                if (Math.abs(diff) > 40) {{
+                    if (diff > 0) window.move(1);
+                    else window.move(-1);
+                }}
+            }}
+
+            document.getElementById('tapLeft').onclick = (e) => {{ e.stopPropagation(); window.move(-1); }};
+            document.getElementById('tapRight').onclick = (e) => {{ e.stopPropagation(); window.move(1); }};
+
+            document.addEventListener('keydown', e => {{
+                if (e.key === 'ArrowLeft') window.move(-1);
+                if (e.key === 'ArrowRight' || e.key === ' ') window.move(1);
+            }});
+
+            if (items <= 1) {{
+                document.querySelectorAll('.btn').forEach(b => b.style.display = 'none');
+                document.querySelectorAll('.tap-zone').forEach(tz => tz.style.display = 'none');
+                document.getElementById('dots').style.display = 'none';
+            }}
+
+            updateSlide();
+        </script>
+    </body></html>
+    """
 
 def my_hook(d, task_id, user_id):
     if d['status'] == 'downloading':
@@ -278,8 +411,7 @@ def clean_html_with_ai(raw_html: str) -> tuple:
                 token_count = usage.get('totalTokenCount', 0)
                 engine_str = f"📄 Gemini ({format_tokens(token_count)})" if token_count else "📄 Gemini"
                 clean_result = result.replace(f'{bt}html', '').replace(bt, '').strip()
-                if len(clean_result) > 100:
-                    return clean_result, engine_str
+                if len(clean_result) > 100: return clean_result, engine_str
         except Exception: pass
 
     if INFERENCE_TEXT_MODEL:
@@ -293,13 +425,13 @@ def clean_html_with_ai(raw_html: str) -> tuple:
                 tokens = json_res.get('prompt_eval_count', 0) + json_res.get('eval_count', 0)
                 engine_str = f"📄 Ollama ({format_tokens(tokens)})" if tokens else "📄 Ollama"
                 clean_result = result.replace(f'{bt}html', '').replace(bt, '').strip()
-                if len(clean_result) > 100:
-                    return clean_result, engine_str
+                if len(clean_result) > 100: return clean_result, engine_str
         except Exception: pass
 
     return raw_html, "📄 Readability"
 
 def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
+    new_id = generate_secure_id()
     try:
         active_downloads[task_id] = "Parsing Article..."
         headers = {
@@ -309,7 +441,6 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
         r = requests.get(url, headers=headers, timeout=10)
 
         if 'image' in r.headers.get('Content-Type', '').lower():
-            new_id = generate_secure_id()
             ext = '.' + urlparse(url).path.split('/')[-1].split('.')[-1]
             if not ext or len(ext) > 5 or not ext[1:].isalpha(): ext = '.jpg'
             with open(os.path.join(DOWNLOAD_DIR, f"{new_id}{ext}"), "wb") as f: f.write(r.content)
@@ -328,23 +459,13 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
                 try: el.decompose()
                 except: pass
 
-        # ARTIFACT ASSASSIN: Nuke Google news prompts, preferred source links, etc.
-        google_artifacts = [
-            'Add Delish as a preferred source', 
-            'Use your Google account to add this', 
-            'Google search results', 
-            'preferred source in your Google',
-            'Add to Google Settings'
-        ]
+        google_artifacts = ['Add Delish as a preferred source', 'Use your Google account to add this', 'Google search results', 'preferred source in your Google', 'Add to Google Settings']
         for el in orig_soup.find_all(string=True):
             text = el.text.strip()
             if any(art in text for art in google_artifacts):
-                # Climb up the DOM tree and nuke the entire container block (removes the text AND the button)
                 parent_block = el.find_parent(['div', 'aside', 'section'])
-                if parent_block: 
-                    parent_block.decompose()
-                else: 
-                    el.extract()
+                if parent_block: parent_block.decompose()
+                else: el.extract()
 
         og_img = orig_soup.find('meta', property='og:image')
         article_img_url = None
@@ -464,13 +585,25 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
         final_html = re.sub(r'<p[^>]*>\s*___UPSHARE_VIDEO___SRC:([\s\S]*?)___\s*</p>', vid_repl, final_html)
         final_html = re.sub(r'___UPSHARE_VIDEO___SRC:([\s\S]*?)___', vid_repl, final_html)
 
+        img_counter = [0]
         def img_repl(match):
             src = match.group(1).strip()
             src = urljoin(url, src)
             cap = match.group(2).strip()
             
+            img_counter[0] += 1
+            local_filename = f"{new_id}_art_{img_counter[0]}.jpg"
+            local_filepath = os.path.join(DOWNLOAD_DIR, local_filename)
+            try:
+                r_img = requests.get(src, headers=headers, timeout=10)
+                if r_img.status_code == 200:
+                    with open(local_filepath, "wb") as local_f: local_f.write(r_img.content)
+                    ensure_jpg_image(local_filepath)
+                    src = f"/videos/{local_filename}"
+            except Exception as ex:
+                logger.error(f"Failed offline archiving for {src}: {ex}")
+
             cap_lines = [c.strip() for c in cap.split('|||') if c.strip()] if cap else []
-            
             caption_text = []
             credit_text = []
 
@@ -478,7 +611,6 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
                 if '//' in line:
                     parts = [p.strip() for p in line.split('//') if p.strip()]
                     line = " / ".join(parts)
-                    
                 clean_line = line.strip()
                 is_credit = bool(re.search(r'(getty|images|photo|courtesy|reuters|ap|afp|nurphoto|splash|shutterstock|instagram|twitter|facebook|credit|via)', clean_line, re.I)) or clean_line.startswith('—') or clean_line.startswith('-') or ('/' in clean_line and len(clean_line) < 100)
                 
@@ -490,11 +622,8 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
                     caption_text.append(clean_line)
 
             final_cap_parts = []
-            if caption_text:
-                final_cap_parts.append(" ".join(caption_text))
-            if credit_text:
-                final_cap_parts.extend(credit_text)
-
+            if caption_text: final_cap_parts.append(" ".join(caption_text))
+            if credit_text: final_cap_parts.extend(credit_text)
             formatted_cap = "<br>".join(final_cap_parts) if final_cap_parts else ""
 
             fig = f'<figure style="margin: 30px 0; display: flex; flex-direction: column; align-items: center; text-align: center;"><img src="{src}" style="max-width:100%; height:auto; border-radius:8px; box-shadow: 0 4px 12px rgba(0,0,0,0.2); display: block; margin: 0 auto;">'
@@ -539,7 +668,6 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
                 curr_bq.decompose()
 
         final_html = str(ai_soup)
-        new_id = generate_secure_id()
         html_path = os.path.join(DOWNLOAD_DIR, f"{new_id}.html")
         domain = urlparse(url).netloc.replace('www.', '')
 
@@ -553,9 +681,7 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
         """
 
         safe_title = html.escape(title)
-
-        if not article_img_url: 
-            article_img_url = first_img_src
+        if not article_img_url: article_img_url = first_img_src
             
         if article_img_url:
             article_img_url = urljoin(url, article_img_url)
@@ -601,13 +727,11 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
     finally:
         if task_id in active_downloads: del active_downloads[task_id]
 
-
 def scrape_instaloader(url: str, task_id: str) -> list:
-    """The Gold Standard GitHub Library: Instaloader."""
     try:
         import instaloader
     except ImportError:
-        logger.warning(f"[Instagram Task {task_id}] Instaloader not installed. Run 'pip install instaloader' in your Docker container!")
+        logger.warning(f"[Instagram Task {task_id}] Instaloader not installed.")
         return []
 
     extracted = []
@@ -616,10 +740,9 @@ def scrape_instaloader(url: str, task_id: str) -> list:
         if not shortcode_match: return []
         shortcode = shortcode_match.group(1)
 
-        logger.info(f"[Instagram Task {task_id}] Querying Instaloader (GitHub Native Library)...")
+        logger.info(f"[Instagram Task {task_id}] Querying Instaloader...")
         L = instaloader.Instaloader(quiet=True, download_pictures=False, download_video_thumbnails=False, download_videos=False)
         post = instaloader.Post.from_shortcode(L.context, shortcode)
-        
         caption = post.caption or "Instagram Media"
         
         if post.typename == 'GraphSidecar':
@@ -639,15 +762,12 @@ def scrape_instaloader(url: str, task_id: str) -> list:
             })
             
         if extracted:
-            logger.info(f"[Instagram Task {task_id}] Instaloader successfully extracted {len(extracted)} items (Full Carousel Support).")
             return extracted
     except Exception as e:
         logger.error(f"[Instagram Task {task_id}] Instaloader Error: {e}")
     return extracted
 
-
 def scrape_instagram_embed(url: str, task_id: str) -> list:
-    """The Pi-Hole Bypass: Uses Instagram's native public embed endpoints which are fully exposed, unblocked by Datadome, and avoid yt-dlp image crashes."""
     extracted = []
     try:
         shortcode_match = re.search(r'/(?:p|reel|tv)/([^/?#]+)', url)
@@ -655,23 +775,14 @@ def scrape_instagram_embed(url: str, task_id: str) -> list:
         shortcode = shortcode_match.group(1)
         
         embed_url = f"https://www.instagram.com/p/{shortcode}/embed/captioned/"
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8'
-        }
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36', 'Accept': '*/*'}
         
-        logger.info(f"[Instagram Task {task_id}] Querying Native Embed API (Bypasses Pi-hole & Login Walls)...")
         r = requests.get(embed_url, headers=headers, timeout=15)
-        
         if r.status_code == 200:
             json_data = None
-            
-            # Method 1: additionalDataLoaded JSON
             match = re.search(r'window\.__additionalDataLoaded\([^,]+,\s*({.+?})\);', r.text)
             if match:
                 json_data = json.loads(match.group(1))
-                
-            # Method 2: embedded script tags
             if not json_data:
                 soup = BeautifulSoup(r.text, 'html.parser')
                 for script in soup.find_all('script'):
@@ -683,8 +794,7 @@ def scrape_instagram_embed(url: str, task_id: str) -> list:
 
             if json_data:
                 media = json_data.get('shortcode_media', {})
-                if not media:
-                    media = json_data.get('graphql', {}).get('shortcode_media', {})
+                if not media: media = json_data.get('graphql', {}).get('shortcode_media', {})
                     
                 if media:
                     caption_text = "Instagram Media"
@@ -700,94 +810,28 @@ def scrape_instagram_embed(url: str, task_id: str) -> list:
                         is_vid = item.get('is_video', False)
                         vid_url = item.get('video_url')
                         img_url = item.get('display_url')
-                        
                         extracted.append({
                             'is_video': is_vid,
                             'vid_url': html.unescape(vid_url).replace('\\/', '/') if vid_url else None,
                             'img_url': html.unescape(img_url).replace('\\/', '/') if img_url else None,
                             'title': caption_text
                         })
-                    logger.info(f"[Instagram Task {task_id}] Native Embed API successfully extracted {len(extracted)} items (Full Mixed Support).")
                     return extracted
-        logger.info(f"[Instagram Task {task_id}] Native Embed API yielded no data.")
     except Exception as e:
-        logger.error(f"[Instagram Task {task_id}] Native Embed API Error: {e}")
+        logger.error(f"[Instagram Task {task_id}] Embed Error: {e}")
     return extracted
-
-
-def scrape_mobile_ig_api(url: str, cookies: object, task_id: str) -> list:
-    extracted = []
-    try:
-        shortcode_match = re.search(r'/(?:p|reel|tv)/([^/?#]+)', url)
-        if not shortcode_match: return []
-        shortcode = shortcode_match.group(1)
-        
-        alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_'
-        media_id = 0
-        for char in shortcode:
-            media_id = (media_id * 64) + alphabet.index(char)
-            
-        api_url = f"https://i.instagram.com/api/v1/media/{media_id}/info/"
-        headers = {
-            'User-Agent': 'Instagram 219.0.0.12.117 Android (29/10; 300dpi; 720x1440; generic; android; qcom; en_US; 314664538)',
-            'X-IG-App-ID': '936619743392459',
-            'Accept-Language': 'en-US',
-            'Accept': '*/*'
-        }
-        
-        logger.info(f"[Instagram Task {task_id}] Querying Mobile API via i.instagram.com for media_id {media_id}...")
-        r = requests.get(api_url, headers=headers, cookies=cookies, timeout=15)
-        logger.info(f"[Instagram Task {task_id}] Mobile API response: {r.status_code}")
-        
-        if r.status_code == 200:
-            data = r.json()
-            items = data.get('items', [])
-            if not items: return []
-            
-            m = items[0]
-            caption = "Instagram Media"
-            try: caption = m.get('caption', {}).get('text', 'Instagram Media')
-            except: pass
-            
-            carousel = m.get('carousel_media', [m])
-            for item in carousel:
-                is_vid = 'video_versions' in item
-                vid_url = item['video_versions'][0].get('url') if is_vid and item.get('video_versions') else None
-                img_url = item['image_versions2']['candidates'][0].get('url') if item.get('image_versions2', {}).get('candidates') else None
-                
-                extracted.append({
-                    'is_video': is_vid,
-                    'vid_url': html.unescape(vid_url).replace('\\/', '/') if vid_url else None,
-                    'img_url': html.unescape(img_url).replace('\\/', '/') if img_url else None,
-                    'title': caption
-                })
-    except Exception as e:
-        logger.error(f"[Instagram Task {task_id}] Mobile API Error: {e}")
-    return extracted
-
 
 def scrape_cobalt_fleet(url: str, task_id: str) -> list:
-    """Cycles through a global fleet of independent Cobalt instances to bypass Pi-Hole and Datadome blockades."""
     extracted = []
     cobalt_instances = [
-        "https://api.cobalt.tools/",
-        "https://api.cobalt.buss.lol/",
-        "https://api.vytal.io/",
-        "https://cobalt.qewertyy.dev/",
-        "https://cobalt.seasi.dev/",
-        "https://co.wuk.sh/"
+        "https://api.cobalt.tools/", "https://api.cobalt.buss.lol/",
+        "https://api.vytal.io/", "https://cobalt.qewertyy.dev/",
+        "https://cobalt.seasi.dev/", "https://co.wuk.sh/"
     ]
+    headers_cobalt = {"Accept": "application/json", "Content-Type": "application/json", "User-Agent": "Mozilla/5.0"}
     
-    headers_cobalt = {
-        "Accept": "application/json",
-        "Content-Type": "application/json",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-    }
-    
-    logger.info(f"[Instagram Task {task_id}] Engaging Cobalt Proxy Fleet...")
     for ep in cobalt_instances:
         try:
-            logger.info(f"[Instagram Task {task_id}] Trying Cobalt Instance: {urlparse(ep).netloc} ...")
             r = requests.post(ep, json={"url": url}, headers=headers_cobalt, timeout=12)
             if r.status_code in [200, 201, 202]:
                 data = r.json()
@@ -797,7 +841,6 @@ def scrape_cobalt_fleet(url: str, task_id: str) -> list:
                     u = data.get("url")
                     is_vid = data.get("type") == "video" or (u and ".mp4" in u.lower())
                     extracted.append({'is_video': is_vid, 'vid_url': u if is_vid else None, 'img_url': u if not is_vid else None, 'title': 'Instagram Media'})
-                    logger.info(f"[Instagram Task {task_id}] Success via {urlparse(ep).netloc}")
                     return extracted
                 elif status == "picker":
                     for item in data.get("picker", []):
@@ -805,16 +848,9 @@ def scrape_cobalt_fleet(url: str, task_id: str) -> list:
                         if u:
                             is_vid = item.get("type") == "video" or ".mp4" in u.lower()
                             extracted.append({'is_video': is_vid, 'vid_url': u if is_vid else None, 'img_url': u if not is_vid else None, 'title': 'Instagram Media'})
-                    if extracted: 
-                        logger.info(f"[Instagram Task {task_id}] Carousel Success via {urlparse(ep).netloc}")
-                        return extracted
-            else:
-                logger.info(f"[Instagram Task {task_id}] {urlparse(ep).netloc} returned {r.status_code}. Moving to next.")
-        except Exception as e:
-            logger.info(f"[Instagram Task {task_id}] {urlparse(ep).netloc} failed. Moving to next.")
-            
+                    if extracted: return extracted
+        except: pass
     return extracted
-
 
 def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
     if not is_social_media_url(url):
@@ -827,25 +863,12 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
     download_success = False
 
     if "instagram.com" in url:
-        # STRIP TRACKERS
         url = url.split('?')[0]
-        logger.info(f"[Instagram Task {task_id}] Processing Cleaned Instagram URL: {url}")
         headers_cdn = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36', 'Accept': '*/*'}
 
-        # 1. MOBILE APP API SPOOFER 
-        native_items = scrape_mobile_ig_api(url, cj, task_id)
-        
-        # 2. INSTALOADER (The GitHub Native Library)
-        if not native_items:
-            native_items = scrape_instaloader(url, task_id)
-
-        # 3. NATIVE EMBED SCRAPER
-        if not native_items:
-            native_items = scrape_instagram_embed(url, task_id)
-            
-        # 4. COBALT PROXY FLEET
-        if not native_items:
-            native_items = scrape_cobalt_fleet(url, task_id)
+        native_items = scrape_instaloader(url, task_id)
+        if not native_items: native_items = scrape_instagram_embed(url, task_id)
+        if not native_items: native_items = scrape_cobalt_fleet(url, task_id)
 
         if native_items:
             download_success = True
@@ -884,57 +907,15 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                         try: os.remove(os.path.join(DOWNLOAD_DIR, f))
                         except: pass
 
-        # 5. GALLERY-DL
         if not download_success:
-            logger.info(f"[Instagram Task {task_id}] Primary extractors failed. Falling back to gallery-dl...")
-            try:
-                if shutil.which("gallery-dl"):
-                    temp_dl_dir = os.path.join(DOWNLOAD_DIR, f"gallery_dl_{task_id}")
-                    os.makedirs(temp_dl_dir, exist_ok=True)
-                    cmd = ["gallery-dl", "-D", temp_dl_dir, url]
-                    if cookie_path: cmd.extend(["--cookies", cookie_path])
-                    
-                    res = subprocess.run(cmd, capture_output=True, text=True)
-                    extracted = []
-                    if os.path.exists(temp_dl_dir):
-                        for root, dirs, files in os.walk(temp_dl_dir):
-                            for f in files:
-                                if f.lower().endswith(valid_media_exts):
-                                    extracted.append(os.path.join(root, f))
-                    
-                    if extracted:
-                        extracted.sort()
-                        for idx, filepath in enumerate(extracted):
-                            ext = filepath.rsplit('.', 1)[-1].lower() if '.' in filepath else 'jpg'
-                            if ext == 'jpeg': ext = 'jpg'
-                            target_temp = os.path.join(DOWNLOAD_DIR, f"temp_yt_{task_id}_{idx:03d}.{ext}")
-                            shutil.move(filepath, target_temp)
-                            if ext in ['mp4', 'mov', 'mkv', 'webm']: ensure_ios_compatible_video(target_temp)
-                            else: ensure_jpg_image(target_temp)
-                            with open(os.path.join(DOWNLOAD_DIR, f"temp_yt_{task_id}_{idx:03d}.info.json"), 'w', encoding='utf-8') as f:
-                                json.dump({'title': 'Instagram Media'}, f)
-                        download_success = True
-                    shutil.rmtree(temp_dl_dir, ignore_errors=True)
-            except Exception as e:
-                logger.error(f"[Instagram Task {task_id}] gallery-dl exception: {e}")
-
-        # 6. YT-DLP FALLBACK
-        if not download_success:
-            logger.info(f"[Instagram Task {task_id}] Proxies are blocked by Pi-Hole. Routing directly via yt-dlp...")
-            ydl_opts_ig = {
-                'extract_flat': 'in_playlist',
-                'ignoreerrors': True,
-                'verbose': False,
-                'quiet': True
-            }
+            logger.info(f"[Task {task_id}] Proxies blocked. Routing directly via yt-dlp...")
+            ydl_opts_ig = {'extract_flat': 'in_playlist', 'ignoreerrors': True, 'quiet': True}
             if cookie_path: ydl_opts_ig['cookiefile'] = cookie_path
             
             info = None
             try:
-                with yt_dlp.YoutubeDL(ydl_opts_ig) as ydl:
-                    info = ydl.extract_info(url, download=False)
-            except Exception as e:
-                logger.warning(f"[Instagram Task {task_id}] yt-dlp playlist extraction threw a warning: {e}")
+                with yt_dlp.YoutubeDL(ydl_opts_ig) as ydl: info = ydl.extract_info(url, download=False)
+            except: pass
                 
             entries = []
             if info and 'entries' in info: entries = [e for e in info['entries'] if e]
@@ -945,30 +926,20 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                 for idx, e in enumerate(entries):
                     slide_url = e.get('url') or e.get('webpage_url') or url
                     base_name = f"temp_yt_{task_id}_{idx:03d}"
-                    
-                    # 1. ATTEMPT TO DOWNLOAD AS VIDEO FIRST
-                    dl_opts = {
-                        'outtmpl': os.path.join(DOWNLOAD_DIR, f"{base_name}.%(ext)s"), 
-                        'format': 'best', 
-                        'quiet': True,
-                        'postprocessor_args': {'ffmpeg': ['-movflags', '+faststart']}
-                    }
+                    dl_opts = {'outtmpl': os.path.join(DOWNLOAD_DIR, f"{base_name}.%(ext)s"), 'format': 'best', 'quiet': True, 'postprocessor_args': {'ffmpeg': ['-movflags', '+faststart']}}
                     if cookie_path: dl_opts['cookiefile'] = cookie_path
                     
                     video_success = False
                     try:
                         with yt_dlp.YoutubeDL(dl_opts) as ydl_vid:
-                            res = ydl_vid.download([slide_url])
-                            if res == 0:
+                            if ydl_vid.download([slide_url]) == 0:
                                 video_success = True
                                 vid_p = os.path.join(DOWNLOAD_DIR, f"{base_name}.mp4")
                                 if os.path.exists(vid_p): ensure_ios_compatible_video(vid_p)
                                 with open(os.path.join(DOWNLOAD_DIR, f"{base_name}.info.json"), 'w', encoding='utf-8') as f: 
-                                    json.dump({'title': "Instagram Video"}, f)
-                    except Exception as vid_e:
-                        logger.info(f"[Instagram Task {task_id}] Slide {idx} failed video download (likely an image). Retrying as image...")
+                                    json.dump({'title': "Media"}, f)
+                    except: pass
                     
-                    # 2. IF IT FAILED, EXTRACT RAW JSON & BYPASS FORMAT CHECKS
                     if not video_success:
                         raw_opts = {'quiet': True, 'ignoreerrors': True}
                         if cookie_path: raw_opts['cookiefile'] = cookie_path
@@ -976,33 +947,22 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                             with yt_dlp.YoutubeDL(raw_opts) as ydl_raw:
                                 slide_info = ydl_raw.extract_info(slide_url, download=False, process=False)
                                 img_url = None
-                                
                                 if slide_info:
-                                    if slide_info.get('thumbnails'):
-                                        img_url = slide_info['thumbnails'][-1]['url']
-                                    elif slide_info.get('url'):
-                                        img_url = slide_info['url']
-                                        
+                                    if slide_info.get('thumbnails'): img_url = slide_info['thumbnails'][-1]['url']
+                                    elif slide_info.get('url'): img_url = slide_info['url']
                                 if not img_url: img_url = e.get('thumbnail')
-
                                 if img_url:
                                     r_img = requests.get(img_url, headers=headers_cdn, timeout=15)
                                     if r_img.status_code == 200 and 'image' in r_img.headers.get('Content-Type', '').lower():
                                         with open(os.path.join(DOWNLOAD_DIR, f"{base_name}.jpg"), 'wb') as f: f.write(r_img.content)
                                         ensure_jpg_image(os.path.join(DOWNLOAD_DIR, f"{base_name}.jpg"))
                                         with open(os.path.join(DOWNLOAD_DIR, f"{base_name}.info.json"), 'w', encoding='utf-8') as f: 
-                                            json.dump({'title': "Instagram Photo"}, f)
-                                        logger.info(f"[Instagram Task {task_id}] Successfully extracted image for slide {idx}.")
-                                    else:
-                                        logger.warning(f"[Instagram Task {task_id}] Image URL returned non-image Datadome HTML wall. Discarding.")
-                                        download_success = False
-                                else:
-                                    download_success = False
-                        except Exception as img_e:
-                            logger.error(f"[Instagram Task {task_id}] Image fallback failed for slide {idx}: {img_e}")
+                                            json.dump({'title': "Photo"}, f)
+                                    else: download_success = False
+                                else: download_success = False
+                        except:
                             download_success = False
     else:
-        # standard yt-dlp fallback for non-IG links
         ydl_opts = {
             'outtmpl': f'{DOWNLOAD_DIR}/temp_yt_{task_id}_%(autonumber)03d_%(id)s.%(ext)s',
             'format': 'bestvideo[vcodec^=avc]+bestaudio[ext=m4a]/best[ext=mp4]/best', 
@@ -1016,12 +976,10 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
         }
         if cookie_path: ydl_opts['cookiefile'] = cookie_path
         try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl: 
-                ydl.extract_info(url, download=True)
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl: ydl.extract_info(url, download=True)
         except Exception as e:
             logger.error(f"yt-dlp extract error: {e}")
 
-    # --- POST PROCESSING LOGIC ---
     try:
         active_downloads[task_id] = "Processing Data..."
         media_files = [f for f in os.listdir(DOWNLOAD_DIR) if f.startswith(f"temp_yt_{task_id}_")]
@@ -1048,8 +1006,7 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                 primary = next((f for f in files if f.endswith(('.mp4', '.webm', '.mkv', '.mov'))), None)
                 if not primary:
                     primary = next((f for f in files if f.endswith(('.jpg', '.jpeg', '.png', '.webp', '.heic'))), files[0])
-                if not primary.endswith(valid_media_exts):
-                    return
+                if not primary.endswith(valid_media_exts): return
 
                 ext_found = primary.rsplit('.', 1)[1].lower()
                 if ext_found == 'jpeg': ext_found = 'jpg'
@@ -1092,13 +1049,9 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                             info_data = json.load(inf_f)
                             t = info_data.get('title')
                             d = info_data.get('description')
-                            
-                            if t and t.strip() and "Instagram" not in t:
-                                extracted_title = t
-                            elif d and d.strip():
-                                extracted_title = d
-                            elif t:
-                                extracted_title = t
+                            if t and t.strip() and "Instagram" not in t: extracted_title = t
+                            elif d and d.strip(): extracted_title = d
+                            elif t: extracted_title = t
                     except: pass
                 
                 extract_true_duration(new_id, user_id, url, extracted_title, f".{ext_found}", expire_days, engine="🖼️ Image" if ext_found in ['jpg', 'png', 'webp', 'jpeg'] else None)
@@ -1111,14 +1064,14 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                 sorted_bases = sorted(bases.keys())
                 
                 idx_counter = 0
+                has_video = False
                 for base in sorted_bases:
                     files = bases[base]
                     primary = next((f for f in files if f.endswith(('.mp4', '.webm', '.mkv', '.mov'))), None)
                     if not primary:
                         primary = next((f for f in files if f.endswith(('.jpg', '.jpeg', '.png', '.webp', '.heic'))), files[0])
 
-                    if not primary.endswith(valid_media_exts):
-                        continue
+                    if not primary.endswith(valid_media_exts): continue
                         
                     ext = primary.rsplit('.', 1)[1].lower()
                     if ext == 'jpeg': ext = 'jpg'
@@ -1127,6 +1080,7 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                     os.rename(os.path.join(DOWNLOAD_DIR, primary), new_media_path)
                     
                     if ext in ['mp4', 'mov', 'mkv', 'webm']:
+                        has_video = True
                         active_downloads[task_id] = "Optimizing for Mobile..."
                         new_media_path = ensure_ios_compatible_video(new_media_path)
                         actual_ext = new_media_path.rsplit('.', 1)[1].lower()
@@ -1141,177 +1095,18 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
 
                 extracted_title = "Media Carousel"
                 first_info = next((os.path.join(DOWNLOAD_DIR, f) for b in sorted_bases for f in bases[b] if f.endswith(".info.json")), None)
-                
                 if first_info and os.path.exists(first_info):
                     try:
                         with open(first_info, 'r', encoding='utf-8') as inf_f: 
                             info_data = json.load(inf_f)
                             t = info_data.get('title')
                             d = info_data.get('description')
-                            if t and t.strip() and "Instagram" not in t:
-                                extracted_title = t
-                            elif d and d.strip():
-                                extracted_title = d
-                            elif t:
-                                extracted_title = t
+                            if t and t.strip() and "Instagram" not in t: extracted_title = t
+                            elif d and d.strip(): extracted_title = d
+                            elif t: extracted_title = t
                     except: pass
 
-                gallery_html = f"""
-                <!DOCTYPE html>
-                <html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover'>
-                <title>{html.escape(extracted_title)}</title>
-                <style>
-                    * {{ box-sizing: border-box; -webkit-tap-highlight-color: transparent; }}
-                    html, body {{ margin: 0; padding: 0; background: #000; width: 100vw; height: 100dvh; min-height: -webkit-fill-available; overflow: hidden; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; user-select: none; }}
-                    
-                    .carousel-container {{ position: relative; width: 100vw; height: 100dvh; min-height: -webkit-fill-available; overflow: hidden; display: flex; align-items: center; justify-content: center; }}
-                    .carousel-track {{ display: flex; transition: transform 0.3s cubic-bezier(0.25, 1, 0.5, 1); height: 100%; width: 100%; }}
-                    .carousel-item {{ min-width: 100vw; width: 100vw; height: 100dvh; display: flex; align-items: center; justify-content: center; flex-shrink: 0; background: #000; position: relative; padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }}
-                    .carousel-item img, .carousel-item video {{ max-width: 100%; max-height: 100%; width: auto; height: auto; object-fit: contain !important; display: block; margin: auto; }}
-
-                    .btn {{ position: absolute; top: 50%; transform: translateY(-50%); background: rgba(0,0,0,0.6); color: white; border: 1px solid rgba(255,255,255,0.2); padding: 14px 16px; cursor: pointer; border-radius: 50%; font-size: 20px; z-index: 20; transition: all 0.2s; display: flex; align-items: center; justify-content: center; }}
-                    .btn:hover {{ background: rgba(0,0,0,0.9); scale: 1.1; }}
-                    .btn-prev {{ left: 15px; }}
-                    .btn-next {{ right: 15px; }}
-                    
-                    .dots {{ position: absolute; bottom: calc(20px + env(safe-area-inset-bottom, 0px)); width: 100%; display: flex; justify-content: center; align-items: center; gap: 8px; z-index: 20; pointer-events: auto; }}
-                    .dot {{ width: 10px; height: 10px; background: rgba(255,255,255,0.35); border-radius: 5px; overflow: hidden; position: relative; cursor: pointer; transition: all 0.3s ease; }}
-                    .dot.active {{ width: 28px; background: rgba(255,255,255,0.35); }}
-                    .dot-fill {{ height: 100%; width: 0%; background: #ffffff; border-radius: 5px; }}
-                    
-                    .tap-zone {{ position: absolute; top: 0; bottom: 0; width: 35%; z-index: 15; }}
-                    .tap-left {{ left: 0; }}
-                    .tap-right {{ right: 0; }}
-                </style>
-                </head><body>
-                    <div class="carousel-container" id="carousel">
-                        <div class="tap-zone tap-left" id="tapLeft"></div>
-                        <div class="tap-zone tap-right" id="tapRight"></div>
-                        <div class="carousel-track" id="track">{carousel_tags}</div>
-                        <button class="btn btn-prev" id="btnPrev" onclick="window.move(-1)">❮</button>
-                        <button class="btn btn-next" id="btnNext" onclick="window.move(1)">❯</button>
-                        <div class="dots" id="dots"></div>
-                    </div>
-                    <script>
-                        const track = document.getElementById('track');
-                        const items = track.children.length;
-                        const dotsContainer = document.getElementById('dots');
-                        let index = 0;
-                        let imgTimer = null;
-
-                        for (let i = 0; i < items; i++) {{
-                            let d = document.createElement('div');
-                            d.className = 'dot' + (i === 0 ? ' active' : '');
-                            d.onclick = (e) => {{ e.stopPropagation(); window.goTo(i); }};
-                            d.innerHTML = `<div class="dot-fill" id="fill-${{i}}"></div>`;
-                            dotsContainer.appendChild(d);
-                        }}
-
-                        const dots = dotsContainer.children;
-
-                        function updateSlide() {{
-                            if (imgTimer) clearInterval(imgTimer);
-                            document.querySelectorAll('video').forEach(v => {{ v.pause(); v.currentTime = 0; }});
-
-                            track.style.transform = `translateX(-${{index * 100}}vw)`;
-
-                            for (let i = 0; i < items; i++) {{
-                                dots[i].className = 'dot';
-                                const fill = document.getElementById(`fill-${{i}}`);
-                                if (fill) {{
-                                    fill.style.transition = 'none';
-                                    fill.style.width = i < index ? '100%' : '0%';
-                                }}
-                            }}
-                            
-                            dots[index].className = 'dot active';
-                            const currentFill = document.getElementById(`fill-${{index}}`);
-                            
-                            const currentSlide = track.children[index];
-                            const video = currentSlide.querySelector('video');
-                            
-                            if (video) {{
-                                video.play().catch(() => {{}});
-                                video.ontimeupdate = () => {{
-                                    if (video.duration && currentFill) {{
-                                        const pct = (video.currentTime / video.duration) * 100;
-                                        currentFill.style.transition = 'width 0.1s linear';
-                                        currentFill.style.width = pct + '%';
-                                    }}
-                                }};
-                                video.onended = () => {{
-                                    if (currentFill) currentFill.style.width = '100%';
-                                    if (index < items - 1) window.move(1);
-                                }};
-                            }} else {{
-                                let start = Date.now();
-                                const duration = 5000;
-                                imgTimer = setInterval(() => {{
-                                    let elapsed = Date.now() - start;
-                                    let pct = Math.min(100, (elapsed / duration) * 100);
-                                    if (currentFill) {{
-                                        currentFill.style.transition = 'width 0.1s linear';
-                                        currentFill.style.width = pct + '%';
-                                    }}
-                                    if (elapsed >= duration) {{
-                                        clearInterval(imgTimer);
-                                        if (index < items - 1) window.move(1);
-                                    }}
-                                }}, 100);
-                            }}
-                        }}
-
-                        window.move = function(dir) {{
-                            index += dir;
-                            if (index < 0) index = items - 1;
-                            if (index >= items) index = 0;
-                            updateSlide();
-                        }};
-
-                        window.goTo = function(i) {{
-                            index = i;
-                            updateSlide();
-                        }};
-
-                        let touchStartX = 0;
-                        let touchEndX = 0;
-                        const container = document.getElementById('carousel');
-
-                        container.addEventListener('touchstart', e => {{
-                            touchStartX = e.changedTouches[0].screenX;
-                        }}, {{ passive: true }});
-
-                        container.addEventListener('touchend', e => {{
-                            touchEndX = e.changedTouches[0].screenX;
-                            handleSwipe();
-                        }}, {{ passive: true }});
-
-                        function handleSwipe() {{
-                            const diff = touchStartX - touchEndX;
-                            if (Math.abs(diff) > 40) {{
-                                if (diff > 0) window.move(1);
-                                else window.move(-1);
-                            }}
-                        }}
-
-                        document.getElementById('tapLeft').onclick = (e) => {{ e.stopPropagation(); window.move(-1); }};
-                        document.getElementById('tapRight').onclick = (e) => {{ e.stopPropagation(); window.move(1); }};
-
-                        document.addEventListener('keydown', e => {{
-                            if (e.key === 'ArrowLeft') window.move(-1);
-                            if (e.key === 'ArrowRight' || e.key === ' ') window.move(1);
-                        }});
-
-                        if (items <= 1) {{
-                            document.querySelectorAll('.btn').forEach(b => b.style.display = 'none');
-                            document.querySelectorAll('.tap-zone').forEach(tz => tz.style.display = 'none');
-                            document.getElementById('dots').style.display = 'none';
-                        }}
-
-                        updateSlide();
-                    </script>
-                </body></html>
-                """
+                gallery_html = generate_carousel_html(carousel_tags, extracted_title)
                 with open(html_path, "w", encoding="utf-8") as f: f.write(gallery_html)
 
                 first_base = sorted_bases[0]
@@ -1328,13 +1123,67 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                     try: shutil.copy(os.path.join(DOWNLOAD_DIR, f"{new_id}_0.{first_ext}"), os.path.join(DOWNLOAD_DIR, f"{new_id}.jpg"))
                     except: pass
 
-                extract_true_duration(new_id, user_id, url, extracted_title, ".html", expire_days, engine="🎠 Carousel")
+                c_type = "carousel_media" if has_video else "carousel_image"
+                extract_true_duration(new_id, user_id, url, extracted_title, ".html", expire_days, engine="🎡 Carousel", carousel_type=c_type)
 
         for f in os.listdir(DOWNLOAD_DIR):
             if f.startswith(f"temp_yt_{task_id}_"):
                 try: os.remove(os.path.join(DOWNLOAD_DIR, f))
                 except: pass
 
+    finally:
+        if task_id in active_downloads: del active_downloads[task_id]
+
+def process_local_carousel(files_paths: list, filenames: list, user_id: str, task_id: str, expire_days: int):
+    new_id = generate_secure_id()
+    html_path = os.path.join(DOWNLOAD_DIR, f"{new_id}.html")
+    carousel_tags = ""
+    has_video = False
+
+    try:
+        active_downloads[task_id] = "Building Carousel..."
+        
+        for idx, (temp_path, original_name) in enumerate(zip(files_paths, filenames)):
+            ext = os.path.splitext(original_name)[1].lower()
+            if not ext: ext = ".mp4"
+            if ext == '.jpeg': ext = '.jpg'
+
+            new_media_name = f"{new_id}_{idx}{ext}"
+            new_media_path = os.path.join(DOWNLOAD_DIR, new_media_name)
+            
+            if ext in [".mp4", ".mov", ".avi", ".mkv", ".webm"]:
+                has_video = True
+                active_downloads[task_id] = f"Converting File {idx+1}..."
+                subprocess.run(["ffmpeg", "-y", "-i", temp_path, "-c:v", "libx264", "-preset", "fast", "-c:a", "aac", "-movflags", "+faststart", new_media_path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                actual_ext = ".mp4"
+                new_media_name = f"{new_id}_{idx}{actual_ext}"
+                carousel_tags += f"<div class='carousel-item' data-type='video'><video src='/videos/{new_media_name}' controls playsinline webkit-playsinline></video></div>"
+            else:
+                shutil.move(temp_path, new_media_path)
+                new_media_path = ensure_jpg_image(new_media_path)
+                actual_ext = os.path.splitext(new_media_path)[1].lower()
+                new_media_name = f"{new_id}_{idx}{actual_ext}"
+                carousel_tags += f"<div class='carousel-item' data-type='image'><img src='/videos/{new_media_name}'></div>"
+                
+            try: os.remove(temp_path)
+            except: pass
+
+        extracted_title = "Uploaded Carousel"
+        gallery_html = generate_carousel_html(carousel_tags, extracted_title)
+        with open(html_path, "w", encoding="utf-8") as f: f.write(gallery_html)
+
+        first_ext = os.path.splitext(filenames[0])[1].lower()
+        if first_ext in [".mp4", ".mov", ".avi", ".mkv", ".webm"]:
+            subprocess.run(["ffmpeg", "-y", "-i", os.path.join(DOWNLOAD_DIR, f"{new_id}_0.mp4"), "-ss", "00:00:00.100", "-vframes", "1", "-q:v", "2", f"{DOWNLOAD_DIR}/{new_id}.jpg"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        else:
+            try: shutil.copy(os.path.join(DOWNLOAD_DIR, f"{new_id}_0.jpg"), os.path.join(DOWNLOAD_DIR, f"{new_id}.jpg"))
+            except: pass
+
+        c_type = "carousel_media" if has_video else "carousel_image"
+        extract_true_duration(new_id, user_id, custom_title=extracted_title, ext=".html", expire_days=expire_days, engine="🎡 Carousel", carousel_type=c_type)
+        
+    except Exception as e:
+        logger.error(f"Local carousel error: {e}")
     finally:
         if task_id in active_downloads: del active_downloads[task_id]
 
@@ -1346,8 +1195,6 @@ def convert_local_file(input_path: str, final_path: str, video_id: str, user_id:
     extract_true_duration(video_id, user_id, custom_title=original_filename, expire_days=expire_days)
     if task_id in active_downloads: del active_downloads[task_id]
 
-# --- VIEWER, LOGIN, AND ENDPOINTS ---
-
 @app.get("/view/{video_id}")
 def view_media(video_id: str):
     safe_id = os.path.basename(video_id)
@@ -1357,8 +1204,7 @@ def view_media(video_id: str):
     if not vid: return RedirectResponse("/")
     
     ext = vid.get("ext", ".mp4")
-    if ext == ".html":
-        return RedirectResponse(f"/videos/{safe_id}.html")
+    if ext == ".html": return RedirectResponse(f"/videos/{safe_id}.html")
         
     media_url = f"/videos/{safe_id}{ext}"
     title = html.escape(vid.get("title", safe_id))
@@ -1410,40 +1256,48 @@ async def download_form(background_tasks: BackgroundTasks, url: str = Form(...),
     return {"status": "processing", "task_id": task_id}
 
 @app.post("/api/upload")
-async def upload_file_endpoint(background_tasks: BackgroundTasks, file: UploadFile = File(...), expire_days: int = Form(0), user: dict = Depends(verify_auth)):
+async def upload_file_endpoint(background_tasks: BackgroundTasks, file: list[UploadFile] = File(...), expire_days: int = Form(0), user: dict = Depends(verify_auth)):
     task_id = generate_secure_id()
-    video_id = generate_secure_id()
-    ext = os.path.splitext(file.filename)[1].lower()
-    if not ext: ext = ".mp4"
     
-    temp_path = os.path.join(DOWNLOAD_DIR, f"temp_{video_id}{ext}")
-    final_path = os.path.join(DOWNLOAD_DIR, f"{video_id}.mp4")
-    
-    with open(temp_path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
-        
-    if ext in [".mp4", ".mov", ".avi", ".mkv", ".webm"]:
-        background_tasks.add_task(convert_local_file, temp_path, final_path, video_id, user["username"], task_id, file.filename, expire_days)
+    if len(file) > 1:
+        temp_paths = []
+        filenames = []
+        for f in file:
+            t_path = os.path.join(DOWNLOAD_DIR, f"temp_{generate_secure_id()}{os.path.splitext(f.filename)[1].lower()}")
+            with open(t_path, "wb") as buffer: shutil.copyfileobj(f.file, buffer)
+            temp_paths.append(t_path)
+            filenames.append(f.filename)
+        background_tasks.add_task(process_local_carousel, temp_paths, filenames, user["username"], task_id, expire_days)
+        return {"status": "processing", "task_id": task_id}
     else:
-        target_path = os.path.join(DOWNLOAD_DIR, f"{video_id}{ext}")
-        shutil.move(temp_path, target_path)
-        extract_true_duration(video_id, user["username"], custom_title=file.filename, ext=ext, expire_days=expire_days)
+        video_id = generate_secure_id()
+        ext = os.path.splitext(file[0].filename)[1].lower()
+        if not ext: ext = ".mp4"
         
-    return {"status": "processing", "video_id": video_id}
+        temp_path = os.path.join(DOWNLOAD_DIR, f"temp_{video_id}{ext}")
+        final_path = os.path.join(DOWNLOAD_DIR, f"{video_id}.mp4")
+        
+        with open(temp_path, "wb") as buffer: shutil.copyfileobj(file[0].file, buffer)
+            
+        if ext in [".mp4", ".mov", ".avi", ".mkv", ".webm"]:
+            background_tasks.add_task(convert_local_file, temp_path, final_path, video_id, user["username"], task_id, file[0].filename, expire_days)
+        else:
+            target_path = os.path.join(DOWNLOAD_DIR, f"{video_id}{ext}")
+            shutil.move(temp_path, target_path)
+            extract_true_duration(video_id, user["username"], custom_title=file[0].filename, ext=ext, expire_days=expire_days)
+            
+        return {"status": "processing", "video_id": video_id}
 
 @app.post("/api/edit/{video_id}")
 async def edit_video(video_id: str, background_tasks: BackgroundTasks, start: str = Form(...), end: str = Form(...), mode: str = Form(...), user: dict = Depends(verify_auth)):
-    if not re.match(r'^[\d\.:]+$', start) or not re.match(r'^[\d\.:]+$', end):
-        raise StarletteHTTPException(status_code=400, detail="Invalid timestamps")
-    if mode not in ["copy", "overwrite"]:
-        raise StarletteHTTPException(status_code=400, detail="Invalid mode")
+    if not re.match(r'^[\d\.:]+$', start) or not re.match(r'^[\d\.:]+$', end): raise StarletteHTTPException(status_code=400, detail="Invalid timestamps")
+    if mode not in ["copy", "overwrite"]: raise StarletteHTTPException(status_code=400, detail="Invalid mode")
 
     safe_id = os.path.basename(video_id)
     with db_lock:
         db = load_db()
         vid = db["videos"].get(safe_id)
-        if not vid or (user["role"] != "admin" and vid["owner"] != user["username"]):
-            raise StarletteHTTPException(status_code=403, detail="Forbidden")
+        if not vid or (user["role"] != "admin" and vid["owner"] != user["username"]): raise StarletteHTTPException(status_code=403, detail="Forbidden")
 
     ext = vid.get("ext", ".mp4")
     input_path = os.path.join(DOWNLOAD_DIR, f"{safe_id}{ext}")
@@ -1468,11 +1322,10 @@ async def edit_video(video_id: str, background_tasks: BackgroundTasks, start: st
             
             try:
                 res = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", input_path], capture_output=True, text=True)
-                new_dur = float(res.stdout.strip())
                 with db_lock:
                     db = load_db()
                     if safe_id in db["videos"]:
-                        db["videos"][safe_id]["duration"] = new_dur
+                        db["videos"][safe_id]["duration"] = float(res.stdout.strip())
                         save_db(db)
             except: pass
             
@@ -1493,15 +1346,21 @@ def force_download(video_id: str):
     if not os.path.exists(target_file): raise StarletteHTTPException(status_code=404, detail="File not found")
 
     filename = f"{vid_info.get('title', safe_id)}{ext}"
-    encoded_filename = quote(filename)
-    return FileResponse(target_file, headers={"Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}"})
+    return FileResponse(target_file, headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"})
 
 @app.get("/api/videos")
 def list_videos(user: dict = Depends(verify_auth)):
     with db_lock: db = load_db()
     videos_data = []
 
-    for f in os.listdir(DOWNLOAD_DIR):
+    dir_files = os.listdir(DOWNLOAD_DIR)
+    file_sizes = {}
+    for f in dir_files:
+        if not f.startswith('temp_'):
+            try: file_sizes[f] = os.path.getsize(os.path.join(DOWNLOAD_DIR, f))
+            except: pass
+
+    for f in dir_files:
         if f.endswith(('.mp4', '.webm', '.mkv', '.html', '.jpg', '.png', '.webp')) and not f.startswith('temp_'):
             base_name = f.rsplit('.', 1)[0]
             vid_info = db["videos"].get(base_name)
@@ -1510,36 +1369,45 @@ def list_videos(user: dict = Depends(verify_auth)):
             
             expected_ext = vid_info.get("ext")
             if expected_ext:
-                if f != f"{base_name}{expected_ext}":
-                    continue
+                if f != f"{base_name}{expected_ext}": continue
             else:
-                if f.endswith(('.jpg', '.png', '.webp')) and any(os.path.exists(os.path.join(DOWNLOAD_DIR, f"{base_name}{e}")) for e in ['.mp4', '.webm', '.mkv', '.html']):
+                if f.endswith(('.jpg', '.png', '.webp')) and any(e in dir_files for e in [f"{base_name}.mp4", f"{base_name}.webm", f"{base_name}.mkv", f"{base_name}.html"]):
                     continue
 
             if user["role"] != "admin" and vid_info.get("owner") != user["username"]: continue
 
-            media_file = os.path.join(DOWNLOAD_DIR, f)
-            try:
-                added_timestamp = vid_info.get("added", os.path.getmtime(media_file))
-                size_bytes = os.path.getsize(media_file)
-            except FileNotFoundError:
-                continue
+            added_timestamp = vid_info.get("added", 0)
+            engine = vid_info.get("engine", "")
+            
+            type_str = "video"
+            if f.endswith('.html'):
+                if "Carousel" in engine:
+                    type_str = vid_info.get("carousel_type", "carousel_media")
+                else:
+                    type_str = "article"
+            elif f.endswith(('.jpg', '.png', '.webp')):
+                type_str = "image"
 
-            thumb = next((f"{base_name}{e}" for e in ['.jpg', '.webp', '.png'] if os.path.exists(os.path.join(DOWNLOAD_DIR, f"{base_name}{e}"))), None)
+            total_size_bytes = 0
+            for pf in file_sizes:
+                if pf == base_name or pf.startswith(f"{base_name}.") or pf.startswith(f"{base_name}_"):
+                    total_size_bytes += file_sizes[pf]
+
+            thumb = next((f"{base_name}{e}" for e in ['.jpg', '.webp', '.png'] if f"{base_name}{e}" in file_sizes), None)
             mins, secs = divmod(int(vid_info.get("duration", 0)), 60)
-            date_str = time.strftime("%b %d", time.localtime(added_timestamp))
+            date_str = time.strftime("%b %d", time.localtime(added_timestamp)) if added_timestamp else "Unknown"
 
             videos_data.append({
                 "id": base_name,
                 "filename": f,
-                "type": "article" if f.endswith('.html') else ("image" if f.endswith(('.jpg', '.png', '.webp')) else "video"),
+                "type": type_str,
                 "title": vid_info.get("title", f),
                 "original_url": vid_info.get("url", "#"),
                 "domain": vid_info.get("domain", "unknown"),
                 "thumbnail": thumb,
                 "duration": f"{mins}:{secs:02d}",
-                "engine": vid_info.get("engine"),
-                "size_bytes": size_bytes,
+                "engine": engine,
+                "size_bytes": total_size_bytes,
                 "date": added_timestamp,
                 "date_badge": date_str,
                 "views": vid_info.get("views", 0),
@@ -1564,11 +1432,13 @@ def rename_video(video_id: str, new_title: str = Form(...), user: dict = Depends
 
 def _delete_video_internal(safe_id: str, db: dict):
     deleted = False
-    for ext in ['.mp4', '.mkv', '.webm', '.html', '.info.json', '.jpg', '.webp', '.png']:
-        fp = os.path.join(DOWNLOAD_DIR, f"{safe_id}{ext}")
-        if os.path.exists(fp):
-            os.remove(fp)
-            deleted = True
+    for f in os.listdir(DOWNLOAD_DIR):
+        if f == safe_id or f.startswith(f"{safe_id}.") or f.startswith(f"{safe_id}_"):
+            fp = os.path.join(DOWNLOAD_DIR, f)
+            try:
+                os.remove(fp)
+                deleted = True
+            except: pass
     if deleted:
         db["deleted_count"] = db.get("deleted_count", 0) + 1
         if safe_id in db["videos"]: del db["videos"][safe_id]
@@ -1609,7 +1479,6 @@ async def event_generator():
 @app.get('/api/sse')
 async def sse(request: Request, user: dict = Depends(verify_auth)): return EventSourceResponse(event_generator())
 
-# --- STATS ENDPOINT ---
 @app.get("/api/stats")
 def get_stats(user: dict = Depends(verify_auth)):
     with db_lock:
@@ -1622,7 +1491,9 @@ def get_stats(user: dict = Depends(verify_auth)):
     used_disk = 0
     for f in os.listdir(DOWNLOAD_DIR):
         if not f.startswith('temp_'):
-            base = f.rsplit('.', 1)[0]
+            base = f.split('.')[0] if '.' in f else f
+            if '_' in base and base.count('_') > 1: base = base.rsplit('_', 1)[0]
+            
             vid = videos.get(base)
             if vid and (user["role"] == "admin" or vid.get("owner") == user["username"]):
                 try: used_disk += os.path.getsize(os.path.join(DOWNLOAD_DIR, f))
@@ -1637,7 +1508,6 @@ def get_stats(user: dict = Depends(verify_auth)):
         "bandwidth": db.get("server_bandwidth", 0)
     }
 
-# --- ADMIN ENDPOINTS ---
 @app.post("/api/users")
 def create_user(new_username: str = Form(...), new_password: str = Form(...), user: dict = Depends(verify_admin)):
     with db_lock:
@@ -1695,10 +1565,8 @@ async def cleanup_expired_media():
             to_delete = []
             for vid, data in db.get("videos", {}).items():
                 exp = data.get("expires_at", 0)
-                if exp > 0 and now > exp:
-                    to_delete.append(vid)
-            for vid in to_delete:
-                _delete_video_internal(vid, db)
+                if exp > 0 and now > exp: to_delete.append(vid)
+            for vid in to_delete: _delete_video_internal(vid, db)
             if to_delete: save_db(db)
         await asyncio.sleep(3600)
 

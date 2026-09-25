@@ -583,312 +583,106 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
     finally:
         if task_id in active_downloads: del active_downloads[task_id]
 
-
-def scrape_instagram_embed(url: str, task_id: str) -> list:
-    """The Pi-Hole Bypass: Uses Instagram's native public embed endpoints which are fully exposed, unblocked by Datadome, and avoid yt-dlp image crashes."""
-    extracted = []
-    try:
-        shortcode_match = re.search(r'/(?:p|reel|tv)/([^/?#]+)', url)
-        if not shortcode_match: return []
-        shortcode = shortcode_match.group(1)
-        
-        embed_url = f"https://www.instagram.com/p/{shortcode}/embed/captioned/"
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8'
-        }
-        
-        logger.info(f"[Instagram Task {task_id}] Querying Native Embed API (Bypasses Pi-hole & Login Walls)...")
-        r = requests.get(embed_url, headers=headers, timeout=15)
-        
-        if r.status_code == 200:
-            json_data = None
-            
-            # Method 1: additionalDataLoaded JSON
-            match = re.search(r'window\.__additionalDataLoaded\([^,]+,\s*({.+?})\);', r.text)
-            if match:
-                json_data = json.loads(match.group(1))
-                
-            # Method 2: embedded script tags
-            if not json_data:
-                soup = BeautifulSoup(r.text, 'html.parser')
-                for script in soup.find_all('script'):
-                    if script.string and 'shortcode_media' in script.string:
-                        try:
-                            m = re.search(r'({.*"shortcode_media".*})', script.string)
-                            if m: json_data = json.loads(m.group(1))
-                        except: pass
-
-            if json_data:
-                media = json_data.get('shortcode_media', {})
-                if not media:
-                    media = json_data.get('graphql', {}).get('shortcode_media', {})
-                    
-                if media:
-                    caption_text = "Instagram Media"
-                    try:
-                        edges = media.get('edge_media_to_caption', {}).get('edges', [])
-                        if edges: caption_text = edges[0]['node']['text']
-                    except: pass
-                    
-                    children = media.get('edge_sidecar_to_children', {}).get('edges', [])
-                    items = [child['node'] for child in children] if children else [media]
-                    
-                    for item in items:
-                        is_vid = item.get('is_video', False)
-                        vid_url = item.get('video_url')
-                        img_url = item.get('display_url')
-                        
-                        extracted.append({
-                            'is_video': is_vid,
-                            'vid_url': html.unescape(vid_url).replace('\\/', '/') if vid_url else None,
-                            'img_url': html.unescape(img_url).replace('\\/', '/') if img_url else None,
-                            'title': caption_text
-                        })
-                    logger.info(f"[Instagram Task {task_id}] Native Embed API successfully extracted {len(extracted)} items (Full Mixed Support).")
-                    return extracted
-        logger.info(f"[Instagram Task {task_id}] Native Embed API yielded no data.")
-    except Exception as e:
-        logger.error(f"[Instagram Task {task_id}] Native Embed API Error: {e}")
-    return extracted
-
-
-def scrape_mobile_ig_api(url: str, cookies: object, task_id: str) -> list:
-    extracted = []
-    try:
-        shortcode_match = re.search(r'/(?:p|reel|tv)/([^/?#]+)', url)
-        if not shortcode_match: return []
-        shortcode = shortcode_match.group(1)
-        
-        alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_'
-        media_id = 0
-        for char in shortcode:
-            media_id = (media_id * 64) + alphabet.index(char)
-            
-        api_url = f"https://i.instagram.com/api/v1/media/{media_id}/info/"
-        headers = {
-            'User-Agent': 'Instagram 219.0.0.12.117 Android (29/10; 300dpi; 720x1440; generic; android; qcom; en_US; 314664538)',
-            'X-IG-App-ID': '936619743392459',
-            'Accept-Language': 'en-US',
-            'Accept': '*/*'
-        }
-        
-        logger.info(f"[Instagram Task {task_id}] Querying Mobile API via i.instagram.com for media_id {media_id}...")
-        r = requests.get(api_url, headers=headers, cookies=cookies, timeout=15)
-        logger.info(f"[Instagram Task {task_id}] Mobile API response: {r.status_code}")
-        
-        if r.status_code == 200:
-            data = r.json()
-            items = data.get('items', [])
-            if not items: return []
-            
-            m = items[0]
-            caption = "Instagram Media"
-            try: caption = m.get('caption', {}).get('text', 'Instagram Media')
-            except: pass
-            
-            carousel = m.get('carousel_media', [m])
-            for item in carousel:
-                is_vid = 'video_versions' in item
-                vid_url = item['video_versions'][0].get('url') if is_vid and item.get('video_versions') else None
-                img_url = item['image_versions2']['candidates'][0].get('url') if item.get('image_versions2', {}).get('candidates') else None
-                
-                extracted.append({
-                    'is_video': is_vid,
-                    'vid_url': html.unescape(vid_url).replace('\\/', '/') if vid_url else None,
-                    'img_url': html.unescape(img_url).replace('\\/', '/') if img_url else None,
-                    'title': caption
-                })
-    except Exception as e:
-        logger.error(f"[Instagram Task {task_id}] Mobile API Error: {e}")
-    return extracted
-
-
-def scrape_cobalt_proxy(url: str, task_id: str) -> list:
-    extracted = []
-    endpoints = [
-        "https://api.cobalt.tools/",
-        "https://api.cobalt.tools/api/json"
-    ]
-    headers_cobalt = {
-        "Accept": "application/json",
-        "Content-Type": "application/json",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        "Origin": "https://cobalt.tools",
-        "Referer": "https://cobalt.tools/"
-    }
-    for ep in endpoints:
-        try:
-            logger.info(f"[Instagram Task {task_id}] Proxying via Cobalt ({ep})...")
-            r = requests.post(ep, json={"url": url}, headers=headers_cobalt, timeout=15)
-            logger.info(f"[Instagram Task {task_id}] Cobalt response: {r.status_code}")
-            if r.status_code in [200, 201, 202]:
-                data = r.json()
-                status = data.get("status")
-                if status in ["success", "stream", "redirect"]:
-                    u = data.get("url")
-                    is_vid = data.get("type") == "video" or (u and ".mp4" in u.lower())
-                    extracted.append({'is_video': is_vid, 'vid_url': u if is_vid else None, 'img_url': u if not is_vid else None, 'title': 'Instagram Media'})
-                    return extracted
-                elif status == "picker":
-                    for item in data.get("picker", []):
-                        u = item.get("url")
-                        if u:
-                            is_vid = item.get("type") == "video" or ".mp4" in u.lower()
-                            extracted.append({'is_video': is_vid, 'vid_url': u if is_vid else None, 'img_url': u if not is_vid else None, 'title': 'Instagram Media'})
-                    if extracted: return extracted
-        except Exception as e:
-            logger.error(f"[Instagram Task {task_id}] Cobalt error: {e}")
-    return extracted
-
-
 def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
     if not is_social_media_url(url):
         extract_article(url, user_id, task_id, expire_days)
         return
 
     cookie_path = get_cookie_file_for_url(url)
-    download_success = False
     valid_media_exts = ('.jpg', '.jpeg', '.png', '.webp', '.heic', '.mp4', '.mkv', '.webm', '.mov')
     cj = get_requests_cookies(cookie_path)
+    download_success = False
 
     if "instagram.com" in url:
-        # STRIP THE TRACKERS ONCE AND FOR ALL BEFORE ANY FUNCTION GETS IT
+        # STRIP TRACKERS
         url = url.split('?')[0]
         logger.info(f"[Instagram Task {task_id}] Processing Cleaned Instagram URL: {url}")
-        
         headers_cdn = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36', 'Accept': '*/*'}
 
-        # 1. MOBILE APP API SPOOFER 
-        native_items = scrape_mobile_ig_api(url, cj, task_id)
-
-        # 2. NATIVE EMBED SCRAPER (Bypasses Pi-Hole and yt-dlp completely)
-        if not native_items:
-            native_items = scrape_instagram_embed(url, task_id)
+        logger.info(f"[Instagram Task {task_id}] Proxies are blocked by Pi-Hole. Routing directly via yt-dlp...")
+        ydl_opts_ig = {
+            'extract_flat': 'in_playlist',
+            'ignoreerrors': True,
+            'verbose': False,
+            'quiet': True
+        }
+        if cookie_path: ydl_opts_ig['cookiefile'] = cookie_path
+        
+        info = None
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts_ig) as ydl:
+                info = ydl.extract_info(url, download=False)
+        except Exception as e:
+            logger.warning(f"[Instagram Task {task_id}] yt-dlp playlist extraction threw a warning: {e}")
             
-        # 3. COBALT PROXY (Last Resort API)
-        if not native_items:
-            native_items = scrape_cobalt_proxy(url, task_id)
-
-        if native_items:
+        entries = []
+        if info and 'entries' in info: entries = [e for e in info['entries'] if e]
+        elif info: entries = [info]
+            
+        if entries:
             download_success = True
-            for idx, slide in enumerate(native_items):
-                base_name = f"temp_yt_{task_id}_{idx:03d}"
-                item_saved = False
-                try:
-                    if slide['is_video'] and slide['vid_url']:
-                        r_v = requests.get(slide['vid_url'], headers=headers_cdn, cookies=cj, stream=True, timeout=25)
-                        if r_v.status_code == 200:
-                            with open(f"{DOWNLOAD_DIR}/{base_name}.mp4", 'wb') as f:
-                                for chunk in r_v.iter_content(chunk_size=8192): f.write(chunk)
-                            ensure_ios_compatible_video(f"{DOWNLOAD_DIR}/{base_name}.mp4")
-                            item_saved = True
-
-                    if slide['img_url']:
-                        r_i = requests.get(slide['img_url'], headers=headers_cdn, cookies=cj, timeout=15)
-                        if r_i.status_code == 200:
-                            with open(f"{DOWNLOAD_DIR}/{base_name}.jpg", 'wb') as f: f.write(r_i.content)
-                            if not slide['is_video'] or not item_saved:
-                                ensure_jpg_image(f"{DOWNLOAD_DIR}/{base_name}.jpg")
-                                item_saved = True
-
-                    if item_saved:
-                        with open(f"{DOWNLOAD_DIR}/{base_name}.info.json", 'w', encoding='utf-8') as f:
-                            json.dump({'title': slide['title']}, f)
-                    else:
-                        download_success = False
-                except Exception as ex:
-                    logger.error(f"[Instagram Task {task_id}] Failed to save slide {idx}: {ex}")
-                    download_success = False
-
-            if not download_success:
-                for f in os.listdir(DOWNLOAD_DIR):
-                    if f.startswith(f"temp_yt_{task_id}_"):
-                        try: os.remove(os.path.join(DOWNLOAD_DIR, f))
-                        except: pass
-
-        # 4. FALLBACK TO GALLERY-DL 
-        if not download_success:
-            logger.info(f"[Instagram Task {task_id}] Web extractors failed. Falling back to gallery-dl...")
-            try:
-                if shutil.which("gallery-dl"):
-                    temp_dl_dir = os.path.join(DOWNLOAD_DIR, f"gallery_dl_{task_id}")
-                    os.makedirs(temp_dl_dir, exist_ok=True)
-                    cmd = ["gallery-dl", "-D", temp_dl_dir, url]
-                    if cookie_path: cmd.extend(["--cookies", cookie_path])
-                    
-                    res = subprocess.run(cmd, capture_output=True, text=True)
-                    extracted = []
-                    if os.path.exists(temp_dl_dir):
-                        for root, dirs, files in os.walk(temp_dl_dir):
-                            for f in files:
-                                if f.lower().endswith(valid_media_exts):
-                                    extracted.append(os.path.join(root, f))
-                    
-                    if extracted:
-                        extracted.sort()
-                        for idx, filepath in enumerate(extracted):
-                            ext = filepath.rsplit('.', 1)[-1].lower() if '.' in filepath else 'jpg'
-                            if ext == 'jpeg': ext = 'jpg'
-                            target_temp = os.path.join(DOWNLOAD_DIR, f"temp_yt_{task_id}_{idx:03d}.{ext}")
-                            shutil.move(filepath, target_temp)
-                            if ext in ['mp4', 'mov', 'mkv', 'webm']: ensure_ios_compatible_video(target_temp)
-                            else: ensure_jpg_image(target_temp)
-                            with open(os.path.join(DOWNLOAD_DIR, f"temp_yt_{task_id}_{idx:03d}.info.json"), 'w', encoding='utf-8') as f:
-                                json.dump({'title': 'Instagram Media'}, f)
-                        download_success = True
-                    shutil.rmtree(temp_dl_dir, ignore_errors=True)
-            except Exception as e:
-                logger.error(f"[Instagram Task {task_id}] gallery-dl exception: {e}")
-
-        # 5. FINAL FALLBACK: YT-DLP 
-        if not download_success:
-            logger.info(f"[Instagram Task {task_id}] gallery-dl failed. Final Fallback to yt-dlp...")
-            ydl_opts_ig = {
-                'outtmpl': f'{DOWNLOAD_DIR}/temp_yt_{task_id}_%(autonumber)03d_%(id)s.%(ext)s',
-                'format': 'best',
-                'extract_flat': 'in_playlist',
-                'ignoreerrors': True,
-                'verbose': False
-            }
-            if cookie_path: ydl_opts_ig['cookiefile'] = cookie_path
-            
-            info = None
-            try:
-                with yt_dlp.YoutubeDL(ydl_opts_ig) as ydl:
-                    info = ydl.extract_info(url, download=False)
-            except Exception as e:
-                logger.warning(f"[Instagram Task {task_id}] yt-dlp threw a known IG extractor error: {e}")
-                
-            entries = []
-            if info and 'entries' in info: entries = [e for e in info['entries'] if e]
-            elif info: entries = [info]
-                
             for idx, e in enumerate(entries):
-                is_vid = e.get('is_video') == True or e.get('ext') == 'mp4'
+                slide_url = e.get('url') or e.get('webpage_url') or url
                 base_name = f"temp_yt_{task_id}_{idx:03d}"
                 
-                if is_vid:
-                    dl_opts = {'outtmpl': os.path.join(DOWNLOAD_DIR, f"{base_name}.%(ext)s"), 'format': 'best', 'ignoreerrors': True, 'postprocessor_args': {'ffmpeg': ['-movflags', '+faststart']}}
-                    if cookie_path: dl_opts['cookiefile'] = cookie_path
+                # 1. ATTEMPT TO DOWNLOAD AS VIDEO FIRST
+                dl_opts = {
+                    'outtmpl': os.path.join(DOWNLOAD_DIR, f"{base_name}.%(ext)s"), 
+                    'format': 'best', 
+                    'quiet': True,
+                    'postprocessor_args': {'ffmpeg': ['-movflags', '+faststart']}
+                }
+                if cookie_path: dl_opts['cookiefile'] = cookie_path
+                
+                video_success = False
+                try:
+                    with yt_dlp.YoutubeDL(dl_opts) as ydl_vid:
+                        # We don't use ignoreerrors here, so it raises if it hits an image
+                        res = ydl_vid.download([slide_url])
+                        if res == 0:
+                            video_success = True
+                            vid_p = os.path.join(DOWNLOAD_DIR, f"{base_name}.mp4")
+                            if os.path.exists(vid_p): ensure_ios_compatible_video(vid_p)
+                            with open(os.path.join(DOWNLOAD_DIR, f"{base_name}.info.json"), 'w', encoding='utf-8') as f: 
+                                json.dump({'title': "Instagram Video"}, f)
+                except Exception as vid_e:
+                    logger.info(f"[Instagram Task {task_id}] Slide {idx} failed video download (likely an image). Retrying as image...")
+                
+                # 2. IF IT FAILED, IT'S AN IMAGE! EXTRACT RAW JSON & BYPASS FORMAT CHECKS
+                if not video_success:
+                    raw_opts = {'quiet': True, 'ignoreerrors': True}
+                    if cookie_path: raw_opts['cookiefile'] = cookie_path
                     try:
-                        with yt_dlp.YoutubeDL(dl_opts) as ydl_vid: ydl_vid.download([e.get('url') or e.get('webpage_url') or url])
-                        vid_p = os.path.join(DOWNLOAD_DIR, f"{base_name}.mp4")
-                        if os.path.exists(vid_p): ensure_ios_compatible_video(vid_p)
-                        with open(os.path.join(DOWNLOAD_DIR, f"{base_name}.info.json"), 'w', encoding='utf-8') as f: json.dump({'title': "Instagram Video"}, f)
-                    except Exception: pass
-                else:
-                    img_url = e.get('url') or e.get('thumbnail')
-                    if img_url:
-                        try:
-                            r_img = requests.get(img_url, headers=headers_cdn, timeout=15)
-                            if r_img.status_code == 200:
-                                with open(os.path.join(DOWNLOAD_DIR, f"{base_name}.jpg"), 'wb') as f: f.write(r_img.content)
-                                ensure_jpg_image(os.path.join(DOWNLOAD_DIR, f"{base_name}.jpg"))
-                                with open(os.path.join(DOWNLOAD_DIR, f"{base_name}.info.json"), 'w', encoding='utf-8') as f: json.dump({'title': "Instagram Photo"}, f)
-                        except Exception: pass
+                        with yt_dlp.YoutubeDL(raw_opts) as ydl_raw:
+                            # process=False prevents it from looking for a video stream and crashing!
+                            slide_info = ydl_raw.extract_info(slide_url, download=False, process=False)
+                            img_url = None
+                            
+                            if slide_info:
+                                if slide_info.get('thumbnails'):
+                                    img_url = slide_info['thumbnails'][-1]['url']  # Highest resolution thumbnail
+                                elif slide_info.get('url'):
+                                    img_url = slide_info['url']
+                                    
+                            if not img_url: img_url = e.get('thumbnail')
 
+                            if img_url:
+                                r_img = requests.get(img_url, headers=headers_cdn, timeout=15)
+                                if r_img.status_code == 200:
+                                    with open(os.path.join(DOWNLOAD_DIR, f"{base_name}.jpg"), 'wb') as f: f.write(r_img.content)
+                                    ensure_jpg_image(os.path.join(DOWNLOAD_DIR, f"{base_name}.jpg"))
+                                    with open(os.path.join(DOWNLOAD_DIR, f"{base_name}.info.json"), 'w', encoding='utf-8') as f: 
+                                        json.dump({'title': "Instagram Photo"}, f)
+                                    logger.info(f"[Instagram Task {task_id}] Successfully extracted image for slide {idx}.")
+                                else:
+                                    download_success = False
+                            else:
+                                download_success = False
+                    except Exception as img_e:
+                        logger.error(f"[Instagram Task {task_id}] Image fallback failed for slide {idx}: {img_e}")
+                        download_success = False
     else:
+        # standard yt-dlp fallback for non-IG links
         ydl_opts = {
             'outtmpl': f'{DOWNLOAD_DIR}/temp_yt_{task_id}_%(autonumber)03d_%(id)s.%(ext)s',
             'format': 'bestvideo[vcodec^=avc]+bestaudio[ext=m4a]/best[ext=mp4]/best', 
@@ -907,6 +701,7 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
         except Exception as e:
             logger.error(f"yt-dlp extract error: {e}")
 
+    # --- POST PROCESSING LOGIC ---
     try:
         active_downloads[task_id] = "Processing Data..."
         media_files = [f for f in os.listdir(DOWNLOAD_DIR) if f.startswith(f"temp_yt_{task_id}_")]

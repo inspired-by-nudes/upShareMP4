@@ -62,7 +62,7 @@ def get_requests_cookies(cookie_path: str):
 
 def is_social_media_url(url: str) -> bool:
     domain = urlparse(url).netloc.lower()
-    social_domains = ["instagram.com", "tiktok.com", "youtube.com", "youtu.be", "vimeo.com", "twitter.com", "x.com", "bsky.app", "reddit.com"]
+    social_domains = ["instagram.com", "tiktok.com", "youtube.com", "youtu.be", "vimeo.com", "twitter.com", "x.com", "bsky.app", "reddit.com", "redd.it"]
     return any(d in domain for d in social_domains)
 
 def load_db():
@@ -432,6 +432,13 @@ def clean_html_with_ai(raw_html: str) -> tuple:
     return raw_html, "📄 Readability"
 
 def process_embed_post(url: str, user_id: str, task_id: str, expire_days: int) -> bool:
+    # Unroll shortened reddit links so oEmbed endpoints match cleanly
+    if "redd.it" in url or "/s/" in url:
+        try:
+            r = requests.head(url, allow_redirects=True, timeout=5, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'})
+            url = r.url
+        except: pass
+
     domain = urlparse(url).netloc.lower()
     new_id = generate_secure_id()
     html_path = os.path.join(DOWNLOAD_DIR, f"{new_id}.html")
@@ -453,35 +460,55 @@ def process_embed_post(url: str, user_id: str, task_id: str, expire_days: int) -
 
     try:
         active_downloads[task_id] = f"Fetching {platform} Post..."
-        res = requests.get(oembed_endpoint, timeout=10)
+        # Reddit aggressively blocks Python default headers. We MUST spoof a browser.
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'}
+        res = requests.get(oembed_endpoint, headers=headers, timeout=10)
+        
         if res.status_code == 200:
             data = res.json()
             embed_html = data.get("html", "")
             
             author = data.get("author_name")
-            title = f"Post by {author}" if author else "Social Media Post"
+            title = f"Post by {author}" if author else f"{platform} Post"
             
             thumb_url = data.get("thumbnail_url")
             
+            # Cascade 1: Let yt-dlp find attached high-res media thumbnails
             if not thumb_url:
                 try:
-                    h = {'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)'}
-                    page_res = requests.get(url, headers=h, timeout=8)
-                    if page_res.status_code == 200:
-                        s = BeautifulSoup(page_res.content, 'html.parser')
-                        og_img = s.find('meta', property='og:image') or s.find('meta', attrs={'name': 'twitter:image'})
-                        if og_img and og_img.get('content'):
-                            thumb_url = og_img.get('content')
-                except Exception:
-                    pass
+                    with yt_dlp.YoutubeDL({'quiet': True, 'ignoreerrors': True}) as ydl:
+                        info = ydl.extract_info(url, download=False)
+                        if info and info.get('thumbnail'):
+                            thumb_url = info.get('thumbnail')
+                except Exception: pass
+
+            # Cascade 2: Let the free Microlink API hunt for the exact OpenGraph image
+            if not thumb_url:
+                try:
+                    res_ml = requests.get(f"https://api.microlink.io?url={quote(url)}", timeout=8)
+                    if res_ml.status_code == 200:
+                        thumb_url = res_ml.json().get('data', {}).get('image', {}).get('url')
+                except Exception: pass
+            
+            # Cascade 3: Command Thum.io to generate a live headless-browser screenshot
+            if not thumb_url:
+                thumb_url = f"https://image.thum.io/get/width/1200/crop/800/noanimate/{url}"
 
             if thumb_url:
                 try:
-                    t_res = requests.get(thumb_url, timeout=10)
-                    if t_res.status_code == 200:
+                    t_res = requests.get(thumb_url, headers=headers, timeout=15)
+                    # Validate the image isn't an empty payload
+                    if t_res.status_code == 200 and len(t_res.content) > 1000:
                         with open(os.path.join(DOWNLOAD_DIR, f"{new_id}.jpg"), "wb") as tf:
                             tf.write(t_res.content)
-                except Exception: pass
+                    else:
+                        raise ValueError("Empty image")
+                except Exception:
+                    # Absolute Cascade 4: Write a high-res platform logo
+                    try:
+                        f_res = requests.get(f"https://www.google.com/s2/favicons?domain={domain}&sz=256", headers=headers)
+                        with open(os.path.join(DOWNLOAD_DIR, f"{new_id}.jpg"), "wb") as tf: tf.write(f_res.content)
+                    except: pass
 
             og_image_meta = f'<meta property="og:image" content="/videos/{new_id}.jpg"><meta name="twitter:image" content="/videos/{new_id}.jpg">' if os.path.exists(os.path.join(DOWNLOAD_DIR, f"{new_id}.jpg")) else ''
 
@@ -949,7 +976,18 @@ def scrape_cobalt_fleet(url: str, task_id: str) -> list:
     return extracted
 
 def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
-    if ("twitter.com" in url or "x.com" in url or "bsky.app" in url or "reddit.com" in url) and ("/status/" in url or "/post/" in url or "/comments/" in url):
+    # Map all variants of embed targets
+    domain = urlparse(url).netloc.lower()
+    is_embed_target = False
+    
+    if "twitter.com" in domain or "x.com" in domain:
+        if "/status/" in url: is_embed_target = True
+    elif "bsky.app" in domain:
+        if "/post/" in url: is_embed_target = True
+    elif "reddit.com" in domain or "redd.it" in domain:
+        if "/comments/" in url or "/s/" in url or "redd.it" in domain: is_embed_target = True
+
+    if is_embed_target:
         if process_embed_post(url, user_id, task_id, expire_days):
             if task_id in active_downloads: del active_downloads[task_id]
             return
@@ -1194,7 +1232,7 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                             total_duration += float(res.stdout.strip())
                         except Exception: pass
 
-                        carousel_tags += f"<div class='carousel-item' data-type='video'><video src='/videos/{new_media_name}' controls muted playsinline></video></div>"
+                        carousel_tags += f"<div class='carousel-item' data-type='video'><video src='/videos/{new_media_name}' autoplay muted playsinline loop></video></div>"
                     else:
                         new_media_path = ensure_jpg_image(new_media_path)
                         actual_ext = new_media_path.rsplit('.', 1)[1].lower()
@@ -1273,7 +1311,7 @@ def process_local_carousel(files_paths: list, filenames: list, user_id: str, tas
                     total_duration += float(res.stdout.strip())
                 except Exception: pass
 
-                carousel_tags += f"<div class='carousel-item' data-type='video'><video src='/videos/{new_media_name}' controls muted playsinline></video></div>"
+                carousel_tags += f"<div class='carousel-item' data-type='video'><video src='/videos/{new_media_name}' autoplay muted playsinline loop></video></div>"
             else:
                 shutil.move(temp_path, new_media_path)
                 new_media_path = ensure_jpg_image(new_media_path)

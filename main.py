@@ -62,7 +62,7 @@ def get_requests_cookies(cookie_path: str):
 
 def is_social_media_url(url: str) -> bool:
     domain = urlparse(url).netloc.lower()
-    social_domains = ["instagram.com", "tiktok.com", "youtube.com", "youtu.be", "vimeo.com", "twitter.com", "x.com", "bsky.app"]
+    social_domains = ["instagram.com", "tiktok.com", "youtube.com", "youtu.be", "vimeo.com", "twitter.com", "x.com", "bsky.app", "reddit.com"]
     return any(d in domain for d in social_domains)
 
 def load_db():
@@ -306,6 +306,7 @@ def generate_carousel_html(carousel_tags: str, extracted_title: str) -> str:
                 const video = currentSlide.querySelector('video');
                 
                 if (video) {{
+                    video.muted = true;
                     video.play().catch(() => {{}});
                     video.ontimeupdate = () => {{
                         if (video.duration && currentFill) {{
@@ -438,13 +439,15 @@ def process_embed_post(url: str, user_id: str, task_id: str, expire_days: int) -
     if "twitter.com" in domain or "x.com" in domain:
         oembed_endpoint = f"https://publish.twitter.com/oembed?url={quote(url)}&theme=dark"
         platform = "Twitter"
-        engine = "🐦 Twitter"
         script_tag = '<script async src="https://platform.twitter.com/widgets.js" charset="utf-8"></script>'
     elif "bsky.app" in domain:
         oembed_endpoint = f"https://embed.bsky.app/oembed?url={quote(url)}"
         platform = "Bluesky"
-        engine = "🦋 Bluesky"
         script_tag = '<script async src="https://embed.bsky.app/static/embed.js" charset="utf-8"></script>'
+    elif "reddit.com" in domain:
+        oembed_endpoint = f"https://www.reddit.com/oembed?url={quote(url)}"
+        platform = "Reddit"
+        script_tag = '<script async src="https://embed.redditmedia.com/widgets.js" charset="utf-8"></script>'
     else:
         return False
 
@@ -454,11 +457,24 @@ def process_embed_post(url: str, user_id: str, task_id: str, expire_days: int) -
         if res.status_code == 200:
             data = res.json()
             embed_html = data.get("html", "")
-            title = data.get("author_name", f"{platform} Post")
-            if not title.startswith("Post"):
-                title = f"{platform} Post by {title}"
+            
+            author = data.get("author_name")
+            title = f"Post by {author}" if author else "Social Media Post"
             
             thumb_url = data.get("thumbnail_url")
+            
+            if not thumb_url:
+                try:
+                    h = {'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)'}
+                    page_res = requests.get(url, headers=h, timeout=8)
+                    if page_res.status_code == 200:
+                        s = BeautifulSoup(page_res.content, 'html.parser')
+                        og_img = s.find('meta', property='og:image') or s.find('meta', attrs={'name': 'twitter:image'})
+                        if og_img and og_img.get('content'):
+                            thumb_url = og_img.get('content')
+                except Exception:
+                    pass
+
             if thumb_url:
                 try:
                     t_res = requests.get(thumb_url, timeout=10)
@@ -467,9 +483,16 @@ def process_embed_post(url: str, user_id: str, task_id: str, expire_days: int) -
                             tf.write(t_res.content)
                 except Exception: pass
 
+            og_image_meta = f'<meta property="og:image" content="/videos/{new_id}.jpg"><meta name="twitter:image" content="/videos/{new_id}.jpg">' if os.path.exists(os.path.join(DOWNLOAD_DIR, f"{new_id}.jpg")) else ''
+
             full_page = f"""<!DOCTYPE html>
             <html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1.0'>
             <title>{html.escape(title)}</title>
+            <meta property="og:title" content="{html.escape(title)}">
+            <meta property="og:type" content="article">
+            <meta property="og:description" content="View post on upShareMedia">
+            {og_image_meta}
+            <meta name="twitter:card" content="summary_large_image">
             <style>
                 body {{ font-family: system-ui, sans-serif; background: #121212; color: #fff; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; padding: 20px; box-sizing: border-box; }}
                 .embed-wrapper {{ max-width: 550px; width: 100%; margin: 0 auto; display: flex; justify-content: center; }}
@@ -482,7 +505,7 @@ def process_embed_post(url: str, user_id: str, task_id: str, expire_days: int) -
             with open(html_path, "w", encoding="utf-8") as f:
                 f.write(full_page)
             
-            extract_true_duration(new_id, user_id, url, title, ".html", expire_days, engine=engine)
+            extract_true_duration(new_id, user_id, url, title, ".html", expire_days, engine="📰 Post")
             return True
     except Exception as e:
         logger.error(f"Embed processing failed for {url}: {e}")
@@ -507,8 +530,7 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
 
         orig_soup = BeautifulSoup(r.content, 'html.parser')
 
-        # Intercept and preserve Twitter/X & Bluesky embeds before cleaning
-        for bq in list(orig_soup.find_all('blockquote', class_=re.compile(r'(twitter-tweet|bsky-embed)', re.I))):
+        for bq in list(orig_soup.find_all('blockquote', class_=re.compile(r'(twitter-tweet|bsky-embed|reddit-embed-bq)', re.I))):
             marker = orig_soup.new_tag('p')
             marker.string = f"___UPSHARE_EMBED___RAW:{quote(str(bq))}___"
             bq.replace_with(marker)
@@ -733,7 +755,7 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
         for i in range(len(bq_list) - 1, 0, -1):
             curr_bq = bq_list[i]
             prev_bq = bq_list[i - 1]
-            if prev_bq.find_next_sibling() == curr_bq and 'twitter-tweet' not in curr_bq.get('class', []) and 'bsky-embed' not in curr_bq.get('class', []):
+            if prev_bq.find_next_sibling() == curr_bq and 'twitter-tweet' not in curr_bq.get('class', []) and 'bsky-embed' not in curr_bq.get('class', []) and 'reddit-embed-bq' not in curr_bq.get('class', []):
                 prev_bq.append(ai_soup.new_tag('br'))
                 for child in list(curr_bq.contents): prev_bq.append(child)
                 curr_bq.decompose()
@@ -791,6 +813,7 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
             <div>{final_html}</div>
             <script async src="https://platform.twitter.com/widgets.js" charset="utf-8"></script>
             <script async src="https://embed.bsky.app/static/embed.js" charset="utf-8"></script>
+            <script async src="https://embed.redditmedia.com/widgets.js" charset="utf-8"></script>
         </body></html>
         """
         with open(html_path, "w", encoding="utf-8") as f: f.write(clean_page)
@@ -926,8 +949,7 @@ def scrape_cobalt_fleet(url: str, task_id: str) -> list:
     return extracted
 
 def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
-    # Check if URL is Twitter/X or Bluesky post for oEmbed snapshot
-    if ("twitter.com" in url or "x.com" in url or "bsky.app" in url) and ("/status/" in url or "/post/" in url):
+    if ("twitter.com" in url or "x.com" in url or "bsky.app" in url or "reddit.com" in url) and ("/status/" in url or "/post/" in url or "/comments/" in url):
         if process_embed_post(url, user_id, task_id, expire_days):
             if task_id in active_downloads: del active_downloads[task_id]
             return
@@ -1172,7 +1194,7 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                             total_duration += float(res.stdout.strip())
                         except Exception: pass
 
-                        carousel_tags += f"<div class='carousel-item' data-type='video'><video src='/videos/{new_media_name}' controls playsinline webkit-playsinline></video></div>"
+                        carousel_tags += f"<div class='carousel-item' data-type='video'><video src='/videos/{new_media_name}' controls muted playsinline></video></div>"
                     else:
                         new_media_path = ensure_jpg_image(new_media_path)
                         actual_ext = new_media_path.rsplit('.', 1)[1].lower()
@@ -1251,7 +1273,7 @@ def process_local_carousel(files_paths: list, filenames: list, user_id: str, tas
                     total_duration += float(res.stdout.strip())
                 except Exception: pass
 
-                carousel_tags += f"<div class='carousel-item' data-type='video'><video src='/videos/{new_media_name}' controls playsinline webkit-playsinline></video></div>"
+                carousel_tags += f"<div class='carousel-item' data-type='video'><video src='/videos/{new_media_name}' controls muted playsinline></video></div>"
             else:
                 shutil.move(temp_path, new_media_path)
                 new_media_path = ensure_jpg_image(new_media_path)
@@ -1304,7 +1326,7 @@ def view_media(video_id: str):
     title = html.escape(vid.get("title", safe_id))
     
     if ext in [".mp4", ".webm", ".mkv", ".mov"]:
-        content = f'<video src="{media_url}" controls autoplay playsinline style="max-width:100%; max-height:100%; width:auto; height:auto; object-fit:contain; outline:none; display:block; margin:auto;"></video>'
+        content = f'<video src="{media_url}" controls autoplay muted playsinline loop style="max-width:100%; max-height:100%; width:auto; height:auto; object-fit:contain; outline:none; display:block; margin:auto;"></video>'
     else:
         content = f'<img src="{media_url}" style="max-width:100%; max-height:100%; width:auto; height:auto; object-fit:contain; display:block; margin:auto;">'
         

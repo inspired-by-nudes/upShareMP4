@@ -128,6 +128,23 @@
 
         #backToTop { display: none; position: fixed; bottom: 30px; right: 30px; z-index: 99; border: none; outline: none; background-color: #ff8c00; color: white; cursor: pointer; width: 50px; height: 50px; padding: 0; border-radius: 50%; font-size: 20px; font-weight: bold; box-shadow: 0 4px 8px rgba(0,0,0,0.3); transition: opacity 0.3s; align-items: center; justify-content: center; }
         #backToTop:hover { background-color: #e07b00; }
+
+        /* Drag and Drop Overlay Styles */
+        .drag-overlay {
+            position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
+            background: rgba(18, 18, 18, 0.95); z-index: 9999;
+            display: flex; align-items: center; justify-content: center;
+            opacity: 0; visibility: hidden; transition: opacity 0.2s ease;
+        }
+        .drag-overlay.active {
+            opacity: 1; visibility: visible;
+        }
+        .drag-box {
+            border: 4px dashed #ff8c00; border-radius: 12px;
+            padding: 50px; text-align: center; color: #ff8c00; background: rgba(0,0,0,0.5);
+            pointer-events: none; /* Crucial: stops overlay elements from interrupting dragleave */
+        }
+        .drag-box h2 { margin: 0; font-size: 2.5rem; }
     </style>
 </head>
 <body>
@@ -186,6 +203,13 @@
         </div>
     </div>
 
+    <!-- Drag & Drop Visual Indicator -->
+    <div id="dragOverlay" class="drag-overlay">
+        <div class="drag-box">
+            <h2>⬆️ Drop Files to Upload</h2>
+        </div>
+    </div>
+
     <button id="backToTop" onclick="window.scrollTo({top: 0, behavior: 'smooth'})">↑</button>
     <div id="toast">copied to clipboard!</div>
     <div id="bulk-action-bar" onclick="processBulkDelete()">Delete Selected Items (0)</div>
@@ -194,7 +218,7 @@
     <div id="editor-modal" class="modal" onclick="closeEditorModal(event)">
         <div class="dialog-box">
             <h3 style="margin-top:0; border-bottom:1px solid #333; padding-bottom:10px;">Media Clipper</h3>
-            <video id="editorVideo" controls autoplay muted playsinline style="width:100%; max-height:40vh; background:#000; border-radius: 4px;"></video>
+            <video id="editorVideo" controls playsinline style="width:100%; max-height:40vh; background:#000; border-radius: 4px;"></video>
 
             <div style="margin-top: 20px;">
                 <label style="color:#aaa; font-size:0.85rem; display:flex; justify-content:space-between; font-weight:bold;"><span>Start Time:</span><span id="lblStart" style="color:#fff;">00:00:00</span></label>
@@ -373,7 +397,7 @@
         }
 
         async function uploadFile(e) {
-            e.preventDefault();
+            if(e) e.preventDefault();
             const fi = document.getElementById('localFile'), exp = document.getElementById('fileExpire').value;
             if (!fi.files.length) return;
             
@@ -393,6 +417,62 @@
             delete currentTasks[tempTaskId];
             checkAuthAndLoad();
         }
+
+        // --- Drag & Drop Global Handlers ---
+        let dragCounter = 0; // Tracks events to prevent flickering when hovering over children
+        
+        document.addEventListener('dragenter', (e) => {
+            e.preventDefault();
+            if (isLoggedIn) {
+                dragCounter++;
+                document.getElementById('dragOverlay').classList.add('active');
+            }
+        });
+
+        document.addEventListener('dragover', (e) => {
+            e.preventDefault(); // Required to allow a drop event to trigger
+        });
+
+        document.addEventListener('dragleave', (e) => {
+            e.preventDefault();
+            if (isLoggedIn) {
+                dragCounter--;
+                if (dragCounter <= 0) {
+                    document.getElementById('dragOverlay').classList.remove('active');
+                    dragCounter = 0;
+                }
+            }
+        });
+
+        document.addEventListener('drop', async (e) => {
+            e.preventDefault();
+            dragCounter = 0;
+            document.getElementById('dragOverlay').classList.remove('active');
+
+            if (!isLoggedIn) return;
+
+            const files = e.dataTransfer.files;
+            if (!files || files.length === 0) return;
+
+            // Route dropped files directly through the upload API
+            const tempTaskId = "temp_up_" + Date.now();
+            currentTasks[tempTaskId] = "Uploading..."; 
+            renderUnifiedGrid();
+            
+            const fd = new FormData(); 
+            for (let i = 0; i < files.length; i++) {
+                fd.append('file', files[i]);
+            }
+            fd.append('expire_days', document.getElementById('fileExpire').value);
+            
+            // Switch UI segment for better visual feedback
+            switchSegment('upload'); 
+            
+            await fetch('/api/upload', { method: 'POST', body: fd }); 
+            
+            delete currentTasks[tempTaskId];
+            checkAuthAndLoad();
+        });
 
         function triggerDelete(videoId, btnElement) {
             if(confirm("Permanently delete?")) {
@@ -566,6 +646,16 @@
             document.body.classList.add('modal-open');
             document.getElementById('editorVideoId').value = id;
             vPlayer.src = url;
+            
+            // Smart Autoplay logic
+            let p = vPlayer.play();
+            if (p !== undefined) {
+                p.catch(() => {
+                    vPlayer.muted = true;
+                    vPlayer.play().catch(e => console.log('Autoplay fully blocked:', e));
+                });
+            }
+            
             document.getElementById('editor-modal').style.display = 'flex';
         }
 

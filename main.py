@@ -306,8 +306,13 @@ def generate_carousel_html(carousel_tags: str, extracted_title: str) -> str:
                 const video = currentSlide.querySelector('video');
                 
                 if (video) {{
-                    video.muted = true;
-                    video.play().catch(() => {{}});
+                    let p = video.play();
+                    if (p !== undefined) {{
+                        p.catch(() => {{
+                            video.muted = true;
+                            video.play().catch(() => {{}});
+                        }});
+                    }}
                     video.ontimeupdate = () => {{
                         if (video.duration && currentFill) {{
                             const pct = (video.currentTime / video.duration) * 100;
@@ -432,83 +437,104 @@ def clean_html_with_ai(raw_html: str) -> tuple:
     return raw_html, "📄 Readability"
 
 def process_embed_post(url: str, user_id: str, task_id: str, expire_days: int) -> bool:
-    # Unroll shortened reddit links so oEmbed endpoints match cleanly
     if "redd.it" in url or "/s/" in url:
         try:
             r = requests.head(url, allow_redirects=True, timeout=5, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'})
-            url = r.url
+            if r.status_code in [301, 302] and r.headers.get('location'):
+                url = r.headers['location']
         except: pass
 
     domain = urlparse(url).netloc.lower()
     new_id = generate_secure_id()
     html_path = os.path.join(DOWNLOAD_DIR, f"{new_id}.html")
     
+    thumb_url = None
+    title = "📰 Post"
+    platform = ""
+    script_tag = ""
+
     if "twitter.com" in domain or "x.com" in domain:
-        oembed_endpoint = f"https://publish.twitter.com/oembed?url={quote(url)}&theme=dark"
         platform = "Twitter"
         script_tag = '<script async src="https://platform.twitter.com/widgets.js" charset="utf-8"></script>'
+        oembed_endpoint = f"https://publish.twitter.com/oembed?url={quote(url)}&theme=dark"
+        
+        try:
+            vx_url = url.replace("twitter.com", "api.vxtwitter.com").replace("x.com", "api.vxtwitter.com")
+            vx_res = requests.get(vx_url, timeout=5)
+            if vx_res.status_code == 200:
+                vx_data = vx_res.json()
+                if vx_data.get("mediaURLs"):
+                    thumb_url = vx_data["mediaURLs"][0]
+                else:
+                    thumb_url = vx_data.get("user_profile_image_url")
+                if vx_data.get('user_name'):
+                    title = f"Post by {vx_data['user_name']}"
+        except: pass
+
     elif "bsky.app" in domain:
-        oembed_endpoint = f"https://embed.bsky.app/oembed?url={quote(url)}"
         platform = "Bluesky"
         script_tag = '<script async src="https://embed.bsky.app/static/embed.js" charset="utf-8"></script>'
+        oembed_endpoint = f"https://embed.bsky.app/oembed?url={quote(url)}"
+
     elif "reddit.com" in domain:
-        oembed_endpoint = f"https://www.reddit.com/oembed?url={quote(url)}"
         platform = "Reddit"
         script_tag = '<script async src="https://embed.redditmedia.com/widgets.js" charset="utf-8"></script>'
+        oembed_endpoint = f"https://www.reddit.com/oembed?url={quote(url)}"
+        
+        try:
+            json_url = url.split('?')[0]
+            if not json_url.endswith('/'): json_url += '/'
+            json_url += '.json'
+            r_res = requests.get(json_url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}, timeout=5)
+            if r_res.status_code == 200:
+                post_data = r_res.json()[0]['data']['children'][0]['data']
+                title = f"Post in r/{post_data.get('subreddit', 'Reddit')}"
+                if post_data.get('url') and post_data.get('url').endswith(('.jpg', '.png')):
+                    thumb_url = post_data.get('url')
+                elif post_data.get('thumbnail') and post_data.get('thumbnail').startswith('http'):
+                    thumb_url = post_data.get('thumbnail')
+        except: pass
     else:
         return False
 
     try:
         active_downloads[task_id] = f"Fetching {platform} Post..."
-        # Reddit aggressively blocks Python default headers. We MUST spoof a browser.
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'}
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
         res = requests.get(oembed_endpoint, headers=headers, timeout=10)
         
         if res.status_code == 200:
             data = res.json()
             embed_html = data.get("html", "")
             
-            author = data.get("author_name")
-            title = f"Post by {author}" if author else f"{platform} Post"
+            if title == "📰 Post":
+                author = data.get("author_name")
+                title = f"Post by {author}" if author else f"{platform} Post"
             
-            thumb_url = data.get("thumbnail_url")
-            
-            # Cascade 1: Let yt-dlp find attached high-res media thumbnails
             if not thumb_url:
+                thumb_url = data.get("thumbnail_url")
+            
+            if not thumb_url and platform == "Bluesky":
                 try:
-                    with yt_dlp.YoutubeDL({'quiet': True, 'ignoreerrors': True}) as ydl:
-                        info = ydl.extract_info(url, download=False)
-                        if info and info.get('thumbnail'):
-                            thumb_url = info.get('thumbnail')
-                except Exception: pass
-
-            # Cascade 2: Let the free Microlink API hunt for the exact OpenGraph image
-            if not thumb_url:
-                try:
-                    res_ml = requests.get(f"https://api.microlink.io?url={quote(url)}", timeout=8)
-                    if res_ml.status_code == 200:
-                        thumb_url = res_ml.json().get('data', {}).get('image', {}).get('url')
-                except Exception: pass
-            
-            # Cascade 3: Command Thum.io to generate a live headless-browser screenshot
-            if not thumb_url:
-                thumb_url = f"https://image.thum.io/get/width/1200/crop/800/noanimate/{url}"
+                    page_res = requests.get(url, headers=headers, timeout=8)
+                    s = BeautifulSoup(page_res.content, 'html.parser')
+                    og_img = s.find('meta', property='og:image')
+                    if og_img: thumb_url = og_img.get('content')
+                except: pass
 
             if thumb_url:
                 try:
-                    t_res = requests.get(thumb_url, headers=headers, timeout=15)
-                    # Validate the image isn't an empty payload
+                    t_res = requests.get(thumb_url, headers=headers, timeout=10)
                     if t_res.status_code == 200 and len(t_res.content) > 1000:
                         with open(os.path.join(DOWNLOAD_DIR, f"{new_id}.jpg"), "wb") as tf:
                             tf.write(t_res.content)
-                    else:
-                        raise ValueError("Empty image")
-                except Exception:
-                    # Absolute Cascade 4: Write a high-res platform logo
-                    try:
-                        f_res = requests.get(f"https://www.google.com/s2/favicons?domain={domain}&sz=256", headers=headers)
+                except: pass
+            
+            if not os.path.exists(os.path.join(DOWNLOAD_DIR, f"{new_id}.jpg")):
+                try:
+                    f_res = requests.get(f"https://www.google.com/s2/favicons?domain={domain}&sz=256", headers=headers, timeout=5)
+                    if f_res.status_code == 200:
                         with open(os.path.join(DOWNLOAD_DIR, f"{new_id}.jpg"), "wb") as tf: tf.write(f_res.content)
-                    except: pass
+                except: pass
 
             og_image_meta = f'<meta property="og:image" content="/videos/{new_id}.jpg"><meta name="twitter:image" content="/videos/{new_id}.jpg">' if os.path.exists(os.path.join(DOWNLOAD_DIR, f"{new_id}.jpg")) else ''
 
@@ -529,9 +555,7 @@ def process_embed_post(url: str, user_id: str, task_id: str, expire_days: int) -
                 {script_tag}
             </body></html>"""
             
-            with open(html_path, "w", encoding="utf-8") as f:
-                f.write(full_page)
-            
+            with open(html_path, "w", encoding="utf-8") as f: f.write(full_page)
             extract_true_duration(new_id, user_id, url, title, ".html", expire_days, engine="📰 Post")
             return True
     except Exception as e:
@@ -1232,7 +1256,7 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                             total_duration += float(res.stdout.strip())
                         except Exception: pass
 
-                        carousel_tags += f"<div class='carousel-item' data-type='video'><video src='/videos/{new_media_name}' autoplay muted playsinline loop></video></div>"
+                        carousel_tags += f"<div class='carousel-item' data-type='video'><video src='/videos/{new_media_name}' controls playsinline loop></video></div>"
                     else:
                         new_media_path = ensure_jpg_image(new_media_path)
                         actual_ext = new_media_path.rsplit('.', 1)[1].lower()
@@ -1311,7 +1335,7 @@ def process_local_carousel(files_paths: list, filenames: list, user_id: str, tas
                     total_duration += float(res.stdout.strip())
                 except Exception: pass
 
-                carousel_tags += f"<div class='carousel-item' data-type='video'><video src='/videos/{new_media_name}' autoplay muted playsinline loop></video></div>"
+                carousel_tags += f"<div class='carousel-item' data-type='video'><video src='/videos/{new_media_name}' controls playsinline loop></video></div>"
             else:
                 shutil.move(temp_path, new_media_path)
                 new_media_path = ensure_jpg_image(new_media_path)
@@ -1364,7 +1388,19 @@ def view_media(video_id: str):
     title = html.escape(vid.get("title", safe_id))
     
     if ext in [".mp4", ".webm", ".mkv", ".mov"]:
-        content = f'<video src="{media_url}" controls autoplay muted playsinline loop style="max-width:100%; max-height:100%; width:auto; height:auto; object-fit:contain; outline:none; display:block; margin:auto;"></video>'
+        content = f'''
+        <video id="vid" src="{media_url}" controls playsinline loop style="max-width:100%; max-height:100%; width:auto; height:auto; object-fit:contain; outline:none; display:block; margin:auto;"></video>
+        <script>
+            const v = document.getElementById('vid');
+            let p = v.play();
+            if (p !== undefined) {{
+                p.catch(error => {{
+                    v.muted = true;
+                    v.play().catch(e => console.log('Autoplay fully blocked:', e));
+                }});
+            }}
+        </script>
+        '''
     else:
         content = f'<img src="{media_url}" style="max-width:100%; max-height:100%; width:auto; height:auto; object-fit:contain; display:block; margin:auto;">'
         

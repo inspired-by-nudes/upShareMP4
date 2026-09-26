@@ -308,11 +308,11 @@ def generate_carousel_html(carousel_tags: str, extracted_title: str) -> str:
                 if (video) {{
                     let p = video.play();
                     if (p !== undefined) {{
-                        p.catch(() => {{
-                            video.muted = true;
-                            video.play().catch(() => {{}});
-                        }});
+                        p.catch(() => {{ /* Intentionally wait for manual play */ }});
                     }}
+                    video.onplay = () => {{
+                        if(imgTimer) clearInterval(imgTimer);
+                    }};
                     video.ontimeupdate = () => {{
                         if (video.duration && currentFill) {{
                             const pct = (video.currentTime / video.duration) * 100;
@@ -878,40 +878,21 @@ def scrape_instaloader(url: str, task_id: str) -> list:
     try:
         import instaloader
     except ImportError:
-        logger.warning(f"[Instagram Task {task_id}] Instaloader not installed.")
         return []
-
     extracted = []
     try:
         shortcode_match = re.search(r'/(?:p|reel|tv)/([^/?#]+)', url)
         if not shortcode_match: return []
         shortcode = shortcode_match.group(1)
-
-        logger.info(f"[Instagram Task {task_id}] Querying Instaloader...")
         L = instaloader.Instaloader(quiet=True, download_pictures=False, download_video_thumbnails=False, download_videos=False)
         post = instaloader.Post.from_shortcode(L.context, shortcode)
         caption = post.caption or "Instagram Media"
-        
         if post.typename == 'GraphSidecar':
             for node in post.get_sidecar_nodes():
-                extracted.append({
-                    'is_video': node.is_video,
-                    'vid_url': node.video_url if node.is_video else None,
-                    'img_url': node.display_url,
-                    'title': caption
-                })
+                extracted.append({'is_video': node.is_video, 'vid_url': node.video_url if node.is_video else None, 'img_url': node.display_url, 'title': caption})
         else:
-            extracted.append({
-                'is_video': post.is_video,
-                'vid_url': post.video_url if post.is_video else None,
-                'img_url': post.url,
-                'title': caption
-            })
-            
-        if extracted:
-            return extracted
-    except Exception as e:
-        logger.error(f"[Instagram Task {task_id}] Instaloader Error: {e}")
+            extracted.append({'is_video': post.is_video, 'vid_url': post.video_url if post.is_video else None, 'img_url': post.url, 'title': caption})
+    except: pass
     return extracted
 
 def scrape_instagram_embed(url: str, task_id: str) -> list:
@@ -919,17 +900,13 @@ def scrape_instagram_embed(url: str, task_id: str) -> list:
     try:
         shortcode_match = re.search(r'/(?:p|reel|tv)/([^/?#]+)', url)
         if not shortcode_match: return []
-        shortcode = shortcode_match.group(1)
-        
-        embed_url = f"https://www.instagram.com/p/{shortcode}/embed/captioned/"
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36', 'Accept': '*/*'}
-        
+        embed_url = f"https://www.instagram.com/p/{shortcode_match.group(1)}/embed/captioned/"
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
         r = requests.get(embed_url, headers=headers, timeout=15)
         if r.status_code == 200:
             json_data = None
             match = re.search(r'window\.__additionalDataLoaded\([^,]+,\s*({.+?})\);', r.text)
-            if match:
-                json_data = json.loads(match.group(1))
+            if match: json_data = json.loads(match.group(1))
             if not json_data:
                 soup = BeautifulSoup(r.text, 'html.parser')
                 for script in soup.find_all('script'):
@@ -938,34 +915,23 @@ def scrape_instagram_embed(url: str, task_id: str) -> list:
                             m = re.search(r'({.*"shortcode_media".*})', script.string)
                             if m: json_data = json.loads(m.group(1))
                         except: pass
-
             if json_data:
                 media = json_data.get('shortcode_media', {})
                 if not media: media = json_data.get('graphql', {}).get('shortcode_media', {})
-                    
                 if media:
                     caption_text = "Instagram Media"
                     try:
                         edges = media.get('edge_media_to_caption', {}).get('edges', [])
                         if edges: caption_text = edges[0]['node']['text']
                     except: pass
-                    
                     children = media.get('edge_sidecar_to_children', {}).get('edges', [])
                     items = [child['node'] for child in children] if children else [media]
-                    
                     for item in items:
                         is_vid = item.get('is_video', False)
                         vid_url = item.get('video_url')
                         img_url = item.get('display_url')
-                        extracted.append({
-                            'is_video': is_vid,
-                            'vid_url': html.unescape(vid_url).replace('\\/', '/') if vid_url else None,
-                            'img_url': html.unescape(img_url).replace('\\/', '/') if img_url else None,
-                            'title': caption_text
-                        })
-                    return extracted
-    except Exception as e:
-        logger.error(f"[Instagram Task {task_id}] Embed Error: {e}")
+                        extracted.append({'is_video': is_vid, 'vid_url': html.unescape(vid_url).replace('\\/', '/') if vid_url else None, 'img_url': html.unescape(img_url).replace('\\/', '/') if img_url else None, 'title': caption_text})
+    except: pass
     return extracted
 
 def scrape_cobalt_fleet(url: str, task_id: str) -> list:
@@ -1000,7 +966,6 @@ def scrape_cobalt_fleet(url: str, task_id: str) -> list:
     return extracted
 
 def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
-    # Map all variants of embed targets
     domain = urlparse(url).netloc.lower()
     is_embed_target = False
     
@@ -1029,49 +994,12 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
         url = url.split('?')[0]
         headers_cdn = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36', 'Accept': '*/*'}
 
-        native_items = scrape_instaloader(url, task_id)
-        if not native_items: native_items = scrape_instagram_embed(url, task_id)
-        if not native_items: native_items = scrape_cobalt_fleet(url, task_id)
+        # Cascade 1: Cobalt (Fastest, natively catches audio for IG images/carousels)
+        native_items = scrape_cobalt_fleet(url, task_id)
 
-        if native_items:
-            download_success = True
-            for idx, slide in enumerate(native_items):
-                base_name = f"temp_yt_{task_id}_{idx:03d}"
-                item_saved = False
-                try:
-                    if slide['is_video'] and slide['vid_url']:
-                        r_v = requests.get(slide['vid_url'], headers=headers_cdn, cookies=cj, stream=True, timeout=25)
-                        if r_v.status_code == 200:
-                            with open(f"{DOWNLOAD_DIR}/{base_name}.mp4", 'wb') as f:
-                                for chunk in r_v.iter_content(chunk_size=8192): f.write(chunk)
-                            ensure_ios_compatible_video(f"{DOWNLOAD_DIR}/{base_name}.mp4")
-                            item_saved = True
-
-                    if slide['img_url']:
-                        r_i = requests.get(slide['img_url'], headers=headers_cdn, cookies=cj, timeout=15)
-                        if r_i.status_code == 200 and 'image' in r_i.headers.get('Content-Type', '').lower():
-                            with open(f"{DOWNLOAD_DIR}/{base_name}.jpg", 'wb') as f: f.write(r_i.content)
-                            if not slide['is_video'] or not item_saved:
-                                ensure_jpg_image(f"{DOWNLOAD_DIR}/{base_name}.jpg")
-                                item_saved = True
-
-                    if item_saved:
-                        with open(f"{DOWNLOAD_DIR}/{base_name}.info.json", 'w', encoding='utf-8') as f:
-                            json.dump({'title': slide['title']}, f)
-                    else:
-                        download_success = False
-                except Exception as ex:
-                    logger.error(f"[Instagram Task {task_id}] Failed to save slide {idx}: {ex}")
-                    download_success = False
-
-            if not download_success:
-                for f in os.listdir(DOWNLOAD_DIR):
-                    if f.startswith(f"temp_yt_{task_id}_"):
-                        try: os.remove(os.path.join(DOWNLOAD_DIR, f))
-                        except: pass
-
-        if not download_success:
-            logger.info(f"[Task {task_id}] Proxies blocked. Routing directly via yt-dlp...")
+        if not native_items:
+            # Cascade 2: yt-dlp (Robust native IG scraper, gets full audio tracks as video)
+            logger.info(f"[Task {task_id}] Cobalt failed. Routing directly via yt-dlp...")
             ydl_opts_ig = {'extract_flat': 'in_playlist', 'ignoreerrors': True, 'quiet': True}
             if cookie_path: ydl_opts_ig['cookiefile'] = cookie_path
             
@@ -1125,6 +1053,49 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                                 else: download_success = False
                         except:
                             download_success = False
+                            
+        # Cascade 3: Instaloader & Embed API (Last resort, ignores audio but gets pure images)
+        if not native_items and not download_success:
+            native_items = scrape_instaloader(url, task_id)
+            if not native_items: native_items = scrape_instagram_embed(url, task_id)
+
+        # Process whichever native fallback worked
+        if native_items:
+            download_success = True
+            for idx, slide in enumerate(native_items):
+                base_name = f"temp_yt_{task_id}_{idx:03d}"
+                item_saved = False
+                try:
+                    if slide['is_video'] and slide['vid_url']:
+                        r_v = requests.get(slide['vid_url'], headers=headers_cdn, cookies=cj, stream=True, timeout=25)
+                        if r_v.status_code == 200:
+                            with open(f"{DOWNLOAD_DIR}/{base_name}.mp4", 'wb') as f:
+                                for chunk in r_v.iter_content(chunk_size=8192): f.write(chunk)
+                            ensure_ios_compatible_video(f"{DOWNLOAD_DIR}/{base_name}.mp4")
+                            item_saved = True
+
+                    if slide['img_url']:
+                        r_i = requests.get(slide['img_url'], headers=headers_cdn, cookies=cj, timeout=15)
+                        if r_i.status_code == 200 and 'image' in r_i.headers.get('Content-Type', '').lower():
+                            with open(f"{DOWNLOAD_DIR}/{base_name}.jpg", 'wb') as f: f.write(r_i.content)
+                            if not slide['is_video'] or not item_saved:
+                                ensure_jpg_image(f"{DOWNLOAD_DIR}/{base_name}.jpg")
+                                item_saved = True
+
+                    if item_saved:
+                        with open(f"{DOWNLOAD_DIR}/{base_name}.info.json", 'w', encoding='utf-8') as f:
+                            json.dump({'title': slide['title']}, f)
+                    else:
+                        download_success = False
+                except Exception as ex:
+                    logger.error(f"[Instagram Task {task_id}] Failed to save slide {idx}: {ex}")
+                    download_success = False
+
+            if not download_success:
+                for f in os.listdir(DOWNLOAD_DIR):
+                    if f.startswith(f"temp_yt_{task_id}_"):
+                        try: os.remove(os.path.join(DOWNLOAD_DIR, f))
+                        except: pass
     else:
         ydl_opts = {
             'outtmpl': f'{DOWNLOAD_DIR}/temp_yt_{task_id}_%(autonumber)03d_%(id)s.%(ext)s',
@@ -1256,7 +1227,7 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                             total_duration += float(res.stdout.strip())
                         except Exception: pass
 
-                        carousel_tags += f"<div class='carousel-item' data-type='video'><video src='/videos/{new_media_name}' controls playsinline loop></video></div>"
+                        carousel_tags += f"<div class='carousel-item' data-type='video'><video src='/videos/{new_media_name}' controls playsinline></video></div>"
                     else:
                         new_media_path = ensure_jpg_image(new_media_path)
                         actual_ext = new_media_path.rsplit('.', 1)[1].lower()
@@ -1335,7 +1306,7 @@ def process_local_carousel(files_paths: list, filenames: list, user_id: str, tas
                     total_duration += float(res.stdout.strip())
                 except Exception: pass
 
-                carousel_tags += f"<div class='carousel-item' data-type='video'><video src='/videos/{new_media_name}' controls playsinline loop></video></div>"
+                carousel_tags += f"<div class='carousel-item' data-type='video'><video src='/videos/{new_media_name}' controls playsinline></video></div>"
             else:
                 shutil.move(temp_path, new_media_path)
                 new_media_path = ensure_jpg_image(new_media_path)
@@ -1388,19 +1359,7 @@ def view_media(video_id: str):
     title = html.escape(vid.get("title", safe_id))
     
     if ext in [".mp4", ".webm", ".mkv", ".mov"]:
-        content = f'''
-        <video id="vid" src="{media_url}" controls playsinline loop style="max-width:100%; max-height:100%; width:auto; height:auto; object-fit:contain; outline:none; display:block; margin:auto;"></video>
-        <script>
-            const v = document.getElementById('vid');
-            let p = v.play();
-            if (p !== undefined) {{
-                p.catch(error => {{
-                    v.muted = true;
-                    v.play().catch(e => console.log('Autoplay fully blocked:', e));
-                }});
-            }}
-        </script>
-        '''
+        content = f'<video src="{media_url}" controls playsinline preload="metadata" style="max-width:100%; max-height:100%; width:auto; height:auto; object-fit:contain; outline:none; display:block; margin:auto;"></video>'
     else:
         content = f'<img src="{media_url}" style="max-width:100%; max-height:100%; width:auto; height:auto; object-fit:contain; display:block; margin:auto;">'
         
@@ -1519,6 +1478,132 @@ async def edit_video(video_id: str, background_tasks: BackgroundTasks, start: st
                         save_db(db)
             except: pass
             
+        if task_id in active_downloads: del active_downloads[task_id]
+
+    background_tasks.add_task(run_edit)
+    return {"status": "processing"}
+
+@app.post("/api/edit_carousel/{video_id}")
+async def edit_carousel_endpoint(video_id: str, background_tasks: BackgroundTasks, keep_indices: str = Form(...), mode: str = Form(...), user: dict = Depends(verify_auth)):
+    try:
+        indices = json.loads(keep_indices)
+    except:
+        raise StarletteHTTPException(status_code=400, detail="Invalid indices format")
+
+    safe_id = os.path.basename(video_id)
+    with db_lock:
+        db = load_db()
+        vid = db["videos"].get(safe_id)
+        if not vid or (user["role"] != "admin" and vid["owner"] != user["username"]):
+            raise StarletteHTTPException(status_code=403, detail="Forbidden")
+
+    def run_edit():
+        task_id = generate_secure_id()
+        active_downloads[task_id] = "Editing Carousel..."
+        
+        slide_files = {}
+        for f in os.listdir(DOWNLOAD_DIR):
+            if f.startswith(f"{safe_id}_"):
+                part = f.replace(f"{safe_id}_", "").rsplit(".", 1)[0]
+                if part.isdigit():
+                    slide_files[int(part)] = f
+
+        if not slide_files:
+            if task_id in active_downloads: del active_downloads[task_id]
+            return
+
+        sorted_keeps = sorted([i for i in indices if i in slide_files])
+        
+        if mode == "copy":
+            new_id = generate_secure_id()
+            carousel_tags = ""
+            has_video = False
+            total_duration = 0.0
+
+            for new_idx, old_idx in enumerate(sorted_keeps):
+                old_f = slide_files[old_idx]
+                ext = os.path.splitext(old_f)[1].lower()
+                new_f = f"{new_id}_{new_idx}{ext}"
+                shutil.copy(os.path.join(DOWNLOAD_DIR, old_f), os.path.join(DOWNLOAD_DIR, new_f))
+                
+                if ext in ['.mp4', '.webm', '.mkv', '.mov']:
+                    has_video = True
+                    try:
+                        res = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", os.path.join(DOWNLOAD_DIR, new_f)], capture_output=True, text=True)
+                        total_duration += float(res.stdout.strip())
+                    except: pass
+                    carousel_tags += f"<div class='carousel-item' data-type='video'><video src='/videos/{new_f}' controls playsinline></video></div>"
+                else:
+                    carousel_tags += f"<div class='carousel-item' data-type='image'><img src='/videos/{new_f}'></div>"
+            
+            html_path = os.path.join(DOWNLOAD_DIR, f"{new_id}.html")
+            gallery_html = generate_carousel_html(carousel_tags, f"Copy of {vid.get('title', safe_id)}")
+            with open(html_path, "w", encoding="utf-8") as f: f.write(gallery_html)
+            
+            if len(sorted_keeps) > 0:
+                first_f = slide_files[sorted_keeps[0]]
+                first_ext = os.path.splitext(first_f)[1].lower()
+                if first_ext in ['.mp4', '.webm', '.mkv', '.mov']:
+                    subprocess.run(["ffmpeg", "-y", "-i", os.path.join(DOWNLOAD_DIR, f"{new_id}_0{first_ext}"), "-ss", "00:00:00.100", "-vframes", "1", "-q:v", "2", f"{DOWNLOAD_DIR}/{new_id}.jpg"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                else:
+                    try: shutil.copy(os.path.join(DOWNLOAD_DIR, f"{new_id}_0{first_ext}"), os.path.join(DOWNLOAD_DIR, f"{new_id}.jpg"))
+                    except: pass
+
+            c_type = "carousel_media" if has_video else "carousel_image"
+            extract_true_duration(new_id, user["username"], vid.get("url", "#"), f"Copy - {vid.get('title', safe_id)}", ".html", 0, engine="🎡 Carousel", carousel_type=c_type, total_duration=total_duration)
+
+        else:
+            temp_map = {}
+            carousel_tags = ""
+            has_video = False
+            total_duration = 0.0
+
+            for new_idx, old_idx in enumerate(sorted_keeps):
+                old_f = slide_files[old_idx]
+                ext = os.path.splitext(old_f)[1].lower()
+                temp_f = f"temp_carousel_{safe_id}_{new_idx}{ext}"
+                shutil.move(os.path.join(DOWNLOAD_DIR, old_f), os.path.join(DOWNLOAD_DIR, temp_f))
+                temp_map[new_idx] = temp_f
+            
+            for f in os.listdir(DOWNLOAD_DIR):
+                if f.startswith(f"{safe_id}_") and f not in temp_map.values():
+                    try: os.remove(os.path.join(DOWNLOAD_DIR, f))
+                    except: pass
+                    
+            for new_idx, temp_f in temp_map.items():
+                ext = os.path.splitext(temp_f)[1].lower()
+                final_f = f"{safe_id}_{new_idx}{ext}"
+                shutil.move(os.path.join(DOWNLOAD_DIR, temp_f), os.path.join(DOWNLOAD_DIR, final_f))
+                
+                if ext in ['.mp4', '.webm', '.mkv', '.mov']:
+                    has_video = True
+                    try:
+                        res = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", os.path.join(DOWNLOAD_DIR, final_f)], capture_output=True, text=True)
+                        total_duration += float(res.stdout.strip())
+                    except: pass
+                    carousel_tags += f"<div class='carousel-item' data-type='video'><video src='/videos/{final_f}' controls playsinline></video></div>"
+                else:
+                    carousel_tags += f"<div class='carousel-item' data-type='image'><img src='/videos/{final_f}'></div>"
+
+            html_path = os.path.join(DOWNLOAD_DIR, f"{safe_id}.html")
+            gallery_html = generate_carousel_html(carousel_tags, vid.get('title', safe_id))
+            with open(html_path, "w", encoding="utf-8") as f: f.write(gallery_html)
+
+            if len(sorted_keeps) > 0:
+                first_ext = os.path.splitext(temp_map[0])[1].lower()
+                if first_ext in ['.mp4', '.webm', '.mkv', '.mov']:
+                    subprocess.run(["ffmpeg", "-y", "-i", os.path.join(DOWNLOAD_DIR, f"{safe_id}_0{first_ext}"), "-ss", "00:00:00.100", "-vframes", "1", "-q:v", "2", f"{DOWNLOAD_DIR}/{safe_id}.jpg"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                else:
+                    try: shutil.copy(os.path.join(DOWNLOAD_DIR, f"{safe_id}_0{first_ext}"), os.path.join(DOWNLOAD_DIR, f"{safe_id}.jpg"))
+                    except: pass
+                    
+            with db_lock:
+                db = load_db()
+                if safe_id in db["videos"]:
+                    db["videos"][safe_id]["carousel_type"] = "carousel_media" if has_video else "carousel_image"
+                    db["videos"][safe_id]["duration"] = total_duration
+                    save_db(db)
+
         if task_id in active_downloads: del active_downloads[task_id]
 
     background_tasks.add_task(run_edit)

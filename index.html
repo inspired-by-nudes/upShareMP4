@@ -130,21 +130,18 @@
         #backToTop:hover { background-color: #e07b00; }
 
         /* Drag and Drop Overlay Styles */
-        .drag-overlay {
-            position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
-            background: rgba(18, 18, 18, 0.95); z-index: 9999;
-            display: flex; align-items: center; justify-content: center;
-            opacity: 0; visibility: hidden; transition: opacity 0.2s ease;
-        }
-        .drag-overlay.active {
-            opacity: 1; visibility: visible;
-        }
-        .drag-box {
-            border: 4px dashed #ff8c00; border-radius: 12px;
-            padding: 50px; text-align: center; color: #ff8c00; background: rgba(0,0,0,0.5);
-            pointer-events: none; /* Crucial: stops overlay elements from interrupting dragleave */
-        }
+        .drag-overlay { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(18, 18, 18, 0.95); z-index: 9999; display: flex; align-items: center; justify-content: center; opacity: 0; visibility: hidden; transition: opacity 0.2s ease; }
+        .drag-overlay.active { opacity: 1; visibility: visible; }
+        .drag-box { border: 4px dashed #ff8c00; border-radius: 12px; padding: 50px; text-align: center; color: #ff8c00; background: rgba(0,0,0,0.5); pointer-events: none; }
         .drag-box h2 { margin: 0; font-size: 2.5rem; }
+
+        /* Carousel Editor Styles */
+        .carousel-slide-edit { position: relative; border-radius: 6px; overflow: hidden; cursor: pointer; border: 2px solid transparent; transition: opacity 0.2s; background: #000; aspect-ratio: 1; }
+        .carousel-slide-edit.discarded { opacity: 0.4; border-color: #ff3333; }
+        .slide-thumb { width: 100%; height: 100%; object-fit: cover; pointer-events: none; }
+        .discard-overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: rgba(255,51,51,0.2); display: none; align-items: center; justify-content: center; color: white; font-weight: bold; font-size: 1.2rem; pointer-events: none; text-shadow: 0 2px 4px rgba(0,0,0,0.8); }
+        .carousel-slide-edit.discarded .discard-overlay { display: flex; }
+        .vid-badge { position: absolute; top: 5px; right: 5px; background: rgba(0,0,0,0.7); border-radius: 4px; padding: 2px 5px; font-size: 0.8rem; pointer-events: none; }
     </style>
 </head>
 <body>
@@ -203,11 +200,8 @@
         </div>
     </div>
 
-    <!-- Drag & Drop Visual Indicator -->
     <div id="dragOverlay" class="drag-overlay">
-        <div class="drag-box">
-            <h2>⬆️ Drop Files to Upload</h2>
-        </div>
+        <div class="drag-box"><h2>⬆️ Drop Files to Upload</h2></div>
     </div>
 
     <button id="backToTop" onclick="window.scrollTo({top: 0, behavior: 'smooth'})">↑</button>
@@ -217,24 +211,38 @@
     <!-- Interactive Editor Modal -->
     <div id="editor-modal" class="modal" onclick="closeEditorModal(event)">
         <div class="dialog-box">
-            <h3 style="margin-top:0; border-bottom:1px solid #333; padding-bottom:10px;">Media Clipper</h3>
-            <video id="editorVideo" controls playsinline style="width:100%; max-height:40vh; background:#000; border-radius: 4px;"></video>
+            <h3 style="margin-top:0; border-bottom:1px solid #333; padding-bottom:10px;">Media Editor</h3>
+            
+            <div id="video-trimmer-ui">
+                <video id="editorVideo" controls playsinline style="width:100%; max-height:40vh; background:#000; border-radius: 4px;"></video>
 
-            <div style="margin-top: 20px;">
-                <label style="color:#aaa; font-size:0.85rem; display:flex; justify-content:space-between; font-weight:bold;"><span>Start Time:</span><span id="lblStart" style="color:#fff;">00:00:00</span></label>
-                <input type="range" id="clipStart" min="0" value="0" step="0.1">
+                <div style="margin-top: 20px;">
+                    <label style="color:#aaa; font-size:0.85rem; display:flex; justify-content:space-between; font-weight:bold;"><span>Start Time:</span><span id="lblStart" style="color:#fff;">00:00:00</span></label>
+                    <input type="range" id="clipStart" min="0" value="0" step="0.1">
 
-                <label style="color:#aaa; font-size:0.85rem; display:flex; justify-content:space-between; font-weight:bold;"><span>End Time:</span><span id="lblEnd" style="color:#fff;">00:00:00</span></label>
-                <input type="range" id="clipEnd" min="0" value="0" step="0.1">
+                    <label style="color:#aaa; font-size:0.85rem; display:flex; justify-content:space-between; font-weight:bold;"><span>End Time:</span><span id="lblEnd" style="color:#fff;">00:00:00</span></label>
+                    <input type="range" id="clipEnd" min="0" value="0" step="0.1">
 
-                <input type="hidden" id="editStart" value="00:00:00">
-                <input type="hidden" id="editEnd" value="00:00:00">
+                    <input type="hidden" id="editStart" value="00:00:00">
+                    <input type="hidden" id="editEnd" value="00:00:00">
+                </div>
+
+                <div style="display:flex; gap:10px; margin-top:20px;">
+                    <button class="btn" style="background:#555; color:#fff;" onclick="submitEdit('copy')">Save as Copy</button>
+                    <button class="btn btn-submit" style="flex:1;" onclick="submitEdit('overwrite')">Overwrite Original</button>
+                </div>
             </div>
 
-            <div style="display:flex; gap:10px; margin-top:20px;">
-                <button class="btn" style="background:#555; color:#fff;" onclick="submitEdit('copy')">Save as Copy</button>
-                <button class="btn btn-submit" style="flex:1;" onclick="submitEdit('overwrite')">Overwrite Original</button>
+            <div id="carousel-editor-ui" style="display:none;">
+                <p style="color:#aaa; font-size:0.9rem; margin-top:0;">Tap a slide to mark it for removal.</p>
+                <div id="carousel-slides-container" style="display:grid; grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)); gap:10px; max-height:50vh; overflow-y:auto; padding-bottom:10px;"></div>
+                
+                <div style="display:flex; gap:10px; margin-top:20px;">
+                    <button class="btn" style="background:#555; color:#fff;" onclick="submitCarouselEdit('copy')">Save as Copy</button>
+                    <button class="btn btn-submit" style="flex:1;" onclick="submitCarouselEdit('overwrite')">Overwrite Original</button>
+                </div>
             </div>
+
             <input type="hidden" id="editorVideoId">
         </div>
     </div>
@@ -418,9 +426,7 @@
             checkAuthAndLoad();
         }
 
-        // --- Drag & Drop Global Handlers ---
-        let dragCounter = 0; // Tracks events to prevent flickering when hovering over children
-        
+        let dragCounter = 0; 
         document.addEventListener('dragenter', (e) => {
             e.preventDefault();
             if (isLoggedIn) {
@@ -429,9 +435,7 @@
             }
         });
 
-        document.addEventListener('dragover', (e) => {
-            e.preventDefault(); // Required to allow a drop event to trigger
-        });
+        document.addEventListener('dragover', (e) => { e.preventDefault(); });
 
         document.addEventListener('dragleave', (e) => {
             e.preventDefault();
@@ -454,20 +458,15 @@
             const files = e.dataTransfer.files;
             if (!files || files.length === 0) return;
 
-            // Route dropped files directly through the upload API
             const tempTaskId = "temp_up_" + Date.now();
             currentTasks[tempTaskId] = "Uploading..."; 
             renderUnifiedGrid();
             
             const fd = new FormData(); 
-            for (let i = 0; i < files.length; i++) {
-                fd.append('file', files[i]);
-            }
+            for (let i = 0; i < files.length; i++) { fd.append('file', files[i]); }
             fd.append('expire_days', document.getElementById('fileExpire').value);
             
-            // Switch UI segment for better visual feedback
             switchSegment('upload'); 
-            
             await fetch('/api/upload', { method: 'POST', body: fd }); 
             
             delete currentTasks[tempTaskId];
@@ -570,8 +569,13 @@
                 const promptTitle = safeTitle.replace(/'/g, "\\'");
 
                 let expBadge = v.expires_at > 0 ? `<div class="expire-badge countdown-badge" data-expires="${v.expires_at}">${getExpirationString(v.expires_at)}</div>` : '';
-                let editBtn = (!isArticle && !isCarousel && !isImage) ? `<button class="btn btn-edit" onclick="openEditorModal('${encodeURIComponent(v.id)}', '${shareUrl}')">✂️</button>` : '';
                 
+                let editBtn = '';
+                if (!isArticle && !isImage) {
+                    const isCarouselFlag = isCarousel ? 'true' : 'false';
+                    editBtn = `<button class="btn btn-edit" onclick="openEditorModal('${encodeURIComponent(v.id)}', '${shareUrl}', ${isCarouselFlag})">✂️</button>`;
+                }
+
                 let displayEngine = v.engine || '';
                 if (isCarousel) displayEngine = '🎡 Carousel';
 
@@ -642,18 +646,40 @@
             tEnd.value = formatTime(sEnd.value);
         }
 
-        function openEditorModal(id, url) {
+        function openEditorModal(id, url, isCarousel = false) {
             document.body.classList.add('modal-open');
             document.getElementById('editorVideoId').value = id;
-            vPlayer.src = url;
             
-            // Smart Autoplay logic
-            let p = vPlayer.play();
-            if (p !== undefined) {
-                p.catch(() => {
-                    vPlayer.muted = true;
-                    vPlayer.play().catch(e => console.log('Autoplay fully blocked:', e));
+            if (isCarousel) {
+                document.getElementById('video-trimmer-ui').style.display = 'none';
+                document.getElementById('carousel-editor-ui').style.display = 'block';
+                document.getElementById('carousel-slides-container').innerHTML = '<p style="color:#888;">Parsing slides...</p>';
+                
+                fetch(url).then(r => r.text()).then(html => {
+                    const parser = new DOMParser();
+                    const doc = parser.parseFromString(html, 'text/html');
+                    const items = doc.querySelectorAll('.carousel-item');
+                    let slidesHtml = '';
+                    items.forEach((item, idx) => {
+                        const img = item.querySelector('img');
+                        const vid = item.querySelector('video');
+                        const src = img ? img.src : (vid ? vid.src : '');
+                        const isVid = !!vid;
+                        slidesHtml += `
+                            <div class="carousel-slide-edit" data-idx="${idx}" onclick="this.classList.toggle('discarded')">
+                                ${isVid ? `<video src="${src}" class="slide-thumb"></video><div class="vid-badge">🎥</div>` : `<img src="${src}" class="slide-thumb">`}
+                                <div class="discard-overlay">❌ Removed</div>
+                            </div>`;
+                    });
+                    document.getElementById('carousel-slides-container').innerHTML = slidesHtml;
+                }).catch(() => {
+                    document.getElementById('carousel-slides-container').innerHTML = '<p style="color:#ff3333;">Failed to load slides.</p>';
                 });
+                
+            } else {
+                document.getElementById('video-trimmer-ui').style.display = 'block';
+                document.getElementById('carousel-editor-ui').style.display = 'none';
+                vPlayer.src = url;
             }
             
             document.getElementById('editor-modal').style.display = 'flex';
@@ -674,6 +700,24 @@
             document.getElementById('editor-modal').style.display = 'none';
             document.body.classList.remove('modal-open');
             currentTasks["temp_edit"] = "Clipping Media..."; renderUnifiedGrid();
+        }
+
+        async function submitCarouselEdit(mode) {
+            const id = document.getElementById('editorVideoId').value;
+            const slides = document.querySelectorAll('.carousel-slide-edit:not(.discarded)');
+            if (slides.length === 0) return alert("You must keep at least 1 slide.");
+            
+            const indices = Array.from(slides).map(s => parseInt(s.getAttribute('data-idx')));
+            
+            const fd = new FormData();
+            fd.append('keep_indices', JSON.stringify(indices));
+            fd.append('mode', mode);
+            
+            await fetch(`/api/edit_carousel/${encodeURIComponent(id)}`, {method:'POST', body: fd});
+            
+            document.getElementById('editor-modal').style.display = 'none';
+            document.body.classList.remove('modal-open');
+            currentTasks["temp_edit"] = "Editing Carousel..."; renderUnifiedGrid();
         }
 
         // --- SETTINGS MODAL ---

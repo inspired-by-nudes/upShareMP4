@@ -1,6 +1,6 @@
 import os, secrets, json, hashlib, subprocess, threading, logging, time, asyncio, shutil, re, html
 from typing import List
-from urllib.parse import urlparse, urljoin, quote
+from urllib.parse import urlparse, urljoin, quote, unquote
 from fastapi import FastAPI, BackgroundTasks, UploadFile, File, Form, Depends, Request, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, FileResponse, RedirectResponse
@@ -62,7 +62,7 @@ def get_requests_cookies(cookie_path: str):
 
 def is_social_media_url(url: str) -> bool:
     domain = urlparse(url).netloc.lower()
-    social_domains = ["instagram.com", "tiktok.com", "youtube.com", "youtu.be", "twitter.com", "x.com", "reddit.com", "facebook.com", "fb.watch", "vimeo.com"]
+    social_domains = ["instagram.com", "tiktok.com", "youtube.com", "youtu.be", "vimeo.com", "twitter.com", "x.com", "bsky.app"]
     return any(d in domain for d in social_domains)
 
 def load_db():
@@ -203,10 +203,10 @@ def ensure_jpg_image(file_path: str) -> str:
     except Exception: pass
     return file_path
 
-def extract_true_duration(video_id: str, user_id: str, url: str = "#", custom_title: str = None, ext: str = ".mp4", expire_days: int = 0, engine: str = None, carousel_type: str = None):
+def extract_true_duration(video_id: str, user_id: str, url: str = "#", custom_title: str = None, ext: str = ".mp4", expire_days: int = 0, engine: str = None, carousel_type: str = None, total_duration: float = 0.0):
     file_path = os.path.join(DOWNLOAD_DIR, f"{video_id}{ext}")
-    duration = 0.0
-    if ext == ".mp4":
+    duration = total_duration
+    if ext == ".mp4" and duration == 0.0:
         try:
             res = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", file_path], capture_output=True, text=True)
             duration = float(res.stdout.strip())
@@ -247,7 +247,7 @@ def generate_carousel_html(carousel_tags: str, extracted_title: str) -> str:
         .carousel-item {{ min-width: 100vw; width: 100vw; height: 100dvh; display: flex; align-items: center; justify-content: center; flex-shrink: 0; background: #000; position: relative; padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }}
         .carousel-item img, .carousel-item video {{ max-width: 100%; max-height: 100%; width: auto; height: auto; object-fit: contain !important; display: block; margin: auto; }}
 
-        .btn {{ position: absolute; top: 50%; transform: translateY(-50%); background: rgba(0,0,0,0.6); color: white; border: 1px solid rgba(255,255,255,0.2); width: 44px; height: 44px; padding: 0; display: flex; align-items: center; justify-content: center; cursor: pointer; border-radius: 50%; font-size: 20px; z-index: 20; transition: all 0.2s; aspect-ratio: 1/1; box-sizing: border-box; flex-shrink: 0; line-height: 1; }}
+        .btn {{ position: absolute; top: 50%; transform: translateY(-50%); background: rgba(0,0,0,0.6); color: white; border: 1px solid rgba(255,255,255,0.2); width: 44px !important; height: 44px !important; min-width: 44px !important; min-height: 44px !important; padding: 0; display: flex; align-items: center; justify-content: center; cursor: pointer; border-radius: 50% !important; font-size: 20px; z-index: 20; transition: all 0.2s; aspect-ratio: 1/1 !important; box-sizing: border-box; flex-shrink: 0 !important; line-height: 1; }}
         .btn:hover {{ background: rgba(0,0,0,0.9); scale: 1.1; }}
         .btn-prev {{ left: 15px; }}
         .btn-next {{ right: 15px; }}
@@ -395,7 +395,7 @@ def format_tokens(count):
     return str(count)
 
 def clean_html_with_ai(raw_html: str) -> tuple:
-    prompt = f"You are an expert HTML typographer. Enhance typography (headings, blockquotes, bolding, italics). \nCRITICAL RULES:\n1. Output the ENTIRE article text. However, you MUST REMOVE any 'Add to Google', 'preferred source', newsletter signups, subscription prompts, or advertisement text.\n2. Do NOT split blockquotes into multiple adjacent blocks for the same speaker. Keep quotes combined in a single <blockquote> element.\n3. When a blockquote includes an attribution line (e.g., '— Name'), place it on a NEW LINE at the bottom of the blockquote using a <br> tag.\n4. CRITICAL: You will see text markers like ___UPSHARE_IMAGE___SRC:url___CAPTION:text___ and ___UPSHARE_VIDEO___SRC:url___. You MUST preserve these markers exactly word-for-word. Do not alter, translate, or remove them.\n5. Return ONLY valid HTML.\n\nHere is the raw HTML:\n\n{raw_html[:35000]}"
+    prompt = f"You are an expert HTML typographer. Enhance typography (headings, blockquotes, bolding, italics). \nCRITICAL RULES:\n1. Output the ENTIRE article text. However, you MUST REMOVE any 'Add to Google', 'preferred source', newsletter signups, subscription prompts, or advertisement text.\n2. Do NOT split blockquotes into multiple adjacent blocks for the same speaker. Keep quotes combined in a single <blockquote> element.\n3. When a blockquote includes an attribution line (e.g., '— Name'), place it on a NEW LINE at the bottom of the blockquote using a <br> tag.\n4. CRITICAL: You will see text markers like ___UPSHARE_IMAGE___SRC:url___CAPTION:text___, ___UPSHARE_VIDEO___SRC:url___ and ___UPSHARE_EMBED___RAW:code___. You MUST preserve these markers exactly word-for-word. Do not alter, translate, or remove them.\n5. Return ONLY valid HTML.\n\nHere is the raw HTML:\n\n{raw_html[:35000]}"
     bt = "`" * 3
 
     if GEMINI_API_KEY:
@@ -430,6 +430,64 @@ def clean_html_with_ai(raw_html: str) -> tuple:
 
     return raw_html, "📄 Readability"
 
+def process_embed_post(url: str, user_id: str, task_id: str, expire_days: int) -> bool:
+    domain = urlparse(url).netloc.lower()
+    new_id = generate_secure_id()
+    html_path = os.path.join(DOWNLOAD_DIR, f"{new_id}.html")
+    
+    if "twitter.com" in domain or "x.com" in domain:
+        oembed_endpoint = f"https://publish.twitter.com/oembed?url={quote(url)}&theme=dark"
+        platform = "Twitter"
+        engine = "🐦 Twitter"
+        script_tag = '<script async src="https://platform.twitter.com/widgets.js" charset="utf-8"></script>'
+    elif "bsky.app" in domain:
+        oembed_endpoint = f"https://embed.bsky.app/oembed?url={quote(url)}"
+        platform = "Bluesky"
+        engine = "🦋 Bluesky"
+        script_tag = '<script async src="https://embed.bsky.app/static/embed.js" charset="utf-8"></script>'
+    else:
+        return False
+
+    try:
+        active_downloads[task_id] = f"Fetching {platform} Post..."
+        res = requests.get(oembed_endpoint, timeout=10)
+        if res.status_code == 200:
+            data = res.json()
+            embed_html = data.get("html", "")
+            title = data.get("author_name", f"{platform} Post")
+            if not title.startswith("Post"):
+                title = f"{platform} Post by {title}"
+            
+            thumb_url = data.get("thumbnail_url")
+            if thumb_url:
+                try:
+                    t_res = requests.get(thumb_url, timeout=10)
+                    if t_res.status_code == 200:
+                        with open(os.path.join(DOWNLOAD_DIR, f"{new_id}.jpg"), "wb") as tf:
+                            tf.write(t_res.content)
+                except Exception: pass
+
+            full_page = f"""<!DOCTYPE html>
+            <html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1.0'>
+            <title>{html.escape(title)}</title>
+            <style>
+                body {{ font-family: system-ui, sans-serif; background: #121212; color: #fff; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; padding: 20px; box-sizing: border-box; }}
+                .embed-wrapper {{ max-width: 550px; width: 100%; margin: 0 auto; display: flex; justify-content: center; }}
+            </style>
+            </head><body>
+                <div class="embed-wrapper">{embed_html}</div>
+                {script_tag}
+            </body></html>"""
+            
+            with open(html_path, "w", encoding="utf-8") as f:
+                f.write(full_page)
+            
+            extract_true_duration(new_id, user_id, url, title, ".html", expire_days, engine=engine)
+            return True
+    except Exception as e:
+        logger.error(f"Embed processing failed for {url}: {e}")
+    return False
+
 def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
     new_id = generate_secure_id()
     try:
@@ -444,10 +502,16 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
             ext = '.' + urlparse(url).path.split('/')[-1].split('.')[-1]
             if not ext or len(ext) > 5 or not ext[1:].isalpha(): ext = '.jpg'
             with open(os.path.join(DOWNLOAD_DIR, f"{new_id}{ext}"), "wb") as f: f.write(r.content)
-            extract_true_duration(new_id, user_id, url, f"Direct Image - {ext[1:].upper()}", ext, expire_days, engine="🖼️ Direct")
+            extract_true_duration(new_id, user_id, url, f"Image - {ext[1:].upper()}", ext, expire_days, engine="🖼️ Image")
             return
 
         orig_soup = BeautifulSoup(r.content, 'html.parser')
+
+        # Intercept and preserve Twitter/X & Bluesky embeds before cleaning
+        for bq in list(orig_soup.find_all('blockquote', class_=re.compile(r'(twitter-tweet|bsky-embed)', re.I))):
+            marker = orig_soup.new_tag('p')
+            marker.string = f"___UPSHARE_EMBED___RAW:{quote(str(bq))}___"
+            bq.replace_with(marker)
 
         junk_selectors = [
             'script', 'style', 'nav', 'footer', 'header', 'form', 'aside', 'iframe', 'noscript',
@@ -585,6 +649,13 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
         final_html = re.sub(r'<p[^>]*>\s*___UPSHARE_VIDEO___SRC:([\s\S]*?)___\s*</p>', vid_repl, final_html)
         final_html = re.sub(r'___UPSHARE_VIDEO___SRC:([\s\S]*?)___', vid_repl, final_html)
 
+        def embed_repl(match):
+            raw_code = unquote(match.group(1).strip())
+            return f'<div style="display:flex; justify-content:center; margin:25px 0;">{raw_code}</div>'
+
+        final_html = re.sub(r'<p[^>]*>\s*___UPSHARE_EMBED___RAW:([\s\S]*?)___\s*</p>', embed_repl, final_html)
+        final_html = re.sub(r'___UPSHARE_EMBED___RAW:([\s\S]*?)___', embed_repl, final_html)
+
         img_counter = [0]
         def img_repl(match):
             src = match.group(1).strip()
@@ -662,7 +733,7 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
         for i in range(len(bq_list) - 1, 0, -1):
             curr_bq = bq_list[i]
             prev_bq = bq_list[i - 1]
-            if prev_bq.find_next_sibling() == curr_bq:
+            if prev_bq.find_next_sibling() == curr_bq and 'twitter-tweet' not in curr_bq.get('class', []) and 'bsky-embed' not in curr_bq.get('class', []):
                 prev_bq.append(ai_soup.new_tag('br'))
                 for child in list(curr_bq.contents): prev_bq.append(child)
                 curr_bq.decompose()
@@ -718,6 +789,8 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
             {logo_html}
             <h1>{safe_title}</h1>
             <div>{final_html}</div>
+            <script async src="https://platform.twitter.com/widgets.js" charset="utf-8"></script>
+            <script async src="https://embed.bsky.app/static/embed.js" charset="utf-8"></script>
         </body></html>
         """
         with open(html_path, "w", encoding="utf-8") as f: f.write(clean_page)
@@ -853,6 +926,12 @@ def scrape_cobalt_fleet(url: str, task_id: str) -> list:
     return extracted
 
 def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
+    # Check if URL is Twitter/X or Bluesky post for oEmbed snapshot
+    if ("twitter.com" in url or "x.com" in url or "bsky.app" in url) and ("/status/" in url or "/post/" in url):
+        if process_embed_post(url, user_id, task_id, expire_days):
+            if task_id in active_downloads: del active_downloads[task_id]
+            return
+
     if not is_social_media_url(url):
         extract_article(url, user_id, task_id, expire_days)
         return
@@ -1065,6 +1144,8 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                 
                 idx_counter = 0
                 has_video = False
+                total_duration = 0.0
+
                 for base in sorted_bases:
                     files = bases[base]
                     primary = next((f for f in files if f.endswith(('.mp4', '.webm', '.mkv', '.mov'))), None)
@@ -1085,6 +1166,12 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                         new_media_path = ensure_ios_compatible_video(new_media_path)
                         actual_ext = new_media_path.rsplit('.', 1)[1].lower()
                         new_media_name = f"{new_id}_{idx_counter}.{actual_ext}"
+                        
+                        try:
+                            res = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", new_media_path], capture_output=True, text=True)
+                            total_duration += float(res.stdout.strip())
+                        except Exception: pass
+
                         carousel_tags += f"<div class='carousel-item' data-type='video'><video src='/videos/{new_media_name}' controls playsinline webkit-playsinline></video></div>"
                     else:
                         new_media_path = ensure_jpg_image(new_media_path)
@@ -1124,7 +1211,7 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                     except: pass
 
                 c_type = "carousel_media" if has_video else "carousel_image"
-                extract_true_duration(new_id, user_id, url, extracted_title, ".html", expire_days, engine="🎡 Carousel", carousel_type=c_type)
+                extract_true_duration(new_id, user_id, url, extracted_title, ".html", expire_days, engine="🎡 Carousel", carousel_type=c_type, total_duration=total_duration)
 
         for f in os.listdir(DOWNLOAD_DIR):
             if f.startswith(f"temp_yt_{task_id}_"):
@@ -1139,6 +1226,7 @@ def process_local_carousel(files_paths: list, filenames: list, user_id: str, tas
     html_path = os.path.join(DOWNLOAD_DIR, f"{new_id}.html")
     carousel_tags = ""
     has_video = False
+    total_duration = 0.0
 
     try:
         active_downloads[task_id] = "Building Carousel..."
@@ -1157,6 +1245,12 @@ def process_local_carousel(files_paths: list, filenames: list, user_id: str, tas
                 subprocess.run(["ffmpeg", "-y", "-i", temp_path, "-c:v", "libx264", "-preset", "fast", "-c:a", "aac", "-movflags", "+faststart", new_media_path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 actual_ext = ".mp4"
                 new_media_name = f"{new_id}_{idx}{actual_ext}"
+                
+                try:
+                    res = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", new_media_path], capture_output=True, text=True)
+                    total_duration += float(res.stdout.strip())
+                except Exception: pass
+
                 carousel_tags += f"<div class='carousel-item' data-type='video'><video src='/videos/{new_media_name}' controls playsinline webkit-playsinline></video></div>"
             else:
                 shutil.move(temp_path, new_media_path)
@@ -1180,7 +1274,7 @@ def process_local_carousel(files_paths: list, filenames: list, user_id: str, tas
             except: pass
 
         c_type = "carousel_media" if has_video else "carousel_image"
-        extract_true_duration(new_id, user_id, custom_title=extracted_title, ext=".html", expire_days=expire_days, engine="🎡 Carousel", carousel_type=c_type)
+        extract_true_duration(new_id, user_id, custom_title=extracted_title, ext=".html", expire_days=expire_days, engine="🎡 Carousel", carousel_type=c_type, total_duration=total_duration)
         
     except Exception as e:
         logger.error(f"Local carousel error: {e}")

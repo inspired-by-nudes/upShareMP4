@@ -130,14 +130,12 @@
         #backToTop { display: none; position: fixed; bottom: 30px; right: 30px; z-index: 99; border: none; outline: none; background-color: #ff8c00; color: white; cursor: pointer; width: 50px; height: 50px; padding: 0; border-radius: 50%; font-size: 20px; font-weight: bold; box-shadow: 0 4px 8px rgba(0,0,0,0.3); transition: opacity 0.3s; align-items: center; justify-content: center; }
         #backToTop:hover { background-color: #e07b00; }
 
-        /* Updated Drop Overlay with Green Dashes & Dimmed Page */
         .drag-overlay { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(18, 18, 18, 0.95); z-index: 9999; display: flex; align-items: center; justify-content: center; opacity: 0; visibility: hidden; transition: opacity 0.2s ease; }
         .drag-overlay.active { opacity: 1; visibility: visible; }
         .drag-border { width: calc(100% - 30px); height: calc(100% - 30px); border: 6px dashed #00E676; border-radius: 16px; display: flex; align-items: center; justify-content: center; box-sizing: border-box; }
         .drag-box { padding: 50px; text-align: center; color: #00E676; pointer-events: none; }
         .drag-box h2 { margin: 0; font-size: 2.5rem; text-shadow: 0 4px 10px rgba(0,0,0,0.5); }
 
-        /* Carousel Editor Styles */
         .carousel-slide-edit { position: relative; border-radius: 6px; overflow: hidden; cursor: pointer; border: 2px solid transparent; transition: opacity 0.2s; background: #000; aspect-ratio: 1; }
         .carousel-slide-edit.discarded { opacity: 0.4; border-color: #ff3333; }
         .slide-thumb { width: 100%; height: 100%; object-fit: cover; pointer-events: none; }
@@ -200,11 +198,9 @@
                 </form>
             </div>
 
-            <!-- Active tasks and main video grid separated for clean infinite scrolling -->
             <div class="video-grid" id="activeTasksGrid"></div>
             <div class="video-grid" id="videoGrid" style="margin-top: 20px;"></div>
             
-            <!-- Sentinel for Infinite Scroll trigger -->
             <div id="loadMoreSentinel" style="height: 10px; margin-top: 10px;"></div>
         </div>
     </div>
@@ -219,7 +215,6 @@
     <div id="toast">copied to clipboard!</div>
     <div id="bulk-action-bar" onclick="processBulkDelete()">Delete Selected Items (0)</div>
 
-    <!-- Interactive Editor Modal -->
     <div id="editor-modal" class="modal" onclick="closeEditorModal(event)">
         <div class="dialog-box">
             <h3 style="margin-top:0; border-bottom:1px solid #333; padding-bottom:10px;">Media Editor</h3>
@@ -275,10 +270,12 @@
                 <button class="btn" style="background:#ff8c00; color:#fff; width:100%; margin-bottom:10px;" onclick="changePass()">Save Password</button>
                 
                 <hr style="border:0; border-top:1px solid #333; margin:20px 0;">
-                <h4 style="margin-top:0; color:#fff;">API Key (Silent Background Uploads)</h4>
-                <p style="font-size:0.85rem; color:#888;">Generate a key to use upShareMedia via background iOS Shortcuts. The key is only shown once.</p>
+                
                 <button class="btn" style="background:#555; color:#fff; width:100%; margin-bottom:10px;" onclick="generateApiKey()">Generate New API Key</button>
-                <div id="apiKeyDisplayBox" style="display:none; background:#111; padding:15px; border-radius:4px; border:1px dashed #ff8c00; word-break:break-all; font-family:monospace; color:#00E676; text-align:center; font-size:1.1rem; margin-bottom:10px;"></div>
+                <div id="apiKeyContainer" style="display:none; align-items:center; gap:10px; margin-bottom:10px;">
+                    <input type="text" id="apiKeyDisplay" readonly style="flex:1; background:#111; color:#00E676; border:1px dashed #ff8c00; text-align:center; font-family:monospace; font-size:1.1rem; height:48px;" onclick="this.select()">
+                    <button class="btn" style="background:#00E676; color:#121212; height:48px; width:48px; padding:0; display:flex; align-items:center; justify-content:center;" onclick="copyApiKey()" title="Copy API Key">📋</button>
+                </div>
 
                 <hr style="border:0; border-top:1px solid #333; margin:20px 0;">
                 <button class="btn" style="background:#ff3333; color:#fff; width:100%;" onclick="logoutApp()">Logout</button>
@@ -564,8 +561,11 @@
             if (resetLimit) displayLimit = 20;
             
             const displayData = activeVideosData.slice(0, displayLimit);
-            const vString = JSON.stringify(displayData);
-            if (vString === lastVideosString && !resetLimit) return; lastVideosString = vString;
+            
+            // Smart DOM diffing mapping to stop thumbnail flashes
+            const visualState = displayData.map(v => `${v.id}|${v.title}|${v.views}|${v.size_bytes}`).join(',');
+            if (visualState === lastVideosString && !resetLimit) return; 
+            lastVideosString = visualState;
             
             const grid = document.getElementById('videoGrid');
             let htmlBuffer = "";
@@ -624,7 +624,7 @@
                 let viewAction = `<a href="${viewUrl}" target="_blank" rel="noopener noreferrer" class="btn btn-view">View</a>`;
 
                 htmlBuffer += `
-                    <div class="${cardClass}">
+                    <div class="${cardClass}" id="card-${v.id}">
                         <input type="checkbox" class="card-checkbox" value="${v.id}" onchange="updateBulkCounter()">
                         <div class="card-content">
                             <div class="thumbnail-wrapper">${thumb}${expBadge}<div class="date-badge">${v.date_badge}</div></div>
@@ -643,10 +643,13 @@
                     </div>`;
             });
             grid.innerHTML = htmlBuffer;
-            updateBulkCounter();
+            
+            // Re-apply checked states based on our new array if bulk action was active
+            if(document.body.classList.contains('select-mode-active')) {
+                updateBulkCounter();
+            }
         }
 
-        // Infinite Scroll Observer
         const loadMoreObserver = new IntersectionObserver((entries) => {
             if (entries[0].isIntersecting && activeVideosData.length > displayLimit) {
                 displayLimit += 20;
@@ -658,7 +661,6 @@
             loadMoreObserver.observe(document.getElementById('loadMoreSentinel'));
         });
 
-        // --- EDITOR MODAL ---
         const vPlayer = document.getElementById('editorVideo');
         const sStart = document.getElementById('clipStart');
         const sEnd = document.getElementById('clipEnd');
@@ -821,10 +823,21 @@
             const res = await fetch('/api/users/apikey', {method: 'POST'});
             if(res.ok) {
                 const data = await res.json();
-                const box = document.getElementById('apiKeyDisplayBox');
-                box.style.display = 'block';
-                box.innerText = data.api_key;
+                document.getElementById('apiKeyContainer').style.display = 'flex';
+                document.getElementById('apiKeyDisplay').value = data.api_key;
+                copyApiKey();
             }
+        }
+
+        function copyApiKey() {
+            const input = document.getElementById('apiKeyDisplay');
+            input.select();
+            input.setSelectionRange(0, 99999);
+            document.execCommand("copy");
+            const t = document.getElementById("toast");
+            t.innerText = "API Key copied to clipboard!";
+            t.className = "show";
+            setTimeout(() => { t.className = t.className.replace("show", ""); }, 3000);
         }
 
         function copyLink(text) {
@@ -837,6 +850,7 @@
             try { 
                 document.execCommand('copy'); 
                 const t = document.getElementById("toast"); 
+                t.innerText = "copied to clipboard!";
                 t.className = "show"; 
                 setTimeout(() => { t.className = t.className.replace("show", ""); }, 3000); 
             } catch (err) {}

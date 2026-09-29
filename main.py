@@ -104,18 +104,15 @@ def verify_auth(request: Request):
         db = load_db()
         users = db.get("users", {})
 
-    # 1. API Key Auth (For Shortcuts)
     if api_key:
         for username, user_data in users.items():
             if user_data.get("api_key") and secrets.compare_digest(user_data["api_key"], str(api_key)):
                 user_data["username"] = username
                 return {"username": username, "role": user_data["role"], "config": user_data}
 
-    # 2. Bearer Token Auth
     if auth_header and auth_header.startswith("Bearer "): 
         token = auth_header.split(" ", 1)[1]
         
-    # 3. Cookie Session Auth
     for username, user_data in users.items():
         if secrets.compare_digest(user_data.get("token", ""), str(token)):
             user_data["username"] = username
@@ -267,7 +264,15 @@ def generate_carousel_html(carousel_tags: str, extracted_title: str, og_image_ur
         .carousel-item img, .carousel-item video {{ max-width: 100%; max-height: 100%; width: auto; height: auto; object-fit: contain !important; display: block; margin: auto; }}
 
         .btn {{ position: absolute; top: 50%; transform: translateY(-50%); background: rgba(0,0,0,0.6); color: white; border: 1px solid rgba(255,255,255,0.2); width: 44px !important; height: 44px !important; min-width: 44px !important; min-height: 44px !important; padding: 0; display: flex; align-items: center; justify-content: center; cursor: pointer; border-radius: 50% !important; font-size: 20px; z-index: 20; transition: all 0.15s ease-out; aspect-ratio: 1/1 !important; box-sizing: border-box; flex-shrink: 0 !important; line-height: 1; }}
-        @media (hover: hover) {{ .btn:hover {{ background: rgba(0,0,0,0.9); scale: 1.1; }} }}
+        
+        @media (hover: hover) and (pointer: fine) {{ 
+            .btn:hover {{ background: rgba(0,0,0,0.9); scale: 1.1; }} 
+        }}
+        
+        @media (hover: none) and (pointer: coarse) {{
+            .btn-prev, .btn-next {{ display: none !important; }}
+        }}
+
         .btn:active {{ background: rgba(255,255,255,0.3); scale: 0.9; opacity: 0.8; }}
         .btn-prev {{ left: 15px; }}
         .btn-next {{ right: 15px; }}
@@ -465,7 +470,7 @@ def process_embed_post(url: str, user_id: str, task_id: str, expire_days: int) -
         except: pass
 
     domain = urlparse(url).netloc.lower()
-    new_id = generate_secure_id()
+    new_id = task_id  # Enforce predictable ID
     html_path = os.path.join(DOWNLOAD_DIR, f"{new_id}.html")
     
     thumb_url = None
@@ -575,7 +580,7 @@ def process_embed_post(url: str, user_id: str, task_id: str, expire_days: int) -
     return False
 
 def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
-    new_id = generate_secure_id()
+    new_id = task_id # Enforce predictable ID
     try:
         active_downloads[task_id] = "Parsing Article..."
         headers = {
@@ -1154,7 +1159,7 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                 if ext_found == 'jpeg': ext_found = 'jpg'
                 info_file = next((os.path.join(DOWNLOAD_DIR, jf) for jf in files if jf.endswith(".info.json")), None)
                 
-                new_id = generate_secure_id()
+                new_id = task_id # Enforce predictable ID
                 new_media = os.path.join(DOWNLOAD_DIR, f"{new_id}.{ext_found}")
                 os.rename(os.path.join(DOWNLOAD_DIR, primary), new_media)
                 
@@ -1199,7 +1204,7 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                 extract_true_duration(new_id, user_id, url, extracted_title, f".{ext_found}", expire_days, engine="🖼️ Image" if ext_found in ['jpg', 'png', 'webp', 'jpeg'] else None)
 
             elif len(bases) > 1:
-                new_id = generate_secure_id()
+                new_id = task_id # Enforce predictable ID
                 html_path = os.path.join(DOWNLOAD_DIR, f"{new_id}.html")
                 
                 carousel_tags = ""
@@ -1285,7 +1290,7 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
         if task_id in active_downloads: del active_downloads[task_id]
 
 def process_local_carousel(files_paths: list, filenames: list, user_id: str, task_id: str, expire_days: int):
-    new_id = generate_secure_id()
+    new_id = task_id # Enforce predictable ID
     html_path = os.path.join(DOWNLOAD_DIR, f"{new_id}.html")
     carousel_tags = ""
     has_video = False
@@ -1345,12 +1350,12 @@ def process_local_carousel(files_paths: list, filenames: list, user_id: str, tas
     finally:
         if task_id in active_downloads: del active_downloads[task_id]
 
-def convert_local_file(input_path: str, final_path: str, video_id: str, user_id: str, task_id: str, original_filename: str, expire_days: int):
+def convert_local_file(input_path: str, final_path: str, task_id: str, user_id: str, original_filename: str, expire_days: int):
     active_downloads[task_id] = "Converting..."
     subprocess.run(["ffmpeg", "-i", input_path, "-c:v", "libx264", "-preset", "fast", "-c:a", "aac", "-movflags", "+faststart", final_path, "-y"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    subprocess.run(["ffmpeg", "-y", "-i", final_path, "-ss", "00:00:00.100", "-vframes", "1", "-q:v", "2", f"{DOWNLOAD_DIR}/{video_id}.jpg"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    subprocess.run(["ffmpeg", "-y", "-i", final_path, "-ss", "00:00:00.100", "-vframes", "1", "-q:v", "2", f"{DOWNLOAD_DIR}/{task_id}.jpg"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     os.remove(input_path)
-    extract_true_duration(video_id, user_id, custom_title=original_filename, expire_days=expire_days)
+    extract_true_duration(task_id, user_id, custom_title=original_filename, expire_days=expire_days)
     if task_id in active_downloads: del active_downloads[task_id]
 
 @app.get("/view/{video_id}")
@@ -1417,14 +1422,17 @@ def generate_api_key(user: dict = Depends(verify_auth)):
     return {"api_key": new_key}
 
 @app.post("/api/download_form")
-async def download_form(background_tasks: BackgroundTasks, url: str = Form(...), expire_days: int = Form(0), confirm_override: bool = Form(False), user: dict = Depends(verify_auth)):
+async def download_form(background_tasks: BackgroundTasks, request: Request, url: str = Form(...), expire_days: int = Form(0), confirm_override: bool = Form(False), user: dict = Depends(verify_auth)):
     task_id = generate_secure_id()
     active_downloads[task_id] = "Queued..."
     background_tasks.add_task(process_yt_dlp, url, user["username"], task_id, expire_days)
-    return {"status": "processing", "task_id": task_id}
+    
+    # Return the synchronous expected URL for the iOS Shortcut
+    base_url = f"{request.url.scheme}://{request.headers.get('host')}"
+    return {"status": "processing", "task_id": task_id, "url": f"{base_url}/view/{task_id}"}
 
 @app.post("/api/upload")
-async def upload_file_endpoint(background_tasks: BackgroundTasks, file: list[UploadFile] = File(...), expire_days: int = Form(0), user: dict = Depends(verify_auth)):
+async def upload_file_endpoint(background_tasks: BackgroundTasks, request: Request, file: list[UploadFile] = File(...), expire_days: int = Form(0), user: dict = Depends(verify_auth)):
     task_id = generate_secure_id()
     
     if len(file) > 1:
@@ -1436,25 +1444,25 @@ async def upload_file_endpoint(background_tasks: BackgroundTasks, file: list[Upl
             temp_paths.append(t_path)
             filenames.append(f.filename)
         background_tasks.add_task(process_local_carousel, temp_paths, filenames, user["username"], task_id, expire_days)
-        return {"status": "processing", "task_id": task_id}
     else:
-        video_id = generate_secure_id()
         ext = os.path.splitext(file[0].filename)[1].lower()
         if not ext: ext = ".mp4"
         
-        temp_path = os.path.join(DOWNLOAD_DIR, f"temp_{video_id}{ext}")
-        final_path = os.path.join(DOWNLOAD_DIR, f"{video_id}.mp4")
+        temp_path = os.path.join(DOWNLOAD_DIR, f"temp_{task_id}{ext}")
+        final_path = os.path.join(DOWNLOAD_DIR, f"{task_id}.mp4")
         
         with open(temp_path, "wb") as buffer: shutil.copyfileobj(file[0].file, buffer)
             
         if ext in [".mp4", ".mov", ".avi", ".mkv", ".webm"]:
-            background_tasks.add_task(convert_local_file, temp_path, final_path, video_id, user["username"], task_id, file[0].filename, expire_days)
+            background_tasks.add_task(convert_local_file, temp_path, final_path, task_id, user["username"], file[0].filename, expire_days)
         else:
-            target_path = os.path.join(DOWNLOAD_DIR, f"{video_id}{ext}")
+            target_path = os.path.join(DOWNLOAD_DIR, f"{task_id}{ext}")
             shutil.move(temp_path, target_path)
-            extract_true_duration(video_id, user["username"], custom_title=file[0].filename, ext=ext, expire_days=expire_days)
-            
-        return {"status": "processing", "video_id": video_id}
+            extract_true_duration(task_id, user["username"], custom_title=file[0].filename, ext=ext, expire_days=expire_days)
+
+    # Return the synchronous expected URL for the iOS Shortcut
+    base_url = f"{request.url.scheme}://{request.headers.get('host')}"
+    return {"status": "processing", "task_id": task_id, "url": f"{base_url}/view/{task_id}"}
 
 @app.post("/api/edit/{video_id}")
 async def edit_video(video_id: str, background_tasks: BackgroundTasks, start: str = Form(...), end: str = Form(...), mode: str = Form(...), user: dict = Depends(verify_auth)):

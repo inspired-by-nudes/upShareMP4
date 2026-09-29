@@ -76,7 +76,9 @@
 
         .card-content { flex-grow: 1; display: flex; flex-direction: column; }
         .thumbnail-wrapper { position: relative; width: 100%; height: 180px; margin-bottom: 10px; border-radius: 4px; overflow: hidden; background: #2a2a2a; }
-        .thumbnail { width: 100%; height: 100%; object-fit: cover; display: flex; align-items: center; justify-content: center; color: #555; text-align: center; font-weight:bold;}
+        
+        /* Changed object-fit to contain to fix logo/thumbnail cropping */
+        .thumbnail { width: 100%; height: 100%; object-fit: contain; display: flex; align-items: center; justify-content: center; color: #555; text-align: center; font-weight:bold;}
 
         .date-badge { position: absolute; bottom: 8px; right: 8px; background: rgba(0,0,0,0.75); color: #fff; font-size: 0.75rem; padding: 3px 6px; border-radius: 4px; }
         .expire-badge { position: absolute; top: 8px; left: 8px; background: rgba(255, 51, 51, 0.85); color: #fff; font-size: 0.7rem; padding: 3px 6px; border-radius: 4px; }
@@ -129,11 +131,11 @@
         #backToTop { display: none; position: fixed; bottom: 30px; right: 30px; z-index: 99; border: none; outline: none; background-color: #ff8c00; color: white; cursor: pointer; width: 50px; height: 50px; padding: 0; border-radius: 50%; font-size: 20px; font-weight: bold; box-shadow: 0 4px 8px rgba(0,0,0,0.3); transition: opacity 0.3s; align-items: center; justify-content: center; }
         #backToTop:hover { background-color: #e07b00; }
 
-        /* Drag and Drop Overlay Styles */
-        .drag-overlay { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(18, 18, 18, 0.95); z-index: 9999; display: flex; align-items: center; justify-content: center; opacity: 0; visibility: hidden; transition: opacity 0.2s ease; }
+        /* Updated Drop Overlay with Green Dashes */
+        .drag-overlay { position: fixed; top: 15px; left: 15px; width: calc(100vw - 30px); height: calc(100vh - 30px); background: rgba(18, 18, 18, 0.95); z-index: 9999; display: flex; align-items: center; justify-content: center; opacity: 0; visibility: hidden; transition: opacity 0.2s ease; border: 6px dashed #00E676; border-radius: 16px; box-sizing: border-box; }
         .drag-overlay.active { opacity: 1; visibility: visible; }
-        .drag-box { border: 4px dashed #ff8c00; border-radius: 12px; padding: 50px; text-align: center; color: #ff8c00; background: rgba(0,0,0,0.5); pointer-events: none; }
-        .drag-box h2 { margin: 0; font-size: 2.5rem; }
+        .drag-box { border: none; padding: 50px; text-align: center; color: #00E676; background: transparent; pointer-events: none; }
+        .drag-box h2 { margin: 0; font-size: 2.5rem; text-shadow: 0 4px 10px rgba(0,0,0,0.5); }
 
         /* Carousel Editor Styles */
         .carousel-slide-edit { position: relative; border-radius: 6px; overflow: hidden; cursor: pointer; border: 2px solid transparent; transition: opacity 0.2s; background: #000; aspect-ratio: 1; }
@@ -190,6 +192,8 @@
                         <select id="fileExpire" class="expire-drop">
                             <option value="0">Keep Forever</option>
                             <option value="1">Expire 24h</option>
+                            <option value="7">Expire 7d</option>
+                            <option value="30">Expire 30d</option>
                         </select>
                         <button type="submit" class="btn-submit">Upload</button>
                     </div>
@@ -376,7 +380,9 @@
                 renderUnifiedGrid();
                 if (!window.sseConnected) { setupSSE(); window.sseConnected = true; }
                 return true;
-            } catch (e) {}
+            } catch (e) {
+                return false;
+            }
         }
 
         async function handleLogin(e) {
@@ -414,9 +420,7 @@
             renderUnifiedGrid();
             
             const fd = new FormData(); 
-            for (let i = 0; i < fi.files.length; i++) {
-                fd.append('file', fi.files[i]);
-            }
+            for (let i = 0; i < fi.files.length; i++) { fd.append('file', fi.files[i]); }
             fd.append('expire_days', exp);
             
             await fetch('/api/upload', { method: 'POST', body: fd }); 
@@ -466,7 +470,6 @@
             for (let i = 0; i < files.length; i++) { fd.append('file', files[i]); }
             fd.append('expire_days', document.getElementById('fileExpire').value);
             
-            switchSegment('upload'); 
             await fetch('/api/upload', { method: 'POST', body: fd }); 
             
             delete currentTasks[tempTaskId];
@@ -725,7 +728,7 @@
             const res = await fetch('/api/stats');
             if (res.ok) {
                 const s = await res.json();
-                document.getElementById('myStatsContent').innerHTML = `<p style="color:#ccc;">Media Count: <strong style="color:#fff;">${s.video_count}</strong></p><p style="color:#ccc;">Disk Usage: <strong style="color:#fff;">${formatBytes(s.used_disk)}</strong></p><p style="color:#ccc;">Your Bandwidth: <strong style="color:#fff;">${formatBytes(s.user_bandwidth)}</strong></p>`;
+                document.getElementById('myStatsContent').innerHTML = `<p style="color:#ccc;">Media Count: <strong style="color:#fff;">${s.video_count}</strong></p><p style="color:#ccc;">Disk Usage: <strong style="color:#fff;">${formatBytes(s.used_disk)}</strong></p><p style="color:#ccc;">Bandwidth Shared: <strong style="color:#fff;">${formatBytes(s.user_bandwidth)}</strong></p>`;
 
                 let tabsHtml = `<div class="tab active" onclick="switchTab('mystats', this)">Statistics</div>`;
                 if (s.role === 'admin') {
@@ -795,7 +798,22 @@
         };
 
         setInterval(() => { if (document.getElementById('app-screen').style.display === 'block') checkAuthAndLoad(); }, 5000);
-        window.onload = checkAuthAndLoad;
+        
+        // Setup smart URL interception for iOS Shortcuts
+        window.onload = async () => {
+            const authed = await checkAuthAndLoad();
+            const params = new URLSearchParams(window.location.search);
+            const sharedUrl = params.get('url');
+            
+            if (sharedUrl && authed) {
+                document.getElementById('videoUrl').value = sharedUrl;
+                submitUrl(null);
+                window.history.replaceState({}, document.title, "/");
+            } else if (sharedUrl) {
+                // Keep it in the input if they need to log in first
+                document.getElementById('videoUrl').value = sharedUrl;
+            }
+        };
     </script>
 </body>
 </html>

@@ -233,18 +233,23 @@ def extract_true_duration(video_id: str, user_id: str, url: str = "#", custom_ti
         }
         save_db(db)
 
-def generate_carousel_html(carousel_tags: str, extracted_title: str) -> str:
+def generate_carousel_html(carousel_tags: str, extracted_title: str, og_image_url: str = "") -> str:
+    og_meta = f'<meta property="og:image" content="{og_image_url}">\n<meta name="twitter:image" content="{og_image_url}">' if og_image_url else ""
+    
     return f"""
     <!DOCTYPE html>
     <html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover'>
     <title>{html.escape(extracted_title)}</title>
+    {og_meta}
+    <meta name="twitter:card" content="summary_large_image">
     <style>
         * {{ box-sizing: border-box; -webkit-tap-highlight-color: transparent; }}
         html, body {{ margin: 0; padding: 0; background: #000; width: 100vw; height: 100dvh; min-height: -webkit-fill-available; overflow: hidden; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; user-select: none; }}
         
         .carousel-container {{ position: relative; width: 100vw; height: 100dvh; min-height: -webkit-fill-available; overflow: hidden; display: flex; align-items: center; justify-content: center; }}
-        .carousel-track {{ display: flex; transition: transform 0.3s cubic-bezier(0.25, 1, 0.5, 1); height: 100%; width: 100%; }}
-        .carousel-item {{ min-width: 100vw; width: 100vw; height: 100dvh; display: flex; align-items: center; justify-content: center; flex-shrink: 0; background: #000; position: relative; padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }}
+        .carousel-track {{ position: relative; width: 100%; height: 100%; }}
+        .carousel-item {{ position: absolute; top: 0; left: 0; width: 100vw; height: 100dvh; display: flex; align-items: center; justify-content: center; background: #000; padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); opacity: 0; z-index: 1; transition: opacity 0.4s ease-in-out; pointer-events: none; }}
+        .carousel-item.active-slide {{ opacity: 1; z-index: 2; pointer-events: auto; }}
         .carousel-item img, .carousel-item video {{ max-width: 100%; max-height: 100%; width: auto; height: auto; object-fit: contain !important; display: block; margin: auto; }}
 
         .btn {{ position: absolute; top: 50%; transform: translateY(-50%); background: rgba(0,0,0,0.6); color: white; border: 1px solid rgba(255,255,255,0.2); width: 44px !important; height: 44px !important; min-width: 44px !important; min-height: 44px !important; padding: 0; display: flex; align-items: center; justify-content: center; cursor: pointer; border-radius: 50% !important; font-size: 20px; z-index: 20; transition: all 0.2s; aspect-ratio: 1/1 !important; box-sizing: border-box; flex-shrink: 0 !important; line-height: 1; }}
@@ -291,15 +296,15 @@ def generate_carousel_html(carousel_tags: str, extracted_title: str) -> str:
                 if (imgTimer) clearInterval(imgTimer);
                 document.querySelectorAll('video').forEach(v => {{ v.pause(); v.currentTime = 0; }});
 
-                track.style.transform = `translateX(-${{index * 100}}vw)`;
-
                 for (let i = 0; i < items; i++) {{
                     dots[i].className = 'dot';
                     const fill = document.getElementById(`fill-${{i}}`);
                     if (fill) {{ fill.style.transition = 'none'; fill.style.width = i < index ? '100%' : '0%'; }}
+                    track.children[i].classList.remove('active-slide');
                 }}
                 
                 dots[index].className = 'dot active';
+                track.children[index].classList.add('active-slide');
                 const currentFill = document.getElementById(`fill-${{index}}`);
                 
                 const currentSlide = track.children[index];
@@ -308,7 +313,7 @@ def generate_carousel_html(carousel_tags: str, extracted_title: str) -> str:
                 if (video) {{
                     let p = video.play();
                     if (p !== undefined) {{
-                        p.catch(() => {{ /* Intentionally wait for manual play */ }});
+                        p.catch(() => {{ /* Wait for manual play */ }});
                     }}
                     video.onplay = () => {{
                         if(imgTimer) clearInterval(imgTimer);
@@ -510,16 +515,8 @@ def process_embed_post(url: str, user_id: str, task_id: str, expire_days: int) -
                 author = data.get("author_name")
                 title = f"Post by {author}" if author else f"{platform} Post"
             
-            if not thumb_url:
+            if not thumb_url and platform != "Bluesky":
                 thumb_url = data.get("thumbnail_url")
-            
-            if not thumb_url and platform == "Bluesky":
-                try:
-                    page_res = requests.get(url, headers=headers, timeout=8)
-                    s = BeautifulSoup(page_res.content, 'html.parser')
-                    og_img = s.find('meta', property='og:image')
-                    if og_img: thumb_url = og_img.get('content')
-                except: pass
 
             if thumb_url:
                 try:
@@ -994,11 +991,9 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
         url = url.split('?')[0]
         headers_cdn = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36', 'Accept': '*/*'}
 
-        # Cascade 1: Cobalt (Fastest, natively catches audio for IG images/carousels)
         native_items = scrape_cobalt_fleet(url, task_id)
 
         if not native_items:
-            # Cascade 2: yt-dlp (Robust native IG scraper, gets full audio tracks as video)
             logger.info(f"[Task {task_id}] Cobalt failed. Routing directly via yt-dlp...")
             ydl_opts_ig = {'extract_flat': 'in_playlist', 'ignoreerrors': True, 'quiet': True}
             if cookie_path: ydl_opts_ig['cookiefile'] = cookie_path
@@ -1054,12 +1049,10 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                         except:
                             download_success = False
                             
-        # Cascade 3: Instaloader & Embed API (Last resort, ignores audio but gets pure images)
         if not native_items and not download_success:
             native_items = scrape_instaloader(url, task_id)
             if not native_items: native_items = scrape_instagram_embed(url, task_id)
 
-        # Process whichever native fallback worked
         if native_items:
             download_success = True
             for idx, slide in enumerate(native_items):
@@ -1248,9 +1241,6 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                             elif t: extracted_title = t
                     except: pass
 
-                gallery_html = generate_carousel_html(carousel_tags, extracted_title)
-                with open(html_path, "w", encoding="utf-8") as f: f.write(gallery_html)
-
                 first_base = sorted_bases[0]
                 first_files = bases[first_base]
                 first_primary = next((f for f in first_files if f.endswith(('.mp4', '.webm', '.mkv', '.mov'))), None)
@@ -1264,6 +1254,9 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                 else:
                     try: shutil.copy(os.path.join(DOWNLOAD_DIR, f"{new_id}_0.{first_ext}"), os.path.join(DOWNLOAD_DIR, f"{new_id}.jpg"))
                     except: pass
+
+                gallery_html = generate_carousel_html(carousel_tags, extracted_title, f"/videos/{new_id}.jpg")
+                with open(html_path, "w", encoding="utf-8") as f: f.write(gallery_html)
 
                 c_type = "carousel_media" if has_video else "carousel_image"
                 extract_true_duration(new_id, user_id, url, extracted_title, ".html", expire_days, engine="🎡 Carousel", carousel_type=c_type, total_duration=total_duration)
@@ -1318,15 +1311,16 @@ def process_local_carousel(files_paths: list, filenames: list, user_id: str, tas
             except: pass
 
         extracted_title = "Uploaded Carousel"
-        gallery_html = generate_carousel_html(carousel_tags, extracted_title)
-        with open(html_path, "w", encoding="utf-8") as f: f.write(gallery_html)
-
+        
         first_ext = os.path.splitext(filenames[0])[1].lower()
         if first_ext in [".mp4", ".mov", ".avi", ".mkv", ".webm"]:
             subprocess.run(["ffmpeg", "-y", "-i", os.path.join(DOWNLOAD_DIR, f"{new_id}_0.mp4"), "-ss", "00:00:00.100", "-vframes", "1", "-q:v", "2", f"{DOWNLOAD_DIR}/{new_id}.jpg"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         else:
             try: shutil.copy(os.path.join(DOWNLOAD_DIR, f"{new_id}_0.jpg"), os.path.join(DOWNLOAD_DIR, f"{new_id}.jpg"))
             except: pass
+            
+        gallery_html = generate_carousel_html(carousel_tags, extracted_title, f"/videos/{new_id}.jpg")
+        with open(html_path, "w", encoding="utf-8") as f: f.write(gallery_html)
 
         c_type = "carousel_media" if has_video else "carousel_image"
         extract_true_duration(new_id, user_id, custom_title=extracted_title, ext=".html", expire_days=expire_days, engine="🎡 Carousel", carousel_type=c_type, total_duration=total_duration)
@@ -1536,10 +1530,6 @@ async def edit_carousel_endpoint(video_id: str, background_tasks: BackgroundTask
                 else:
                     carousel_tags += f"<div class='carousel-item' data-type='image'><img src='/videos/{new_f}'></div>"
             
-            html_path = os.path.join(DOWNLOAD_DIR, f"{new_id}.html")
-            gallery_html = generate_carousel_html(carousel_tags, f"Copy of {vid.get('title', safe_id)}")
-            with open(html_path, "w", encoding="utf-8") as f: f.write(gallery_html)
-            
             if len(sorted_keeps) > 0:
                 first_f = slide_files[sorted_keeps[0]]
                 first_ext = os.path.splitext(first_f)[1].lower()
@@ -1548,6 +1538,10 @@ async def edit_carousel_endpoint(video_id: str, background_tasks: BackgroundTask
                 else:
                     try: shutil.copy(os.path.join(DOWNLOAD_DIR, f"{new_id}_0{first_ext}"), os.path.join(DOWNLOAD_DIR, f"{new_id}.jpg"))
                     except: pass
+
+            html_path = os.path.join(DOWNLOAD_DIR, f"{new_id}.html")
+            gallery_html = generate_carousel_html(carousel_tags, f"Copy of {vid.get('title', safe_id)}", f"/videos/{new_id}.jpg")
+            with open(html_path, "w", encoding="utf-8") as f: f.write(gallery_html)
 
             c_type = "carousel_media" if has_video else "carousel_image"
             extract_true_duration(new_id, user["username"], vid.get("url", "#"), f"Copy - {vid.get('title', safe_id)}", ".html", 0, engine="🎡 Carousel", carousel_type=c_type, total_duration=total_duration)
@@ -1585,10 +1579,6 @@ async def edit_carousel_endpoint(video_id: str, background_tasks: BackgroundTask
                 else:
                     carousel_tags += f"<div class='carousel-item' data-type='image'><img src='/videos/{final_f}'></div>"
 
-            html_path = os.path.join(DOWNLOAD_DIR, f"{safe_id}.html")
-            gallery_html = generate_carousel_html(carousel_tags, vid.get('title', safe_id))
-            with open(html_path, "w", encoding="utf-8") as f: f.write(gallery_html)
-
             if len(sorted_keeps) > 0:
                 first_ext = os.path.splitext(temp_map[0])[1].lower()
                 if first_ext in ['.mp4', '.webm', '.mkv', '.mov']:
@@ -1596,6 +1586,10 @@ async def edit_carousel_endpoint(video_id: str, background_tasks: BackgroundTask
                 else:
                     try: shutil.copy(os.path.join(DOWNLOAD_DIR, f"{safe_id}_0{first_ext}"), os.path.join(DOWNLOAD_DIR, f"{safe_id}.jpg"))
                     except: pass
+
+            html_path = os.path.join(DOWNLOAD_DIR, f"{safe_id}.html")
+            gallery_html = generate_carousel_html(carousel_tags, vid.get('title', safe_id), f"/videos/{safe_id}.jpg")
+            with open(html_path, "w", encoding="utf-8") as f: f.write(gallery_html)
                     
             with db_lock:
                 db = load_db()

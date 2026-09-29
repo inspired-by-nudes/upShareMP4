@@ -124,7 +124,7 @@
         input[type=range]::-webkit-slider-runnable-track { width: 100%; height: 6px; cursor: pointer; background: #333; border-radius: 3px; }
         input[type=range]::-webkit-slider-thumb { height: 16px; width: 16px; border-radius: 50%; background: #ff8c00; cursor: pointer; -webkit-appearance: none; margin-top: -5px; }
 
-        #toast { visibility: hidden; min-width: 250px; background-color: #00E676; color: #121212; text-align: center; border-radius: 4px; padding: 16px; position: fixed; z-index: 2000; left: 50%; bottom: 80px; font-weight: bold; transform: translateX(-50%); opacity: 0; transition: opacity 0.3s; }
+        #toast { visibility: hidden; min-width: 250px; background-color: #00E676; color: #121212; text-align: center; border-radius: 4px; padding: 16px; position: fixed; z-index: 2000; left: 50%; bottom: 80px; font-weight: bold; transform: translateX(-50%); opacity: 0; transition: opacity 0.3s; pointer-events: none; }
         #toast.show { visibility: visible; opacity: 1; }
 
         #backToTop { display: none; position: fixed; bottom: 30px; right: 30px; z-index: 99; border: none; outline: none; background-color: #ff8c00; color: white; cursor: pointer; width: 50px; height: 50px; padding: 0; border-radius: 50%; font-size: 20px; font-weight: bold; box-shadow: 0 4px 8px rgba(0,0,0,0.3); transition: opacity 0.3s; align-items: center; justify-content: center; }
@@ -271,11 +271,8 @@
                 
                 <hr style="border:0; border-top:1px solid #333; margin:20px 0;">
                 
-                <button class="btn" style="background:#555; color:#fff; width:100%; margin-bottom:10px;" onclick="generateApiKey()">Generate New API Key</button>
-                <div id="apiKeyContainer" style="display:none; align-items:center; gap:10px; margin-bottom:10px;">
-                    <input type="text" id="apiKeyDisplay" readonly style="flex:1; background:#111; color:#00E676; border:1px dashed #ff8c00; text-align:center; font-family:monospace; font-size:1.1rem; height:48px;" onclick="this.select()">
-                    <button class="btn" style="background:#00E676; color:#121212; height:48px; width:48px; padding:0; display:flex; align-items:center; justify-content:center;" onclick="copyApiKey()" title="Copy API Key">📋</button>
-                </div>
+                <button id="generateApiKeyBtn" class="btn" style="background:#555; color:#fff; width:100%; margin-bottom:10px;" onclick="generateApiKey()">Generate New API Key</button>
+                <input type="text" id="apiKeyDisplay" readonly style="display:none; width:100%; background:#111; color:#00E676; border:1px dashed #ff8c00; text-align:center; font-family:monospace; font-size:1.1rem; height:48px; cursor:pointer; margin-bottom:10px;" onclick="copyApiKey()" title="Tap to copy">
 
                 <hr style="border:0; border-top:1px solid #333; margin:20px 0;">
                 <button class="btn" style="background:#ff3333; color:#fff; width:100%;" onclick="logoutApp()">Logout</button>
@@ -321,7 +318,7 @@
     </div>
 
     <script>
-        let isLoggedIn = false, lastTasksString = "", lastVideosString = "", currentTasks = {}, activeVideosData = [];
+        let isLoggedIn = false, lastTasksString = "", currentTasks = {}, activeVideosData = [];
         let loginContactMsg = "";
         let displayLimit = 20;
 
@@ -502,7 +499,7 @@
                 if (nt && nt !== oldText) {
                     const fd = new FormData(); fd.append('new_title', nt);
                     await fetch(`/api/videos/${encodeURIComponent(videoId)}/title`, {method: 'PUT', body: fd});
-                    lastVideosString = ""; checkAuthAndLoad();
+                    checkAuthAndLoad();
                 }
             }
         }
@@ -557,94 +554,136 @@
             grid.innerHTML = htmlBuffer;
         }
 
+        function buildCardHTML(v) {
+            const viewUrl = window.location.origin + '/view/' + encodeURIComponent(v.id);
+            const shareUrl = window.location.origin + '/videos/' + encodeURIComponent(v.filename);
+            
+            const type = v.type;
+            const isCarouselImage = type === 'carousel_image';
+            const isCarouselMedia = type === 'carousel_media';
+            const isCarousel = isCarouselImage || isCarouselMedia;
+            const isArticle = type === 'article';
+            const isImage = type === 'image';
+            
+            let cardClass = 'card';
+            if (isArticle) cardClass += ' article-card';
+            else if (isCarouselImage) cardClass += ' carousel-image-card';
+            else if (isCarouselMedia) cardClass += ' carousel-media-card';
+            else if (isImage) cardClass += ' image-card';
+
+            let thumbText = 'No Thumb';
+            if (isArticle) thumbText = '📝<br>Article';
+            else if (isCarousel) thumbText = '🎡<br>Carousel';
+            else if (isImage) thumbText = '🖼️<br>Image';
+            else thumbText = '▶️<br>Video';
+
+            const thumbImage = v.thumbnail ? `<img src="/videos/${encodeURIComponent(v.thumbnail)}" class="thumbnail" loading="lazy" alt="Thumbnail">` : `<div class="thumbnail" style="font-size:1.5rem;">${thumbText}</div>`;
+            const thumb = `<a href="${viewUrl}" target="_blank" rel="noopener noreferrer" style="display:block; width:100%; height:100%; text-decoration:none;">${thumbImage}</a>`;
+
+            const favicon = v.domain !== 'unknown' ? `<a href="${encodeURI(v.original_url)}" target="_blank" rel="noopener noreferrer"><img src="https://www.google.com/s2/favicons?domain=${encodeURIComponent(v.domain)}&sz=32" class="favicon" onerror="this.style.display='none'" alt="Source"></a>` : '';
+            
+            const d = document.createElement('div');
+            d.innerText = v.title;
+            const safeTitle = d.innerHTML.replace(/"/g, '&quot;');
+            const promptTitle = safeTitle.replace(/'/g, "\\'");
+
+            let expBadge = v.expires_at > 0 ? `<div class="expire-badge countdown-badge" data-expires="${v.expires_at}">${getExpirationString(v.expires_at)}</div>` : '';
+            
+            let editBtn = '';
+            if (!isArticle && !isImage) {
+                const isCarouselFlag = isCarousel ? 'true' : 'false';
+                editBtn = `<button class="btn btn-edit" onclick="openEditorModal('${encodeURIComponent(v.id)}', '${shareUrl}', ${isCarouselFlag})">✂️</button>`;
+            }
+
+            let displayEngine = v.engine || '';
+            if (isCarousel) displayEngine = '🎡 Carousel';
+
+            let timeDisplay = `⏱️ ${v.duration}`;
+            if (isCarousel && isCarouselImage) {
+                timeDisplay = displayEngine || '🎡 Carousel';
+            } else if (isArticle || isImage) {
+                timeDisplay = displayEngine || (isImage ? '🖼️ Image' : '📄 Readability');
+            }
+
+            let viewAction = `<a href="${viewUrl}" target="_blank" rel="noopener noreferrer" class="btn btn-view">View</a>`;
+
+            return `
+                <div class="${cardClass}" id="card-${v.id}">
+                    <input type="checkbox" class="card-checkbox" value="${v.id}" onchange="updateBulkCounter()">
+                    <div class="card-content">
+                        <div class="thumbnail-wrapper">${thumb}${expBadge}<div class="date-badge">${v.date_badge}</div></div>
+                        <div class="card-header">${favicon}<div class="video-title" title="${safeTitle}" ondblclick="makeEditable('${v.id}', '${promptTitle}')">${safeTitle}</div></div>
+                    </div>
+                    <div class="card-bottom">
+                        <div class="meta-tags"><div class="meta-tag">👁️ ${v.views}</div><div class="meta-tag">${timeDisplay}</div><div class="meta-tag">💾 ${formatBytes(v.size_bytes)}</div></div>
+                        <div class="btn-group">
+                            <button class="btn btn-copy" onclick="copyLink('${shareUrl}')">Copy</button>
+                            ${viewAction}
+                            ${editBtn}
+                            <a href="/api/download/${encodeURIComponent(v.id)}" class="btn btn-download">📥</a>
+                            <button class="btn btn-delete" onmouseenter="this.closest('.card').classList.add('deleting')" onmouseleave="this.closest('.card').classList.remove('deleting')" onclick="triggerDelete('${v.id}', this)">✖</button>
+                        </div>
+                    </div>
+                </div>`;
+        }
+
         function renderVideosGrid(resetLimit = false) {
             if (resetLimit) displayLimit = 20;
-            
             const displayData = activeVideosData.slice(0, displayLimit);
-            
-            // Smart DOM diffing mapping to stop thumbnail flashes
-            const visualState = displayData.map(v => `${v.id}|${v.title}|${v.views}|${v.size_bytes}`).join(',');
-            if (visualState === lastVideosString && !resetLimit) return; 
-            lastVideosString = visualState;
-            
             const grid = document.getElementById('videoGrid');
-            let htmlBuffer = "";
+            
+            const existingCards = new Map();
+            Array.from(grid.children).forEach(child => existingCards.set(child.id, child));
+            
+            let previousSibling = null;
             
             displayData.forEach(v => {
-                const viewUrl = window.location.origin + '/view/' + encodeURIComponent(v.id);
-                const shareUrl = window.location.origin + '/videos/' + encodeURIComponent(v.filename);
+                const cardId = 'card-' + v.id;
+                let card = existingCards.get(cardId);
                 
-                const type = v.type;
-                const isCarouselImage = type === 'carousel_image';
-                const isCarouselMedia = type === 'carousel_media';
-                const isCarousel = isCarouselImage || isCarouselMedia;
-                const isArticle = type === 'article';
-                const isImage = type === 'image';
-                
-                let cardClass = 'card';
-                if (isArticle) cardClass += ' article-card';
-                else if (isCarouselImage) cardClass += ' carousel-image-card';
-                else if (isCarouselMedia) cardClass += ' carousel-media-card';
-                else if (isImage) cardClass += ' image-card';
-
-                let thumbText = 'No Thumb';
-                if (isArticle) thumbText = '📝<br>Article';
-                else if (isCarousel) thumbText = '🎡<br>Carousel';
-                else if (isImage) thumbText = '🖼️<br>Image';
-                else thumbText = '▶️<br>Video';
-
-                const thumbImage = v.thumbnail ? `<img src="/videos/${encodeURIComponent(v.thumbnail)}" class="thumbnail" loading="lazy" alt="Thumbnail">` : `<div class="thumbnail" style="font-size:1.5rem;">${thumbText}</div>`;
-                const thumb = `<a href="${viewUrl}" target="_blank" rel="noopener noreferrer" style="display:block; width:100%; height:100%; text-decoration:none;">${thumbImage}</a>`;
-
-                const favicon = v.domain !== 'unknown' ? `<a href="${encodeURI(v.original_url)}" target="_blank" rel="noopener noreferrer"><img src="https://www.google.com/s2/favicons?domain=${encodeURIComponent(v.domain)}&sz=32" class="favicon" onerror="this.style.display='none'" alt="Source"></a>` : '';
-                
-                const d = document.createElement('div');
-                d.innerText = v.title;
-                const safeTitle = d.innerHTML.replace(/"/g, '&quot;');
-                const promptTitle = safeTitle.replace(/'/g, "\\'");
-
-                let expBadge = v.expires_at > 0 ? `<div class="expire-badge countdown-badge" data-expires="${v.expires_at}">${getExpirationString(v.expires_at)}</div>` : '';
-                
-                let editBtn = '';
-                if (!isArticle && !isImage) {
-                    const isCarouselFlag = isCarousel ? 'true' : 'false';
-                    editBtn = `<button class="btn btn-edit" onclick="openEditorModal('${encodeURIComponent(v.id)}', '${shareUrl}', ${isCarouselFlag})">✂️</button>`;
+                if (!card) {
+                    const tempDiv = document.createElement('div');
+                    tempDiv.innerHTML = buildCardHTML(v);
+                    card = tempDiv.firstElementChild;
+                    
+                    if (previousSibling) {
+                        previousSibling.after(card);
+                    } else {
+                        grid.prepend(card);
+                    }
+                } else {
+                    // Update only text content to prevent image reloads/flashing
+                    const titleEl = card.querySelector('.video-title');
+                    if (titleEl.innerText !== v.title) {
+                        titleEl.innerText = v.title;
+                        const safeTitle = document.createElement('div');
+                        safeTitle.innerText = v.title;
+                        titleEl.title = safeTitle.innerHTML.replace(/"/g, '&quot;');
+                    }
+                    
+                    let displayEngine = v.engine || '';
+                    if (v.type === 'carousel_image' || v.type === 'carousel_media') displayEngine = '🎡 Carousel';
+                    let timeDisplay = `⏱️ ${v.duration}`;
+                    if (v.type === 'carousel_image') timeDisplay = displayEngine || '🎡 Carousel';
+                    else if (v.type === 'article' || v.type === 'image') timeDisplay = displayEngine || (v.type === 'image' ? '🖼️ Image' : '📄 Readability');
+                    
+                    card.querySelector('.meta-tags').innerHTML = `<div class="meta-tag">👁️ ${v.views}</div><div class="meta-tag">${timeDisplay}</div><div class="meta-tag">💾 ${formatBytes(v.size_bytes)}</div>`;
+                    
+                    // Rearrange if DOM order somehow decoupled from data
+                    if (previousSibling && card.previousElementSibling !== previousSibling) {
+                        previousSibling.after(card);
+                    } else if (!previousSibling && grid.firstElementChild !== card) {
+                        grid.prepend(card);
+                    }
+                    
+                    existingCards.delete(cardId);
                 }
-
-                let displayEngine = v.engine || '';
-                if (isCarousel) displayEngine = '🎡 Carousel';
-
-                let timeDisplay = `⏱️ ${v.duration}`;
-                if (isCarousel && isCarouselImage) {
-                    timeDisplay = displayEngine || '🎡 Carousel';
-                } else if (isArticle || isImage) {
-                    timeDisplay = displayEngine || (isImage ? '🖼️ Image' : '📄 Readability');
-                }
-
-                let viewAction = `<a href="${viewUrl}" target="_blank" rel="noopener noreferrer" class="btn btn-view">View</a>`;
-
-                htmlBuffer += `
-                    <div class="${cardClass}" id="card-${v.id}">
-                        <input type="checkbox" class="card-checkbox" value="${v.id}" onchange="updateBulkCounter()">
-                        <div class="card-content">
-                            <div class="thumbnail-wrapper">${thumb}${expBadge}<div class="date-badge">${v.date_badge}</div></div>
-                            <div class="card-header">${favicon}<div class="video-title" title="${safeTitle}" ondblclick="makeEditable('${v.id}', '${promptTitle}')">${safeTitle}</div></div>
-                        </div>
-                        <div class="card-bottom">
-                            <div class="meta-tags"><div class="meta-tag">👁️ ${v.views}</div><div class="meta-tag">${timeDisplay}</div><div class="meta-tag">💾 ${formatBytes(v.size_bytes)}</div></div>
-                            <div class="btn-group">
-                                <button class="btn btn-copy" onclick="copyLink('${shareUrl}')">Copy</button>
-                                ${viewAction}
-                                ${editBtn}
-                                <a href="/api/download/${encodeURIComponent(v.id)}" class="btn btn-download">📥</a>
-                                <button class="btn btn-delete" onmouseenter="this.closest('.card').classList.add('deleting')" onmouseleave="this.closest('.card').classList.remove('deleting')" onclick="triggerDelete('${v.id}', this)">✖</button>
-                            </div>
-                        </div>
-                    </div>`;
+                previousSibling = card;
             });
-            grid.innerHTML = htmlBuffer;
             
-            // Re-apply checked states based on our new array if bulk action was active
+            // Remove lingering items no longer in displayData
+            existingCards.forEach(card => card.remove());
+            
             if(document.body.classList.contains('select-mode-active')) {
                 updateBulkCounter();
             }
@@ -823,8 +862,10 @@
             const res = await fetch('/api/users/apikey', {method: 'POST'});
             if(res.ok) {
                 const data = await res.json();
-                document.getElementById('apiKeyContainer').style.display = 'flex';
-                document.getElementById('apiKeyDisplay').value = data.api_key;
+                document.getElementById('generateApiKeyBtn').style.display = 'none';
+                const display = document.getElementById('apiKeyDisplay');
+                display.style.display = 'block';
+                display.value = data.api_key;
                 copyApiKey();
             }
         }

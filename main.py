@@ -75,6 +75,7 @@ def load_db():
             initial_username: {
                 "password": hashlib.sha256(os.getenv("APP_PASSWORD", "adminpassword").encode()).hexdigest(),
                 "token": secrets.token_urlsafe(32),
+                "api_key": "",
                 "role": "admin",
                 "max_space_mb": 0,
                 "warning_mb": int(os.getenv("MAX_DOWNLOAD_MB", "150")),
@@ -95,6 +96,7 @@ def save_db(data):
     with open(DB_FILE, "w") as f: json.dump(data, f)
 
 def verify_auth(request: Request):
+    api_key = request.headers.get("X-API-Key")
     token = request.cookies.get("upshare_session")
     auth_header = request.headers.get("Authorization")
 
@@ -102,11 +104,23 @@ def verify_auth(request: Request):
         db = load_db()
         users = db.get("users", {})
 
-    if auth_header and auth_header.startswith("Bearer "): token = auth_header.split(" ", 1)[1]
+    # 1. API Key Auth (For Shortcuts)
+    if api_key:
+        for username, user_data in users.items():
+            if user_data.get("api_key") and secrets.compare_digest(user_data["api_key"], str(api_key)):
+                user_data["username"] = username
+                return {"username": username, "role": user_data["role"], "config": user_data}
+
+    # 2. Bearer Token Auth
+    if auth_header and auth_header.startswith("Bearer "): 
+        token = auth_header.split(" ", 1)[1]
+        
+    # 3. Cookie Session Auth
     for username, user_data in users.items():
         if secrets.compare_digest(user_data.get("token", ""), str(token)):
             user_data["username"] = username
             return {"username": username, "role": user_data["role"], "config": user_data}
+            
     raise StarletteHTTPException(status_code=401, detail="Unauthorized")
 
 def verify_admin(user: dict = Depends(verify_auth)):
@@ -252,15 +266,16 @@ def generate_carousel_html(carousel_tags: str, extracted_title: str, og_image_ur
         .carousel-item.active-slide {{ opacity: 1; z-index: 2; pointer-events: auto; }}
         .carousel-item img, .carousel-item video {{ max-width: 100%; max-height: 100%; width: auto; height: auto; object-fit: contain !important; display: block; margin: auto; }}
 
-        .btn {{ position: absolute; top: 50%; transform: translateY(-50%); background: rgba(0,0,0,0.6); color: white; border: 1px solid rgba(255,255,255,0.2); width: 44px !important; height: 44px !important; min-width: 44px !important; min-height: 44px !important; padding: 0; display: flex; align-items: center; justify-content: center; cursor: pointer; border-radius: 50% !important; font-size: 20px; z-index: 20; transition: all 0.2s; aspect-ratio: 1/1 !important; box-sizing: border-box; flex-shrink: 0 !important; line-height: 1; }}
-        .btn:hover {{ background: rgba(0,0,0,0.9); scale: 1.1; }}
+        .btn {{ position: absolute; top: 50%; transform: translateY(-50%); background: rgba(0,0,0,0.6); color: white; border: 1px solid rgba(255,255,255,0.2); width: 44px !important; height: 44px !important; min-width: 44px !important; min-height: 44px !important; padding: 0; display: flex; align-items: center; justify-content: center; cursor: pointer; border-radius: 50% !important; font-size: 20px; z-index: 20; transition: all 0.15s ease-out; aspect-ratio: 1/1 !important; box-sizing: border-box; flex-shrink: 0 !important; line-height: 1; }}
+        @media (hover: hover) {{ .btn:hover {{ background: rgba(0,0,0,0.9); scale: 1.1; }} }}
+        .btn:active {{ background: rgba(255,255,255,0.3); scale: 0.9; opacity: 0.8; }}
         .btn-prev {{ left: 15px; }}
         .btn-next {{ right: 15px; }}
         
         .dots {{ position: absolute; bottom: calc(20px + env(safe-area-inset-bottom, 0px)); width: 100%; display: flex; justify-content: center; align-items: center; gap: 8px; z-index: 20; pointer-events: auto; }}
-        .dot {{ width: 10px; height: 10px; background: rgba(255,255,255,0.35); border-radius: 5px; overflow: hidden; position: relative; cursor: pointer; transition: all 0.3s ease; }}
+        .dot {{ width: 10px; height: 10px; background: rgba(255,255,255,0.4); border: 1px solid rgba(0,0,0,0.4); border-radius: 5px; overflow: hidden; position: relative; cursor: pointer; transition: all 0.3s ease; box-shadow: 0 1px 4px rgba(0,0,0,0.8); }}
         .dot.active {{ width: 28px; background: rgba(255,255,255,0.35); }}
-        .dot-fill {{ height: 100%; width: 0%; background: #ffffff; border-radius: 5px; }}
+        .dot-fill {{ height: 100%; width: 0%; background: #ffffff; border-radius: 5px; box-shadow: 0 0 3px rgba(0,0,0,0.8); }}
         
         .tap-zone {{ position: absolute; top: 0; bottom: 0; width: 35%; z-index: 15; }}
         .tap-left {{ left: 0; }}
@@ -1391,6 +1406,16 @@ def logout(response: Response):
     response.delete_cookie("upshare_session")
     return {"status": "success"}
 
+@app.post("/api/users/apikey")
+def generate_api_key(user: dict = Depends(verify_auth)):
+    new_key = "sk_" + secrets.token_urlsafe(32)
+    with db_lock:
+        db = load_db()
+        if user["username"] in db["users"]:
+            db["users"][user["username"]]["api_key"] = new_key
+            save_db(db)
+    return {"api_key": new_key}
+
 @app.post("/api/download_form")
 async def download_form(background_tasks: BackgroundTasks, url: str = Form(...), expire_days: int = Form(0), confirm_override: bool = Form(False), user: dict = Depends(verify_auth)):
     task_id = generate_secure_id()
@@ -1785,6 +1810,7 @@ def create_user(new_username: str = Form(...), new_password: str = Form(...), us
         db["users"][new_username] = {
             "password": hashlib.sha256(new_password.encode()).hexdigest(),
             "token": secrets.token_urlsafe(32),
+            "api_key": "",
             "role": "user",
             "max_space_mb": 0,
             "warning_mb": 150,

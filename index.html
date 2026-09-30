@@ -266,8 +266,14 @@
 
             <div id="tab-account" class="tab-pane">
                 <h4 style="margin-top:0; color:#fff;">Account Actions</h4>
-                <input type="password" id="newPass" placeholder="New Password" style="width:100%; padding:10px; margin-bottom:10px; border-radius:4px; background:#111; color:#fff; border:1px solid #444;">
-                <button class="btn" style="background:#ff8c00; color:#fff; width:100%; margin-bottom:10px;" onclick="changePass()">Save Password</button>
+                
+                <details class="admin-group" style="margin-bottom: 10px;">
+                    <summary>Change Password</summary>
+                    <div class="form-section">
+                        <input type="password" id="newPass" placeholder="New Password" style="width:100%; padding:10px; margin-bottom:10px; border-radius:4px; background:#111; color:#fff; border:1px solid #444;">
+                        <button class="btn" style="background:#ff8c00; color:#fff; width:100%; margin-bottom:10px;" onclick="changePass()">Save Password</button>
+                    </div>
+                </details>
                 
                 <hr style="border:0; border-top:1px solid #333; margin:20px 0;">
                 
@@ -389,7 +395,7 @@
                 activeVideosData = data.videos;
                 
                 renderTasksGrid();
-                renderVideosGrid(true); 
+                renderVideosGrid(false); 
                 
                 if (!window.sseConnected) { setupSSE(); window.sseConnected = true; }
                 return true;
@@ -652,7 +658,6 @@
                         grid.prepend(card);
                     }
                 } else {
-                    // Update only text content to prevent image reloads/flashing
                     const titleEl = card.querySelector('.video-title');
                     if (titleEl.innerText !== v.title) {
                         titleEl.innerText = v.title;
@@ -669,7 +674,6 @@
                     
                     card.querySelector('.meta-tags').innerHTML = `<div class="meta-tag">👁️ ${v.views}</div><div class="meta-tag">${timeDisplay}</div><div class="meta-tag">💾 ${formatBytes(v.size_bytes)}</div>`;
                     
-                    // Rearrange if DOM order somehow decoupled from data
                     if (previousSibling && card.previousElementSibling !== previousSibling) {
                         previousSibling.after(card);
                     } else if (!previousSibling && grid.firstElementChild !== card) {
@@ -681,7 +685,6 @@
                 previousSibling = card;
             });
             
-            // Remove lingering items no longer in displayData
             existingCards.forEach(card => card.remove());
             
             if(document.body.classList.contains('select-mode-active')) {
@@ -808,7 +811,6 @@
             currentTasks["temp_edit"] = "Editing Carousel..."; renderTasksGrid();
         }
 
-        // --- SETTINGS MODAL ---
         async function openSettings() {
             const res = await fetch('/api/stats');
             if (res.ok) {

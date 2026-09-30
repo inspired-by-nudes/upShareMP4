@@ -4,6 +4,7 @@ from urllib.parse import urlparse, urljoin, quote, unquote
 from fastapi import FastAPI, BackgroundTasks, UploadFile, File, Form, Depends, Request, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, FileResponse, RedirectResponse
+from fastapi.middleware.cors import CORSMiddleware
 from sse_starlette.sse import EventSourceResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 import yt_dlp
@@ -19,6 +20,15 @@ ch.setFormatter(logging.Formatter('%(asctime)s - %(message)s', "%Y-%m-%d %H:%M:%
 logger.addHandler(ch)
 
 app = FastAPI(title="upShareMedia")
+
+# Enable CORS for the Firefox Extension
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 @app.exception_handler(404)
 async def custom_404_handler(request: Request, exc):
@@ -470,7 +480,7 @@ def process_embed_post(url: str, user_id: str, task_id: str, expire_days: int) -
         except: pass
 
     domain = urlparse(url).netloc.lower()
-    new_id = task_id  # Enforce predictable ID
+    new_id = task_id 
     html_path = os.path.join(DOWNLOAD_DIR, f"{new_id}.html")
     
     thumb_url = None
@@ -580,7 +590,7 @@ def process_embed_post(url: str, user_id: str, task_id: str, expire_days: int) -
     return False
 
 def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
-    new_id = task_id # Enforce predictable ID
+    new_id = task_id 
     try:
         active_downloads[task_id] = "Parsing Article..."
         headers = {
@@ -1159,7 +1169,7 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                 if ext_found == 'jpeg': ext_found = 'jpg'
                 info_file = next((os.path.join(DOWNLOAD_DIR, jf) for jf in files if jf.endswith(".info.json")), None)
                 
-                new_id = task_id # Enforce predictable ID
+                new_id = task_id 
                 new_media = os.path.join(DOWNLOAD_DIR, f"{new_id}.{ext_found}")
                 os.rename(os.path.join(DOWNLOAD_DIR, primary), new_media)
                 
@@ -1204,7 +1214,7 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                 extract_true_duration(new_id, user_id, url, extracted_title, f".{ext_found}", expire_days, engine="🖼️ Image" if ext_found in ['jpg', 'png', 'webp', 'jpeg'] else None)
 
             elif len(bases) > 1:
-                new_id = task_id # Enforce predictable ID
+                new_id = task_id 
                 html_path = os.path.join(DOWNLOAD_DIR, f"{new_id}.html")
                 
                 carousel_tags = ""
@@ -1290,7 +1300,7 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
         if task_id in active_downloads: del active_downloads[task_id]
 
 def process_local_carousel(files_paths: list, filenames: list, user_id: str, task_id: str, expire_days: int):
-    new_id = task_id # Enforce predictable ID
+    new_id = task_id 
     html_path = os.path.join(DOWNLOAD_DIR, f"{new_id}.html")
     carousel_tags = ""
     has_video = False
@@ -1427,8 +1437,8 @@ async def download_form(background_tasks: BackgroundTasks, request: Request, url
     active_downloads[task_id] = "Queued..."
     background_tasks.add_task(process_yt_dlp, url, user["username"], task_id, expire_days)
     
-    # Return the synchronous expected URL for the iOS Shortcut
-    base_url = f"{request.url.scheme}://{request.headers.get('host')}"
+    scheme = request.headers.get("x-forwarded-proto", "https")
+    base_url = f"{scheme}://{request.headers.get('host')}"
     return {"status": "processing", "task_id": task_id, "url": f"{base_url}/view/{task_id}"}
 
 @app.post("/api/upload")
@@ -1460,8 +1470,8 @@ async def upload_file_endpoint(background_tasks: BackgroundTasks, request: Reque
             shutil.move(temp_path, target_path)
             extract_true_duration(task_id, user["username"], custom_title=file[0].filename, ext=ext, expire_days=expire_days)
 
-    # Return the synchronous expected URL for the iOS Shortcut
-    base_url = f"{request.url.scheme}://{request.headers.get('host')}"
+    scheme = request.headers.get("x-forwarded-proto", "https")
+    base_url = f"{scheme}://{request.headers.get('host')}"
     return {"status": "processing", "task_id": task_id, "url": f"{base_url}/view/{task_id}"}
 
 @app.post("/api/edit/{video_id}")

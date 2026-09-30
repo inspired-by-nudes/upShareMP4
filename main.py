@@ -89,7 +89,8 @@ def load_db():
                 "role": "admin",
                 "max_space_mb": 0,
                 "warning_mb": int(os.getenv("MAX_DOWNLOAD_MB", "150")),
-                "bandwidth": 0
+                "bandwidth": 0,
+                "created_at": time.time()
             }
         },
         "videos": {},
@@ -1817,7 +1818,9 @@ def get_stats(user: dict = Depends(verify_auth)):
         "video_count": user_vid_count,
         "used_disk": used_disk,
         "user_bandwidth": user_data.get("bandwidth", 0),
-        "bandwidth": db.get("server_bandwidth", 0)
+        "created_at": user_data.get("created_at", 0),
+        "bandwidth": db.get("server_bandwidth", 0),
+        "total_users": len(users)
     }
 
 @app.post("/api/users")
@@ -1832,7 +1835,8 @@ def create_user(new_username: str = Form(...), new_password: str = Form(...), us
             "role": "user",
             "max_space_mb": 0,
             "warning_mb": 150,
-            "bandwidth": 0
+            "bandwidth": 0,
+            "created_at": time.time()
         }
         save_db(db)
     return {"status": "success"}

@@ -1022,10 +1022,58 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
         url = url.split('?')[0]
         headers_cdn = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36', 'Accept': '*/*'}
 
-        native_items = scrape_cobalt_fleet(url, task_id)
+        # 1. Try Instaloader first (best for carousels)
+        native_items = scrape_instaloader(url, task_id)
 
+        # 2. Try Cobalt if Instaloader fails
         if not native_items:
-            logger.info(f"[Task {task_id}] Cobalt failed. Routing directly via yt-dlp...")
+            native_items = scrape_cobalt_fleet(url, task_id)
+            
+        # 3. Try Instagram native embed json if both fail
+        if not native_items:
+            native_items = scrape_instagram_embed(url, task_id)
+
+        # 4. If any custom scraper found media, download it natively
+        if native_items:
+            download_success = True
+            for idx, slide in enumerate(native_items):
+                base_name = f"temp_yt_{task_id}_{idx:03d}"
+                item_saved = False
+                try:
+                    if slide['is_video'] and slide['vid_url']:
+                        r_v = requests.get(slide['vid_url'], headers=headers_cdn, cookies=cj, stream=True, timeout=25)
+                        if r_v.status_code == 200:
+                            with open(f"{DOWNLOAD_DIR}/{base_name}.mp4", 'wb') as f:
+                                for chunk in r_v.iter_content(chunk_size=8192): f.write(chunk)
+                            ensure_ios_compatible_video(f"{DOWNLOAD_DIR}/{base_name}.mp4")
+                            item_saved = True
+
+                    if slide['img_url']:
+                        r_i = requests.get(slide['img_url'], headers=headers_cdn, cookies=cj, timeout=15)
+                        if r_i.status_code == 200 and 'image' in r_i.headers.get('Content-Type', '').lower():
+                            with open(f"{DOWNLOAD_DIR}/{base_name}.jpg", 'wb') as f: f.write(r_i.content)
+                            if not slide['is_video'] or not item_saved:
+                                ensure_jpg_image(f"{DOWNLOAD_DIR}/{base_name}.jpg")
+                                item_saved = True
+
+                    if item_saved:
+                        with open(f"{DOWNLOAD_DIR}/{base_name}.info.json", 'w', encoding='utf-8') as f:
+                            json.dump({'title': slide['title']}, f)
+                    else:
+                        download_success = False
+                except Exception as ex:
+                    logger.error(f"[Instagram Task {task_id}] Failed to save slide {idx}: {ex}")
+                    download_success = False
+
+            if not download_success:
+                for f in os.listdir(DOWNLOAD_DIR):
+                    if f.startswith(f"temp_yt_{task_id}_"):
+                        try: os.remove(os.path.join(DOWNLOAD_DIR, f))
+                        except: pass
+                        
+        # 5. Only if everything else fails, fallback to yt-dlp (which often breaks on IG carousels)
+        if not native_items and not download_success:
+            logger.info(f"[Task {task_id}] Instagram native extraction failed. Falling back to yt-dlp...")
             ydl_opts_ig = {'extract_flat': 'in_playlist', 'ignoreerrors': True, 'quiet': True}
             if cookie_path: ydl_opts_ig['cookiefile'] = cookie_path
             
@@ -1079,47 +1127,6 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                                 else: download_success = False
                         except:
                             download_success = False
-                            
-        if not native_items and not download_success:
-            native_items = scrape_instaloader(url, task_id)
-            if not native_items: native_items = scrape_instagram_embed(url, task_id)
-
-        if native_items:
-            download_success = True
-            for idx, slide in enumerate(native_items):
-                base_name = f"temp_yt_{task_id}_{idx:03d}"
-                item_saved = False
-                try:
-                    if slide['is_video'] and slide['vid_url']:
-                        r_v = requests.get(slide['vid_url'], headers=headers_cdn, cookies=cj, stream=True, timeout=25)
-                        if r_v.status_code == 200:
-                            with open(f"{DOWNLOAD_DIR}/{base_name}.mp4", 'wb') as f:
-                                for chunk in r_v.iter_content(chunk_size=8192): f.write(chunk)
-                            ensure_ios_compatible_video(f"{DOWNLOAD_DIR}/{base_name}.mp4")
-                            item_saved = True
-
-                    if slide['img_url']:
-                        r_i = requests.get(slide['img_url'], headers=headers_cdn, cookies=cj, timeout=15)
-                        if r_i.status_code == 200 and 'image' in r_i.headers.get('Content-Type', '').lower():
-                            with open(f"{DOWNLOAD_DIR}/{base_name}.jpg", 'wb') as f: f.write(r_i.content)
-                            if not slide['is_video'] or not item_saved:
-                                ensure_jpg_image(f"{DOWNLOAD_DIR}/{base_name}.jpg")
-                                item_saved = True
-
-                    if item_saved:
-                        with open(f"{DOWNLOAD_DIR}/{base_name}.info.json", 'w', encoding='utf-8') as f:
-                            json.dump({'title': slide['title']}, f)
-                    else:
-                        download_success = False
-                except Exception as ex:
-                    logger.error(f"[Instagram Task {task_id}] Failed to save slide {idx}: {ex}")
-                    download_success = False
-
-            if not download_success:
-                for f in os.listdir(DOWNLOAD_DIR):
-                    if f.startswith(f"temp_yt_{task_id}_"):
-                        try: os.remove(os.path.join(DOWNLOAD_DIR, f))
-                        except: pass
     else:
         ydl_opts = {
             'outtmpl': f'{DOWNLOAD_DIR}/temp_yt_{task_id}_%(autonumber)03d_%(id)s.%(ext)s',

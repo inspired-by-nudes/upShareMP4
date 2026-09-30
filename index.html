@@ -92,6 +92,12 @@
         .btn-download { background-color: #444; color: #fff; flex: 0 0 45px; }
         .btn-delete { background-color: #ff3333; color: #fff; flex: 0 0 40px; }
 
+        /* Smooth inline task progress bar animation */
+        @keyframes pulseThumb { 0% { opacity: 0.5; } 50% { opacity: 1; } 100% { opacity: 0.5; } }
+        .progress-container { width: 100%; height: 6px; background: #333; border-radius: 3px; overflow: hidden; margin-top: auto; position: relative; }
+        .progress-bar { height: 100%; background: #ff8c00; width: 0%; animation: loadAnim 2s infinite linear; border-radius: 3px;}
+        @keyframes loadAnim { 0% { width: 0%; transform: translateX(-100%); } 100% { width: 60%; transform: translateX(200%); } }
+
         #bulk-action-bar { display: none; position: fixed; bottom: 0; left: 0; width: 100%; background: #ff3333; color: #fff; text-align: center; padding: 15px; z-index: 900; font-weight: bold; cursor: pointer; }
 
         .modal { display: none; position: fixed; z-index: 1000; left: 0; top: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.95); align-items: center; justify-content: center; overflow-y: auto; padding: 20px; box-sizing: border-box;}
@@ -101,7 +107,6 @@
         .tab { cursor: pointer; color: #888; font-weight: bold; padding-bottom: 5px; opacity: 0.5; transition: all 0.2s ease; }
         .tab.active { color: #ff8c00; border-bottom: 2px solid #ff8c00; opacity: 1; }
 
-        /* Unified minimum height to prevent menu jumping on open, but allows expansion */
         .tab-pane { display: none; min-height: 280px; }
         .tab-pane.active-pane { display: block; }
 
@@ -130,12 +135,19 @@
         .drag-box { padding: 50px; text-align: center; color: #00E676; pointer-events: none; }
         .drag-box h2 { margin: 0; font-size: 2.5rem; text-shadow: 0 4px 10px rgba(0,0,0,0.5); }
 
+        #carousel-slides-container { display: grid; grid-template-columns: repeat(auto-fill, minmax(90px, 1fr)); gap: 15px; max-height: 50vh; overflow-y: auto; padding-bottom: 10px; }
         .carousel-slide-edit { position: relative; border-radius: 6px; overflow: hidden; cursor: pointer; border: 2px solid transparent; transition: opacity 0.2s; background: #000; aspect-ratio: 1; }
         .carousel-slide-edit.discarded { opacity: 0.4; border-color: #ff3333; }
         .slide-thumb { width: 100%; height: 100%; object-fit: cover; pointer-events: none; }
         .discard-overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: rgba(255,51,51,0.2); display: none; align-items: center; justify-content: center; color: white; font-weight: bold; font-size: 1.2rem; pointer-events: none; text-shadow: 0 2px 4px rgba(0,0,0,0.8); }
         .carousel-slide-edit.discarded .discard-overlay { display: flex; }
-        .vid-badge { position: absolute; top: 5px; right: 5px; background: rgba(0,0,0,0.7); border-radius: 4px; padding: 2px 5px; font-size: 0.8rem; pointer-events: none; }
+        .vid-badge { position: absolute; top: 5px; left: 5px; background: rgba(0,0,0,0.7); border-radius: 4px; padding: 2px 5px; font-size: 0.8rem; pointer-events: none; }
+        .slide-number-badge { position: absolute; bottom: 5px; right: 5px; background: rgba(0,0,0,0.8); color: #fff; font-size: 0.85rem; font-weight: bold; padding: 2px 6px; border-radius: 4px; pointer-events: none; }
+
+        @media (max-width: 600px) {
+            /* Force 3 columns on mobile to prevent overlapping squish */
+            #carousel-slides-container { grid-template-columns: repeat(3, 1fr); gap: 10px; }
+        }
     </style>
 </head>
 <body>
@@ -177,7 +189,7 @@
                 </div>
             </div>
 
-            <div class="video-grid" id="activeTasksGrid"></div>
+            <!-- Single grid now handles both active tasks and completed media seamlessly -->
             <div class="video-grid" id="videoGrid" style="margin-top: 20px;"></div>
             
             <div id="loadMoreSentinel" style="height: 10px; margin-top: 10px;"></div>
@@ -220,7 +232,7 @@
 
             <div id="carousel-editor-ui" style="display:none;">
                 <p style="color:#aaa; font-size:0.9rem; margin-top:0;">Tap a slide to mark it for removal.</p>
-                <div id="carousel-slides-container" style="display:grid; grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)); gap:10px; max-height:50vh; overflow-y:auto; padding-bottom:10px;"></div>
+                <div id="carousel-slides-container"></div>
                 
                 <div style="display:flex; gap:10px; margin-top:20px;">
                     <button class="btn" style="background:#555; color:#fff;" onclick="submitCarouselEdit('copy')">Save as Copy</button>
@@ -301,7 +313,7 @@
     </div>
 
     <script>
-        let isLoggedIn = false, lastTasksString = "", currentTasks = {}, activeVideosData = [];
+        let isLoggedIn = false, currentTasks = {}, activeVideosData = [];
         let loginContactMsg = "";
         let displayLimit = 20;
 
@@ -364,7 +376,6 @@
                 const data = await res.json();
                 activeVideosData = data.videos;
                 
-                renderTasksGrid();
                 renderVideosGrid(false); 
                 
                 if (!window.sseConnected) { setupSSE(); window.sseConnected = true; }
@@ -385,13 +396,15 @@
             const ui = document.getElementById('videoUrl'), exp = document.getElementById('globalExpire').value;
             if (!ui.value.trim()) return;
             const tempTaskId = "temp_" + Date.now();
-            currentTasks[tempTaskId] = "Starting up..."; renderTasksGrid();
+            currentTasks[tempTaskId] = "Starting up..."; 
+            renderVideosGrid();
+            
             const fd = new FormData(); fd.append('url', ui.value); fd.append('expire_days', exp);
             if (force) fd.append('confirm_override', 'true');
             const res = await fetch('/api/download_form', { method: 'POST', body: fd });
             const result = await res.json();
             if (result.status === "needs_confirmation") {
-                delete currentTasks[tempTaskId]; renderTasksGrid();
+                delete currentTasks[tempTaskId]; renderVideosGrid();
                 if(confirm(`Large file (${result.size_mb}MB). Proceed?`)) submitUrl(true);
             } else { ui.value = ''; }
         }
@@ -401,7 +414,8 @@
             if (!fi.files.length) return;
             
             const tempTaskId = "temp_up_" + Date.now();
-            currentTasks[tempTaskId] = "Uploading..."; renderTasksGrid();
+            currentTasks[tempTaskId] = "Uploading..."; 
+            renderVideosGrid();
             
             const fd = new FormData(); 
             for (let i = 0; i < fi.files.length; i++) { fd.append('file', fi.files[i]); }
@@ -447,7 +461,8 @@
             if (!files || files.length === 0) return;
 
             const tempTaskId = "temp_up_" + Date.now();
-            currentTasks[tempTaskId] = "Uploading..."; renderTasksGrid();
+            currentTasks[tempTaskId] = "Uploading..."; 
+            renderVideosGrid();
             
             const fd = new FormData(); 
             for (let i = 0; i < files.length; i++) { fd.append('file', files[i]); }
@@ -483,7 +498,7 @@
             evtSource.onmessage = function(event) {
                 currentTasks = JSON.parse(event.data);
                 if (Object.keys(currentTasks).length === 0) checkAuthAndLoad();
-                else renderTasksGrid();
+                else renderVideosGrid();
             };
         }
 
@@ -509,23 +524,6 @@
             await fetch('/api/videos/bulk_delete', { method: 'POST', body: fd });
             checkAuthAndLoad();
             updateBulkCounter();
-        }
-
-        function renderTasksGrid() {
-            const tString = JSON.stringify(currentTasks);
-            if (tString === lastTasksString) return; lastTasksString = tString;
-            
-            const grid = document.getElementById('activeTasksGrid');
-            if (Object.keys(currentTasks).length === 0) {
-                grid.innerHTML = "";
-                return;
-            }
-            
-            let htmlBuffer = "";
-            for (const [id, msg] of Object.entries(currentTasks)) {
-                htmlBuffer += `<div class="card working"><div class="card-content"><div class="thumbnail-wrapper"><div class="thumbnail">${msg}</div></div><div class="card-header"><div class="video-title">Working...</div></div></div></div>`;
-            }
-            grid.innerHTML = htmlBuffer;
         }
 
         function buildCardHTML(v) {
@@ -610,7 +608,39 @@
             Array.from(grid.children).forEach(child => existingCards.set(child.id, child));
             
             let previousSibling = null;
+
+            // 1. Render Active Tasks (seamlessly injected at the top of the main grid)
+            for (const [id, msg] of Object.entries(currentTasks)) {
+                const taskId = 'task-' + id;
+                let card = existingCards.get(taskId);
+                if (!card) {
+                    const tempDiv = document.createElement('div');
+                    tempDiv.innerHTML = `
+                        <div class="card working" id="${taskId}">
+                            <div class="card-content">
+                                <div class="thumbnail-wrapper">
+                                    <div class="thumbnail" style="font-size:2.5rem; animation: pulseThumb 1.5s infinite ease-in-out;">⏳</div>
+                                </div>
+                                <div class="card-header"><div class="video-title" style="color:#ff8c00;">${msg}</div></div>
+                                <div class="progress-container"><div class="progress-bar"></div></div>
+                            </div>
+                        </div>`;
+                    card = tempDiv.firstElementChild;
+                    if (previousSibling) previousSibling.after(card);
+                    else grid.prepend(card);
+                } else {
+                    card.querySelector('.video-title').innerText = msg;
+                    if (previousSibling && card.previousElementSibling !== previousSibling) {
+                        previousSibling.after(card);
+                    } else if (!previousSibling && grid.firstElementChild !== card) {
+                        grid.prepend(card);
+                    }
+                    existingCards.delete(taskId);
+                }
+                previousSibling = card;
+            }
             
+            // 2. Render Completed Videos
             displayData.forEach(v => {
                 const cardId = 'card-' + v.id;
                 let card = existingCards.get(cardId);
@@ -653,6 +683,7 @@
                 previousSibling = card;
             });
             
+            // Cleanup any cards that no longer exist (e.g. finished tasks)
             existingCards.forEach(card => card.remove());
             
             if(document.body.classList.contains('select-mode-active')) {
@@ -728,6 +759,7 @@
                             <div class="carousel-slide-edit" data-idx="${idx}" onclick="this.classList.toggle('discarded')">
                                 ${isVid ? `<video src="${src}" class="slide-thumb"></video><div class="vid-badge">🎥</div>` : `<img src="${src}" class="slide-thumb">`}
                                 <div class="discard-overlay">❌ Removed</div>
+                                <div class="slide-number-badge">${idx + 1}</div>
                             </div>`;
                     });
                     document.getElementById('carousel-slides-container').innerHTML = slidesHtml;
@@ -758,7 +790,7 @@
             await fetch(`/api/edit/${encodeURIComponent(id)}`, {method:'POST', body: fd});
             document.getElementById('editor-modal').style.display = 'none';
             document.body.classList.remove('modal-open');
-            currentTasks["temp_edit"] = "Clipping Media..."; renderTasksGrid();
+            currentTasks["temp_edit"] = "Clipping Media..."; renderVideosGrid();
         }
 
         async function submitCarouselEdit(mode) {
@@ -776,7 +808,7 @@
             
             document.getElementById('editor-modal').style.display = 'none';
             document.body.classList.remove('modal-open');
-            currentTasks["temp_edit"] = "Editing Carousel..."; renderTasksGrid();
+            currentTasks["temp_edit"] = "Editing Carousel..."; renderVideosGrid();
         }
 
         async function openSettings() {

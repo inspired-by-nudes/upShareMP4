@@ -1370,7 +1370,7 @@ def convert_local_file(input_path: str, final_path: str, task_id: str, user_id: 
     if task_id in active_downloads: del active_downloads[task_id]
 
 @app.get("/view/{video_id}")
-def view_media(video_id: str):
+def view_media(request: Request, video_id: str):
     safe_id = os.path.basename(video_id)
     with db_lock:
         db = load_db()
@@ -1383,6 +1383,18 @@ def view_media(video_id: str):
     media_url = f"/videos/{safe_id}{ext}"
     title = html.escape(vid.get("title", safe_id))
     
+    scheme = request.headers.get("x-forwarded-proto", "https")
+    base_url = f"{scheme}://{request.headers.get('host')}"
+    
+    og_image = ""
+    for e in ['.jpg', '.png', '.webp']:
+        if os.path.exists(os.path.join(DOWNLOAD_DIR, f"{safe_id}{e}")):
+            og_image = f'<meta property="og:image" content="{base_url}/videos/{safe_id}{e}">'
+            break
+            
+    if not og_image and ext in ['.jpg', '.png', '.webp']:
+        og_image = f'<meta property="og:image" content="{base_url}{media_url}">'
+    
     if ext in [".mp4", ".webm", ".mkv", ".mov"]:
         content = f'<video src="{media_url}" controls playsinline preload="metadata" style="max-width:100%; max-height:100%; width:auto; height:auto; object-fit:contain; outline:none; display:block; margin:auto;"></video>'
     else:
@@ -1390,7 +1402,12 @@ def view_media(video_id: str):
         
     html_content = f"""
     <!DOCTYPE html>
-    <html><head><meta charset='utf-8'><meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"><title>{title}</title>
+    <html><head><meta charset='utf-8'><meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>{title}</title>
+    <meta property="og:title" content="{title}">
+    <meta property="og:type" content="website">
+    {og_image}
+    <meta name="twitter:card" content="summary_large_image">
     <style>
         * {{ box-sizing: border-box; }}
         html, body {{ margin:0; padding:0; background:#000; width:100vw; height:100vh; height:100dvh; min-height:-webkit-fill-available; display:flex; align-items:center; justify-content:center; overflow:hidden; }}

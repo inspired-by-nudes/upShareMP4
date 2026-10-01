@@ -8,7 +8,7 @@
     <style>
         html, body { background-color: #121212; color: #ffffff; font-family: 'Segoe UI', Tahoma, sans-serif; margin: 0; padding: 0; width: 100%; overflow-x: hidden; box-sizing: border-box; }
         *, *:before, *:after { box-sizing: inherit; }
-        body.modal-open { overflow: hidden !important; height: 100vh !important; touch-action: none; }
+        body.modal-open { overflow: hidden !important; }
 
         .container { padding: 20px; padding-top: max(20px, env(safe-area-inset-top)); padding-bottom: 80px; max-width: 1200px; margin: 0 auto; position: relative; }
         .header-bar { display: flex; justify-content: center; align-items: center; position: relative; margin-bottom: 5px; }
@@ -117,6 +117,7 @@
         .admin-group[open] summary::after { content: "-"; }
 
         #editor-modal .dialog-box { max-width: 800px; }
+        #carousel-editor-ui { user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
 
         input[type=range] { -webkit-appearance: none; background: transparent; width: 100%; margin: 5px 0 15px 0;}
         input[type=range]:focus { outline: none; }
@@ -136,7 +137,7 @@
         .drag-box h2 { margin: 0; font-size: 2.5rem; text-shadow: 0 4px 10px rgba(0,0,0,0.5); }
 
         #carousel-slides-container { display: grid; grid-template-columns: repeat(auto-fill, minmax(90px, 1fr)); gap: 15px; max-height: 50vh; overflow-y: auto; padding-bottom: 10px; position: relative; }
-        .carousel-slide-edit { position: relative; border-radius: 6px; overflow: hidden; cursor: pointer; border: 2px solid transparent; transition: opacity 0.2s; background: #000; aspect-ratio: 1; user-select: none; }
+        .carousel-slide-edit { position: relative; border-radius: 6px; overflow: hidden; cursor: pointer; border: 2px solid transparent; transition: opacity 0.2s; background: #000; aspect-ratio: 1; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
         .carousel-slide-edit.is-dragging { opacity: 0.4; }
         .carousel-slide-edit.discarded { opacity: 0.4; border-color: #ff3333; }
         
@@ -318,6 +319,25 @@
         let isLoggedIn = false, currentTasks = {}, activeVideosData = [];
         let loginContactMsg = "";
         let displayLimit = 20;
+        let savedScrollY = 0; // Tracks scroll position to prevent mobile top-bounce
+
+        function lockScroll() {
+            if (document.body.classList.contains('modal-open')) return;
+            savedScrollY = window.scrollY;
+            document.body.style.position = 'fixed';
+            document.body.style.top = `-${savedScrollY}px`;
+            document.body.style.width = '100%';
+            document.body.classList.add('modal-open');
+        }
+
+        function unlockScroll() {
+            if (!document.body.classList.contains('modal-open')) return;
+            document.body.style.position = '';
+            document.body.style.top = '';
+            document.body.style.width = '';
+            document.body.classList.remove('modal-open');
+            window.scrollTo(0, savedScrollY);
+        }
 
         fetch('/api/env').then(r => r.json()).then(d => { loginContactMsg = d.login_msg; });
 
@@ -350,7 +370,7 @@
             if (!isLoggedIn && loginContactMsg) {
                 document.getElementById('loginMsgText').innerText = loginContactMsg;
                 document.getElementById('msgModal').style.display = 'flex';
-                document.body.classList.add('modal-open');
+                lockScroll();
             } else if (isLoggedIn) {
                 openSettings();
             }
@@ -359,7 +379,7 @@
         function closeMsgModal(e, force = false) {
             if (force || e.target.id === 'msgModal') {
                 document.getElementById('msgModal').style.display = 'none';
-                document.body.classList.remove('modal-open');
+                unlockScroll();
             }
         }
 
@@ -433,7 +453,8 @@
         let dragCounter = 0; 
         document.addEventListener('dragenter', (e) => {
             e.preventDefault();
-            if (isLoggedIn) {
+            // Prevent drag & drop upload overlay from triggering if any modal is open
+            if (isLoggedIn && !document.body.classList.contains('modal-open')) {
                 dragCounter++;
                 document.getElementById('dragOverlay').classList.add('active');
             }
@@ -443,7 +464,7 @@
 
         document.addEventListener('dragleave', (e) => {
             e.preventDefault();
-            if (isLoggedIn) {
+            if (isLoggedIn && !document.body.classList.contains('modal-open')) {
                 dragCounter--;
                 if (dragCounter <= 0) {
                     document.getElementById('dragOverlay').classList.remove('active');
@@ -457,7 +478,7 @@
             dragCounter = 0;
             document.getElementById('dragOverlay').classList.remove('active');
 
-            if (!isLoggedIn) return;
+            if (!isLoggedIn || document.body.classList.contains('modal-open')) return;
 
             const files = e.dataTransfer.files;
             if (!files || files.length === 0) return;
@@ -474,6 +495,20 @@
             
             delete currentTasks[tempTaskId];
             checkAuthAndLoad();
+        });
+
+        // ESC Key to dismiss all modals
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape' && document.body.classList.contains('modal-open')) {
+                const editor = document.getElementById('editor-modal');
+                if (editor.style.display === 'flex') {
+                    document.getElementById('editorVideo').pause();
+                    editor.style.display = 'none';
+                }
+                document.getElementById('settingsModal').style.display = 'none';
+                document.getElementById('msgModal').style.display = 'none';
+                unlockScroll();
+            }
         });
 
         function triggerDelete(videoId, btnElement) {
@@ -876,7 +911,7 @@
         }
 
         function openEditorModal(id, url, isCarousel = false) {
-            document.body.classList.add('modal-open');
+            lockScroll();
             document.getElementById('editorVideoId').value = id;
             
             if (isCarousel) {
@@ -918,7 +953,7 @@
 
         function closeEditorModal(e) {
             if(e.target.id === 'editor-modal') {
-                document.body.classList.remove('modal-open');
+                unlockScroll();
                 vPlayer.pause();
                 document.getElementById('editor-modal').style.display = 'none';
             }
@@ -929,7 +964,7 @@
             const fd = new FormData(); fd.append('start', tStart.value); fd.append('end', tEnd.value); fd.append('mode', mode);
             await fetch(`/api/edit/${encodeURIComponent(id)}`, {method:'POST', body: fd});
             document.getElementById('editor-modal').style.display = 'none';
-            document.body.classList.remove('modal-open');
+            unlockScroll();
             currentTasks["temp_edit"] = "Clipping Media..."; renderVideosGrid();
         }
 
@@ -947,7 +982,7 @@
             await fetch(`/api/edit_carousel/${encodeURIComponent(id)}`, {method:'POST', body: fd});
             
             document.getElementById('editor-modal').style.display = 'none';
-            document.body.classList.remove('modal-open');
+            unlockScroll();
             currentTasks["temp_edit"] = "Editing Carousel..."; renderVideosGrid();
         }
 
@@ -979,12 +1014,17 @@
 
                 document.getElementById('settings-tabs').innerHTML = tabsHtml;
                 document.getElementById('settingsModal').style.display = 'flex';
-                document.body.classList.add('modal-open'); 
+                lockScroll(); 
                 switchTab('mystats');
             }
         }
 
-        function closeSettingsModal(e) { if(e.target.id === 'settingsModal') { e.target.style.display = 'none'; document.body.classList.remove('modal-open'); } }
+        function closeSettingsModal(e) { 
+            if(e.target.id === 'settingsModal') { 
+                e.target.style.display = 'none'; 
+                unlockScroll(); 
+            } 
+        }
 
         function switchTab(tab, el = null) {
             ['mystats','account','serverstats','admin'].forEach(t => { 

@@ -135,17 +135,19 @@
         .drag-box { padding: 50px; text-align: center; color: #00E676; pointer-events: none; }
         .drag-box h2 { margin: 0; font-size: 2.5rem; text-shadow: 0 4px 10px rgba(0,0,0,0.5); }
 
-        #carousel-slides-container { display: grid; grid-template-columns: repeat(auto-fill, minmax(90px, 1fr)); gap: 15px; max-height: 50vh; overflow-y: auto; padding-bottom: 10px; }
-        .carousel-slide-edit { position: relative; border-radius: 6px; overflow: hidden; cursor: pointer; border: 2px solid transparent; transition: opacity 0.2s; background: #000; aspect-ratio: 1; }
+        #carousel-slides-container { display: grid; grid-template-columns: repeat(auto-fill, minmax(90px, 1fr)); gap: 15px; max-height: 50vh; overflow-y: auto; padding-bottom: 10px; position: relative; }
+        .carousel-slide-edit { position: relative; border-radius: 6px; overflow: hidden; cursor: pointer; border: 2px solid transparent; transition: opacity 0.2s; background: #000; aspect-ratio: 1; user-select: none; }
+        .carousel-slide-edit.is-dragging { opacity: 0.4; }
         .carousel-slide-edit.discarded { opacity: 0.4; border-color: #ff3333; }
+        
         .slide-thumb { width: 100%; height: 100%; object-fit: cover; pointer-events: none; }
         .discard-overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: rgba(255,51,51,0.2); display: none; align-items: center; justify-content: center; color: white; font-weight: bold; font-size: 1.2rem; pointer-events: none; text-shadow: 0 2px 4px rgba(0,0,0,0.8); }
         .carousel-slide-edit.discarded .discard-overlay { display: flex; }
+        
         .vid-badge { position: absolute; top: 5px; left: 5px; background: rgba(0,0,0,0.7); border-radius: 4px; padding: 2px 5px; font-size: 0.8rem; pointer-events: none; }
         .slide-number-badge { position: absolute; bottom: 5px; right: 5px; background: rgba(0,0,0,0.8); color: #fff; font-size: 0.85rem; font-weight: bold; padding: 2px 6px; border-radius: 4px; pointer-events: none; }
 
         @media (max-width: 600px) {
-            /* Force 3 columns on mobile to prevent overlapping squish */
             #carousel-slides-container { grid-template-columns: repeat(3, 1fr); gap: 10px; }
         }
     </style>
@@ -231,7 +233,7 @@
             </div>
 
             <div id="carousel-editor-ui" style="display:none;">
-                <p style="color:#aaa; font-size:0.9rem; margin-top:0;">Tap a slide to mark it for removal.</p>
+                <p style="color:#aaa; font-size:0.9rem; margin-top:0;">Tap to mark for removal. Tap & Hold to rearrange.</p>
                 <div id="carousel-slides-container"></div>
                 
                 <div style="display:flex; gap:10px; margin-top:20px;">
@@ -736,6 +738,143 @@
             tEnd.value = formatTime(sEnd.value);
         }
 
+        function setupSortableCarousel() {
+            const container = document.getElementById('carousel-slides-container');
+            let dragEl = null;
+            let placeholder = document.createElement('div');
+            placeholder.className = 'carousel-slide-edit placeholder';
+            placeholder.style.border = '2px dashed #00E676';
+            placeholder.style.background = 'rgba(0, 230, 118, 0.1)';
+            placeholder.style.borderRadius = '6px';
+
+            // Desktop Drag & Drop
+            container.addEventListener('dragstart', (e) => {
+                const target = e.target.closest('.carousel-slide-edit');
+                if (!target) return;
+                dragEl = target;
+                e.dataTransfer.effectAllowed = 'move';
+                setTimeout(() => target.style.opacity = '0.4', 0);
+                target.classList.add('is-dragging');
+            });
+            
+            container.addEventListener('dragover', (e) => {
+                e.preventDefault();
+                const target = e.target.closest('.carousel-slide-edit:not(.placeholder)');
+                if (target && target !== dragEl) {
+                    const rect = target.getBoundingClientRect();
+                    const next = (e.clientX - rect.left) / rect.width > 0.5;
+                    container.insertBefore(placeholder, next ? target.nextSibling : target);
+                }
+            });
+            
+            container.addEventListener('dragend', (e) => {
+                if (dragEl) {
+                    dragEl.style.opacity = '1';
+                    dragEl.classList.remove('is-dragging');
+                    if (placeholder.parentNode) {
+                        container.insertBefore(dragEl, placeholder);
+                        placeholder.parentNode.removeChild(placeholder);
+                    }
+                    dragEl = null;
+                    updateSlideNumbers();
+                }
+            });
+
+            // Mobile Touch Drag & Drop
+            let touchDragEl = null;
+            let touchClone = null;
+            let holdTimer = null;
+            let hasMoved = false;
+
+            container.addEventListener('touchstart', (e) => {
+                const target = e.target.closest('.carousel-slide-edit');
+                if (!target) return;
+                hasMoved = false;
+                
+                holdTimer = setTimeout(() => {
+                    touchDragEl = target;
+                    touchDragEl.classList.add('is-dragging');
+                    touchDragEl.style.opacity = '0.4';
+                    
+                    touchClone = touchDragEl.cloneNode(true);
+                    touchClone.style.position = 'fixed';
+                    touchClone.style.zIndex = '9999';
+                    touchClone.style.pointerEvents = 'none';
+                    touchClone.style.opacity = '0.9';
+                    touchClone.style.width = touchDragEl.offsetWidth + 'px';
+                    touchClone.style.height = touchDragEl.offsetHeight + 'px';
+                    touchClone.style.boxShadow = '0 10px 20px rgba(0,0,0,0.5)';
+                    document.body.appendChild(touchClone);
+                    
+                    const touch = e.touches[0];
+                    touchClone.style.left = (touch.clientX - touchDragEl.offsetWidth/2) + 'px';
+                    touchClone.style.top = (touch.clientY - touchDragEl.offsetHeight/2) + 'px';
+                    
+                    container.insertBefore(placeholder, touchDragEl.nextSibling);
+                    if (navigator.vibrate) navigator.vibrate(50);
+                }, 450); // 450ms hold to start drag
+            }, {passive: true});
+
+            container.addEventListener('touchmove', (e) => {
+                hasMoved = true;
+                if (!touchDragEl) {
+                    if (holdTimer) clearTimeout(holdTimer);
+                    return;
+                }
+                e.preventDefault(); 
+                const touch = e.touches[0];
+                touchClone.style.left = (touch.clientX - touchClone.offsetWidth/2) + 'px';
+                touchClone.style.top = (touch.clientY - touchClone.offsetHeight/2) + 'px';
+                
+                touchClone.style.display = 'none';
+                const elUnder = document.elementFromPoint(touch.clientX, touch.clientY);
+                touchClone.style.display = 'block';
+                
+                if (elUnder) {
+                    const target = elUnder.closest('.carousel-slide-edit:not(.placeholder)');
+                    if (target && target !== touchDragEl) {
+                        const rect = target.getBoundingClientRect();
+                        const next = (touch.clientX - rect.left) / rect.width > 0.5;
+                        container.insertBefore(placeholder, next ? target.nextSibling : target);
+                    }
+                }
+            }, {passive: false});
+
+            container.addEventListener('touchend', (e) => {
+                if (holdTimer) clearTimeout(holdTimer);
+                if (touchDragEl) {
+                    e.preventDefault();
+                    if (placeholder.parentNode) {
+                        container.insertBefore(touchDragEl, placeholder);
+                        placeholder.parentNode.removeChild(placeholder);
+                    }
+                    touchDragEl.style.opacity = '1';
+                    touchDragEl.classList.remove('is-dragging');
+                    if (touchClone && touchClone.parentNode) {
+                        touchClone.parentNode.removeChild(touchClone);
+                    }
+                    touchDragEl = null;
+                    touchClone = null;
+                    updateSlideNumbers();
+                    
+                    // Prevent click event mapping to removal on release of drag
+                    const target = e.target.closest('.carousel-slide-edit');
+                    if(target) {
+                        target.setAttribute('data-prevent-click', 'true');
+                        setTimeout(() => target.removeAttribute('data-prevent-click'), 50);
+                    }
+                }
+            });
+        }
+
+        function updateSlideNumbers() {
+            const slides = document.querySelectorAll('#carousel-slides-container .carousel-slide-edit:not(.placeholder)');
+            slides.forEach((slide, index) => {
+                const badge = slide.querySelector('.slide-number-badge');
+                if (badge) badge.innerText = index + 1;
+            });
+        }
+
         function openEditorModal(id, url, isCarousel = false) {
             document.body.classList.add('modal-open');
             document.getElementById('editorVideoId').value = id;
@@ -756,13 +895,14 @@
                         const src = img ? img.src : (vid ? vid.src : '');
                         const isVid = !!vid;
                         slidesHtml += `
-                            <div class="carousel-slide-edit" data-idx="${idx}" onclick="this.classList.toggle('discarded')">
+                            <div class="carousel-slide-edit" draggable="true" data-idx="${idx}" onclick="if(!this.getAttribute('data-prevent-click')) this.classList.toggle('discarded')">
                                 ${isVid ? `<video src="${src}" class="slide-thumb"></video><div class="vid-badge">🎥</div>` : `<img src="${src}" class="slide-thumb">`}
                                 <div class="discard-overlay">❌ Removed</div>
                                 <div class="slide-number-badge">${idx + 1}</div>
                             </div>`;
                     });
                     document.getElementById('carousel-slides-container').innerHTML = slidesHtml;
+                    setupSortableCarousel();
                 }).catch(() => {
                     document.getElementById('carousel-slides-container').innerHTML = '<p style="color:#ff3333;">Failed to load slides.</p>';
                 });
@@ -795,7 +935,7 @@
 
         async function submitCarouselEdit(mode) {
             const id = document.getElementById('editorVideoId').value;
-            const slides = document.querySelectorAll('.carousel-slide-edit:not(.discarded)');
+            const slides = document.querySelectorAll('.carousel-slide-edit:not(.discarded):not(.placeholder)');
             if (slides.length === 0) return alert("You must keep at least 1 slide.");
             
             const indices = Array.from(slides).map(s => parseInt(s.getAttribute('data-idx')));

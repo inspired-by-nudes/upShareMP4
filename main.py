@@ -72,7 +72,7 @@ def get_requests_cookies(cookie_path: str):
 
 def is_social_media_url(url: str) -> bool:
     domain = urlparse(url).netloc.lower()
-    social_domains = ["instagram.com", "tiktok.com", "youtube.com", "youtu.be", "vimeo.com", "twitter.com", "x.com", "bsky.app", "reddit.com", "redd.it"]
+    social_domains = ["instagram.com", "tiktok.com", "youtube.com", "youtu.be", "vimeo.com", "twitter.com", "x.com", "bsky.app", "reddit.com", "redd.it", "worldstarhiphop.com", "worldstar.com"]
     return any(d in domain for d in social_domains)
 
 def load_db():
@@ -1128,9 +1128,10 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                         except:
                             download_success = False
     else:
+        # Prevent yt-dlp from missing formats and falling back to just thumbnails for videos
         ydl_opts = {
             'outtmpl': f'{DOWNLOAD_DIR}/temp_yt_{task_id}_%(autonumber)03d_%(id)s.%(ext)s',
-            'format': 'bestvideo[vcodec^=avc]+bestaudio[ext=m4a]/best[ext=mp4]/best', 
+            'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best', 
             'merge_output_format': 'mp4',
             'writeinfojson': True,
             'writethumbnail': True,
@@ -1172,6 +1173,17 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                 if not primary:
                     primary = next((f for f in files if f.endswith(('.jpg', '.jpeg', '.png', '.webp', '.heic'))), files[0])
                 if not primary.endswith(valid_media_exts): return
+                
+                # Check if YouTube/WorldStar video download failed completely and only left a thumbnail
+                if "youtube.com" in domain or "youtu.be" in domain or "worldstar" in domain:
+                    if primary.endswith(('.jpg', '.jpeg', '.png', '.webp', '.heic')):
+                        logger.error(f"Failed to fetch video for {url}. Only thumbnail retrieved. Aborting.")
+                        for f in os.listdir(DOWNLOAD_DIR):
+                            if f.startswith(f"temp_yt_{task_id}_"):
+                                try: os.remove(os.path.join(DOWNLOAD_DIR, f))
+                                except: pass
+                        if task_id in active_downloads: del active_downloads[task_id]
+                        return
 
                 ext_found = primary.rsplit('.', 1)[1].lower()
                 if ext_found == 'jpeg': ext_found = 'jpg'
@@ -1574,7 +1586,8 @@ async def edit_carousel_endpoint(video_id: str, background_tasks: BackgroundTask
             if task_id in active_downloads: del active_downloads[task_id]
             return
 
-        sorted_keeps = sorted([i for i in indices if i in slide_files])
+        # Do NOT sort the indices here, this preserves custom Drag & Drop layout
+        valid_keeps = [i for i in indices if i in slide_files]
         
         if mode == "copy":
             new_id = generate_secure_id()
@@ -1582,7 +1595,7 @@ async def edit_carousel_endpoint(video_id: str, background_tasks: BackgroundTask
             has_video = False
             total_duration = 0.0
 
-            for new_idx, old_idx in enumerate(sorted_keeps):
+            for new_idx, old_idx in enumerate(valid_keeps):
                 old_f = slide_files[old_idx]
                 ext = os.path.splitext(old_f)[1].lower()
                 new_f = f"{new_id}_{new_idx}{ext}"
@@ -1598,8 +1611,8 @@ async def edit_carousel_endpoint(video_id: str, background_tasks: BackgroundTask
                 else:
                     carousel_tags += f"<div class='carousel-item' data-type='image'><img src='/videos/{new_f}'></div>"
             
-            if len(sorted_keeps) > 0:
-                first_f = slide_files[sorted_keeps[0]]
+            if len(valid_keeps) > 0:
+                first_f = slide_files[valid_keeps[0]]
                 first_ext = os.path.splitext(first_f)[1].lower()
                 if first_ext in ['.mp4', '.webm', '.mkv', '.mov']:
                     subprocess.run(["ffmpeg", "-y", "-i", os.path.join(DOWNLOAD_DIR, f"{new_id}_0{first_ext}"), "-ss", "00:00:00.100", "-vframes", "1", "-q:v", "2", f"{DOWNLOAD_DIR}/{new_id}.jpg"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -1620,7 +1633,7 @@ async def edit_carousel_endpoint(video_id: str, background_tasks: BackgroundTask
             has_video = False
             total_duration = 0.0
 
-            for new_idx, old_idx in enumerate(sorted_keeps):
+            for new_idx, old_idx in enumerate(valid_keeps):
                 old_f = slide_files[old_idx]
                 ext = os.path.splitext(old_f)[1].lower()
                 temp_f = f"temp_carousel_{safe_id}_{new_idx}{ext}"
@@ -1647,7 +1660,7 @@ async def edit_carousel_endpoint(video_id: str, background_tasks: BackgroundTask
                 else:
                     carousel_tags += f"<div class='carousel-item' data-type='image'><img src='/videos/{final_f}'></div>"
 
-            if len(sorted_keeps) > 0:
+            if len(valid_keeps) > 0:
                 first_ext = os.path.splitext(temp_map[0])[1].lower()
                 if first_ext in ['.mp4', '.webm', '.mkv', '.mov']:
                     subprocess.run(["ffmpeg", "-y", "-i", os.path.join(DOWNLOAD_DIR, f"{safe_id}_0{first_ext}"), "-ss", "00:00:00.100", "-vframes", "1", "-q:v", "2", f"{DOWNLOAD_DIR}/{safe_id}.jpg"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)

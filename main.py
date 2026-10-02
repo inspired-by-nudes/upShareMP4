@@ -141,12 +141,11 @@ def increment_view_counter(video_id: str, file_path: str, filename: str, client_
         cache_key = f"{video_id}_{client_ip}"
         
         with view_lock:
-            # Cleanup expired locks to prevent memory leaks over time
             keys_to_delete = [k for k, v in recent_views.items() if now - v > 60]
             for k in keys_to_delete: del recent_views[k]
 
             if cache_key in recent_views:
-                return # Prevent spamming views from the same IP within 60 seconds
+                return 
             recent_views[cache_key] = now
             
         with db_lock:
@@ -174,7 +173,6 @@ async def track_video_views(request: Request, call_next):
     if request.method == "GET" and response.status_code in (200, 206):
         path = request.url.path
         range_header = request.headers.get("range", "")
-        # Fallback tracking for direct raw file linking
         if path.startswith("/videos/") and (path.endswith(('.mp4', '.html', '.jpg', '.png', '.webp'))) and (not range_header or "bytes=0-" in range_header):
             filename = os.path.basename(path)
             video_id = filename.rsplit(".", 1)[0]
@@ -1388,7 +1386,7 @@ def convert_local_file(input_path: str, final_path: str, task_id: str, user_id: 
     if task_id in active_downloads: del active_downloads[task_id]
 
 @app.get("/view/{video_id}")
-def view_media(request: Request, video_id: str):
+def view_media(request: Request, video_id: str, background_tasks: BackgroundTasks):
     safe_id = os.path.basename(video_id)
     with db_lock:
         db = load_db()
@@ -1398,8 +1396,7 @@ def view_media(request: Request, video_id: str):
     ext = vid.get("ext", ".mp4")
     client_ip = request.headers.get("cf-connecting-ip") or request.headers.get("x-forwarded-for", request.client.host if request.client else "unknown").split(",")[0].strip()
     
-    # Trigger view increment when the wrapper itself is visited
-    asyncio.create_task(asyncio.to_thread(increment_view_counter, safe_id, os.path.join(DOWNLOAD_DIR, f"{safe_id}{ext}"), f"{safe_id}{ext}", client_ip))
+    background_tasks.add_task(increment_view_counter, safe_id, os.path.join(DOWNLOAD_DIR, f"{safe_id}{ext}"), f"{safe_id}{ext}", client_ip)
 
     if ext == ".html": return RedirectResponse(f"/videos/{safe_id}.html")
         

@@ -135,13 +135,19 @@ def verify_admin(user: dict = Depends(verify_auth)):
     if user["role"] != "admin": raise StarletteHTTPException(status_code=403, detail="Admin access required")
     return user
 
-def increment_view_counter(video_id: str, file_path: str, filename: str):
+def increment_view_counter(video_id: str, file_path: str, filename: str, client_ip: str = "unknown"):
     try:
         now = time.time()
+        cache_key = f"{video_id}_{client_ip}"
+        
         with view_lock:
-            if video_id in recent_views and (now - recent_views[video_id]) < 10:
-                return
-            recent_views[video_id] = now
+            # Cleanup expired locks to prevent memory leaks over time
+            keys_to_delete = [k for k, v in recent_views.items() if now - v > 60]
+            for k in keys_to_delete: del recent_views[k]
+
+            if cache_key in recent_views:
+                return # Prevent spamming views from the same IP within 60 seconds
+            recent_views[cache_key] = now
             
         with db_lock:
             db = load_db()
@@ -159,8 +165,8 @@ def increment_view_counter(video_id: str, file_path: str, filename: str):
                     if owner and owner in db["users"]:
                         db["users"][owner]["bandwidth"] = db["users"][owner].get("bandwidth", 0) + file_size
                 save_db(db)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.error(f"View increment error: {e}")
 
 @app.middleware("http")
 async def track_video_views(request: Request, call_next):
@@ -168,11 +174,13 @@ async def track_video_views(request: Request, call_next):
     if request.method == "GET" and response.status_code in (200, 206):
         path = request.url.path
         range_header = request.headers.get("range", "")
+        # Fallback tracking for direct raw file linking
         if path.startswith("/videos/") and (path.endswith(('.mp4', '.html', '.jpg', '.png', '.webp'))) and (not range_header or "bytes=0-" in range_header):
             filename = os.path.basename(path)
             video_id = filename.rsplit(".", 1)[0]
             file_path = os.path.join(DOWNLOAD_DIR, filename)
-            asyncio.create_task(asyncio.to_thread(increment_view_counter, video_id, file_path, filename))
+            client_ip = request.headers.get("cf-connecting-ip") or request.headers.get("x-forwarded-for", request.client.host if request.client else "unknown").split(",")[0].strip()
+            asyncio.create_task(asyncio.to_thread(increment_view_counter, video_id, file_path, filename, client_ip))
     return response
 
 app.mount("/videos", StaticFiles(directory=DOWNLOAD_DIR), name="videos")
@@ -1022,18 +1030,12 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
         url = url.split('?')[0]
         headers_cdn = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36', 'Accept': '*/*'}
 
-        # 1. Try Instaloader first (best for carousels)
         native_items = scrape_instaloader(url, task_id)
-
-        # 2. Try Cobalt if Instaloader fails
         if not native_items:
             native_items = scrape_cobalt_fleet(url, task_id)
-            
-        # 3. Try Instagram native embed json if both fail
         if not native_items:
             native_items = scrape_instagram_embed(url, task_id)
 
-        # 4. If any custom scraper found media, download it natively
         if native_items:
             download_success = True
             for idx, slide in enumerate(native_items):
@@ -1071,7 +1073,6 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                         try: os.remove(os.path.join(DOWNLOAD_DIR, f))
                         except: pass
                         
-        # 5. Only if everything else fails, fallback to yt-dlp (which often breaks on IG carousels)
         if not native_items and not download_success:
             logger.info(f"[Task {task_id}] Instagram native extraction failed. Falling back to yt-dlp...")
             ydl_opts_ig = {'extract_flat': 'in_playlist', 'ignoreerrors': True, 'quiet': True}
@@ -1128,7 +1129,6 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                         except:
                             download_success = False
     else:
-        # Prevent yt-dlp from missing formats and falling back to just thumbnails for videos
         ydl_opts = {
             'outtmpl': f'{DOWNLOAD_DIR}/temp_yt_{task_id}_%(autonumber)03d_%(id)s.%(ext)s',
             'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best', 
@@ -1174,7 +1174,6 @@ def process_yt_dlp(url: str, user_id: str, task_id: str, expire_days: int):
                     primary = next((f for f in files if f.endswith(('.jpg', '.jpeg', '.png', '.webp', '.heic'))), files[0])
                 if not primary.endswith(valid_media_exts): return
                 
-                # Check if YouTube/WorldStar video download failed completely and only left a thumbnail
                 if "youtube.com" in domain or "youtu.be" in domain or "worldstar" in domain:
                     if primary.endswith(('.jpg', '.jpeg', '.png', '.webp', '.heic')):
                         logger.error(f"Failed to fetch video for {url}. Only thumbnail retrieved. Aborting.")
@@ -1397,6 +1396,11 @@ def view_media(request: Request, video_id: str):
     if not vid: return RedirectResponse("/")
     
     ext = vid.get("ext", ".mp4")
+    client_ip = request.headers.get("cf-connecting-ip") or request.headers.get("x-forwarded-for", request.client.host if request.client else "unknown").split(",")[0].strip()
+    
+    # Trigger view increment when the wrapper itself is visited
+    asyncio.create_task(asyncio.to_thread(increment_view_counter, safe_id, os.path.join(DOWNLOAD_DIR, f"{safe_id}{ext}"), f"{safe_id}{ext}", client_ip))
+
     if ext == ".html": return RedirectResponse(f"/videos/{safe_id}.html")
         
     media_url = f"/videos/{safe_id}{ext}"
@@ -1586,7 +1590,6 @@ async def edit_carousel_endpoint(video_id: str, background_tasks: BackgroundTask
             if task_id in active_downloads: del active_downloads[task_id]
             return
 
-        # Do NOT sort the indices here, this preserves custom Drag & Drop layout
         valid_keeps = [i for i in indices if i in slide_files]
         
         if mode == "copy":

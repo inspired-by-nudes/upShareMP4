@@ -806,7 +806,7 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
 
             fig = f'<figure style="margin: 30px 0; display: flex; flex-direction: column; align-items: center; text-align: center;"><img src="{src}" style="max-width:100%; height:auto; border-radius:8px; box-shadow: 0 4px 12px rgba(0,0,0,0.2); display: block; margin: 0 auto;">'
             if formatted_cap:
-                fig += f'<figcaption style="font-size: 0.85rem; color: #aaa; text-align: center; margin-top: 8px; font-style: italic; max-width: 90%; display: block; margin-left: auto; margin-right: auto;">{formatted_cap}</figcaption>'
+                fig += f'<figcaption style="font-size: 0.85rem; color: #aaa; text-align: center; margin-top: 8px; font-style: italic; max-width: 90%; display: block; margin-left: auto; margin-right: auto; currentFill.style.transition = 'width 0.1s linear';</figcaption>'
             fig += '</figure>'
             return fig
 
@@ -1483,6 +1483,9 @@ async def download_form(background_tasks: BackgroundTasks, request: Request, url
 async def upload_file_endpoint(background_tasks: BackgroundTasks, request: Request, file: list[UploadFile] = File(...), expire_days: int = Form(0), user: dict = Depends(verify_auth)):
     task_id = generate_secure_id()
     
+    scheme = request.headers.get("x-forwarded-proto", "https")
+    base_url = f"{scheme}://{request.headers.get('host')}"
+    
     if len(file) > 1:
         temp_paths = []
         filenames = []
@@ -1492,6 +1495,7 @@ async def upload_file_endpoint(background_tasks: BackgroundTasks, request: Reque
             temp_paths.append(t_path)
             filenames.append(f.filename)
         background_tasks.add_task(process_local_carousel, temp_paths, filenames, user["username"], task_id, expire_days)
+        final_url = f"{base_url}/videos/{task_id}.html"
     else:
         ext = os.path.splitext(file[0].filename)[1].lower()
         if not ext: ext = ".mp4"
@@ -1503,14 +1507,15 @@ async def upload_file_endpoint(background_tasks: BackgroundTasks, request: Reque
             
         if ext in [".mp4", ".mov", ".avi", ".mkv", ".webm"]:
             background_tasks.add_task(convert_local_file, temp_path, final_path, task_id, user["username"], file[0].filename, expire_days)
+            final_url = f"{base_url}/videos/{task_id}.mp4"
         else:
             target_path = os.path.join(DOWNLOAD_DIR, f"{task_id}{ext}")
             shutil.move(temp_path, target_path)
             extract_true_duration(task_id, user["username"], custom_title=file[0].filename, ext=ext, expire_days=expire_days)
+            actual_ext = '.jpg' if ext == '.jpeg' else ext
+            final_url = f"{base_url}/videos/{task_id}{actual_ext}"
 
-    scheme = request.headers.get("x-forwarded-proto", "https")
-    base_url = f"{scheme}://{request.headers.get('host')}"
-    return {"status": "processing", "task_id": task_id, "url": f"{base_url}/view/{task_id}"}
+    return {"status": "processing", "task_id": task_id, "url": final_url}
 
 @app.post("/api/edit/{video_id}")
 async def edit_video(video_id: str, background_tasks: BackgroundTasks, start: str = Form(...), end: str = Form(...), mode: str = Form(...), user: dict = Depends(verify_auth)):

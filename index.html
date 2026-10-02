@@ -453,7 +453,6 @@
         let dragCounter = 0; 
         document.addEventListener('dragenter', (e) => {
             e.preventDefault();
-            // Prevent drag & drop upload overlay from triggering if any modal is open
             if (isLoggedIn && !document.body.classList.contains('modal-open')) {
                 dragCounter++;
                 document.getElementById('dragOverlay').classList.add('active');
@@ -497,7 +496,6 @@
             checkAuthAndLoad();
         });
 
-        // ESC Key to dismiss all modals
         document.addEventListener('keydown', (e) => {
             if (e.key === 'Escape' && document.body.classList.contains('modal-open')) {
                 const editor = document.getElementById('editor-modal');
@@ -564,7 +562,6 @@
         }
 
         function buildCardHTML(v) {
-            const viewUrl = window.location.origin + '/view/' + encodeURIComponent(v.id);
             const shareUrl = window.location.origin + '/videos/' + encodeURIComponent(v.filename);
             
             const type = v.type;
@@ -573,6 +570,12 @@
             const isCarousel = isCarouselImage || isCarouselMedia;
             const isArticle = type === 'article';
             const isImage = type === 'image';
+            
+            // Bypass HTML wrapper specifically for videos and images so the direct file is copied/viewed
+            let viewUrl = window.location.origin + '/view/' + encodeURIComponent(v.id);
+            if (!isArticle && !isCarousel) {
+                viewUrl = shareUrl;
+            }
             
             let cardClass = 'card';
             if (isArticle) cardClass += ' article-card';
@@ -615,6 +618,7 @@
             }
 
             let viewAction = `<a href="${viewUrl}" target="_blank" rel="noopener noreferrer" class="btn btn-view">View</a>`;
+            const actionText = navigator.share ? "Share" : "Copy";
 
             return `
                 <div class="${cardClass}" id="card-${v.id}">
@@ -626,7 +630,7 @@
                     <div class="card-bottom">
                         <div class="meta-tags"><div class="meta-tag">👁️ ${v.views}</div><div class="meta-tag">${timeDisplay}</div><div class="meta-tag">💾 ${formatBytes(v.size_bytes)}</div></div>
                         <div class="btn-group">
-                            <button class="btn btn-copy" onclick="copyLink('${shareUrl}')">Copy</button>
+                            <button class="btn btn-copy" onclick="handleShare('${promptTitle}', '${shareUrl}')">${actionText}</button>
                             ${viewAction}
                             ${editBtn}
                             <a href="/api/download/${encodeURIComponent(v.id)}" class="btn btn-download">📥</a>
@@ -646,7 +650,6 @@
             
             let previousSibling = null;
 
-            // 1. Render Active Tasks (seamlessly injected at the top of the main grid)
             for (const [id, msg] of Object.entries(currentTasks)) {
                 const taskId = 'task-' + id;
                 let card = existingCards.get(taskId);
@@ -677,7 +680,6 @@
                 previousSibling = card;
             }
             
-            // 2. Render Completed Videos
             displayData.forEach(v => {
                 const cardId = 'card-' + v.id;
                 let card = existingCards.get(cardId);
@@ -720,7 +722,6 @@
                 previousSibling = card;
             });
             
-            // Cleanup any cards that no longer exist (e.g. finished tasks)
             existingCards.forEach(card => card.remove());
             
             if(document.body.classList.contains('select-mode-active')) {
@@ -782,7 +783,6 @@
             placeholder.style.background = 'rgba(0, 230, 118, 0.1)';
             placeholder.style.borderRadius = '6px';
 
-            // Desktop Drag & Drop
             container.addEventListener('dragstart', (e) => {
                 const target = e.target.closest('.carousel-slide-edit');
                 if (!target) return;
@@ -815,7 +815,6 @@
                 }
             });
 
-            // Mobile Touch Drag & Drop
             let touchDragEl = null;
             let touchClone = null;
             let holdTimer = null;
@@ -847,7 +846,7 @@
                     
                     container.insertBefore(placeholder, touchDragEl.nextSibling);
                     if (navigator.vibrate) navigator.vibrate(50);
-                }, 450); // 450ms hold to start drag
+                }, 450); 
             }, {passive: true});
 
             container.addEventListener('touchmove', (e) => {
@@ -892,7 +891,6 @@
                     touchClone = null;
                     updateSlideNumbers();
                     
-                    // Prevent click event mapping to removal on release of drag
                     const target = e.target.closest('.carousel-slide-edit');
                     if(target) {
                         target.setAttribute('data-prevent-click', 'true');
@@ -1074,6 +1072,19 @@
             t.innerText = "API Key copied to clipboard!";
             t.className = "show";
             setTimeout(() => { t.className = t.className.replace("show", ""); }, 3000);
+        }
+
+        function handleShare(title, url) {
+            if (navigator.share) {
+                navigator.share({
+                    title: title,
+                    url: url
+                }).catch(err => {
+                    if (err.name !== 'AbortError') copyLink(url);
+                });
+            } else {
+                copyLink(url);
+            }
         }
 
         function copyLink(text) {

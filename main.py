@@ -806,7 +806,7 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
 
             fig = f'<figure style="margin: 30px 0; display: flex; flex-direction: column; align-items: center; text-align: center;"><img src="{src}" style="max-width:100%; height:auto; border-radius:8px; box-shadow: 0 4px 12px rgba(0,0,0,0.2); display: block; margin: 0 auto;">'
             if formatted_cap:
-                fig += f'<figcaption style="font-size: 0.85rem; color: #aaa; text-align: center; margin-top: 8px; font-style: italic; max-width: 90%; display: block; margin-left: auto; margin-right: auto; currentFill.style.transition = 'width 0.1s linear';</figcaption>'
+                fig += f'<figcaption style="font-size: 0.85rem; color: #aaa; text-align: center; margin-top: 8px; font-style: italic; max-width: 90%; display: block; margin-left: auto; margin-right: auto;">{formatted_cap}</figcaption>'
             fig += '</figure>'
             return fig
 

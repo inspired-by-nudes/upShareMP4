@@ -132,7 +132,7 @@
 
         .drag-overlay { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(18, 18, 18, 0.95); z-index: 9999; display: flex; align-items: center; justify-content: center; opacity: 0; visibility: hidden; transition: opacity 0.2s ease; }
         .drag-overlay.active { opacity: 1; visibility: visible; }
-		.drag-border { width: calc(100% - 30px); height: calc(100% - 30px); border: 6px dashed #00E676; border-radius: 16px; display: flex; align-items: center; justify-content: center; box-sizing: border-box; pointer-events: none; }
+        .drag-border { width: calc(100% - 30px); height: calc(100% - 30px); border: 6px dashed #00E676; border-radius: 16px; display: flex; align-items: center; justify-content: center; box-sizing: border-box; pointer-events: none; }
         .drag-box { padding: 50px; text-align: center; color: #00E676; pointer-events: none; }
         .drag-box h2 { margin: 0; font-size: 2.5rem; text-shadow: 0 4px 10px rgba(0,0,0,0.5); }
 
@@ -775,6 +775,10 @@
         }
 
         function setupSortableCarousel() {
+            // Prevent duplicate event listeners from stacking
+            if (window.carouselEventsAttached) return;
+            window.carouselEventsAttached = true;
+
             const container = document.getElementById('carousel-slides-container');
             let dragEl = null;
             let placeholder = document.createElement('div');
@@ -811,7 +815,6 @@
                         placeholder.parentNode.removeChild(placeholder);
                     }
                     dragEl = null;
-                    updateSlideNumbers();
                 }
             });
 
@@ -889,7 +892,6 @@
                     }
                     touchDragEl = null;
                     touchClone = null;
-                    updateSlideNumbers();
                     
                     const target = e.target.closest('.carousel-slide-edit');
                     if(target) {
@@ -897,14 +899,6 @@
                         setTimeout(() => target.removeAttribute('data-prevent-click'), 50);
                     }
                 }
-            });
-        }
-
-        function updateSlideNumbers() {
-            const slides = document.querySelectorAll('#carousel-slides-container .carousel-slide-edit:not(.placeholder)');
-            slides.forEach((slide, index) => {
-                const badge = slide.querySelector('.slide-number-badge');
-                if (badge) badge.innerText = index + 1;
             });
         }
 

@@ -443,7 +443,7 @@ def format_tokens(count):
     return str(count)
 
 def clean_html_with_ai(raw_html: str) -> tuple:
-    prompt = f"You are an expert HTML typographer. Enhance typography (headings, blockquotes, bolding, italics). \nCRITICAL RULES:\n1. Output the ENTIRE article text. However, you MUST REMOVE any 'Add to Google', 'preferred source', newsletter signups, subscription prompts, or advertisement text.\n2. Do NOT split blockquotes into multiple adjacent blocks for the same speaker. Keep quotes combined in a single <blockquote> element.\n3. When a blockquote includes an attribution line (e.g., '— Name'), place it on a NEW LINE at the bottom of the blockquote using a <br> tag.\n4. CRITICAL: You will see text markers like ___UPSHARE_IMAGE___SRC:url___CAPTION:text___, ___UPSHARE_VIDEO___SRC:url___ and ___UPSHARE_EMBED___RAW:code___. You MUST preserve these markers exactly word-for-word. Do not alter, translate, or remove them.\n5. Return ONLY valid HTML.\n\nHere is the raw HTML:\n\n{raw_html[:35000]}"
+    prompt = f"You are an HTML cleaner. Your ONLY job is to take the provided HTML and remove advertisements, newsletter signups, subscription prompts, and irrelevant 'Read More' links. \nCRITICAL RULES:\n1. DO NOT REWRITE, SUMMARIZE, OR ALTER THE AUTHOR'S ORIGINAL TEXT IN ANY WAY. Preserve the original story, tone, and wording exactly as written.\n2. You MUST REMOVE any 'Add to Google', 'preferred source', newsletter signups, subscription prompts, or advertisement text.\n3. Do NOT split blockquotes into multiple adjacent blocks for the same speaker. Keep quotes combined in a single <blockquote> element.\n4. When a blockquote includes an attribution line (e.g., '— Name'), place it on a NEW LINE at the bottom of the blockquote using a <br> tag.\n5. CRITICAL: You will see text markers like ___UPSHARE_IMAGE___SRC:url___CAPTION:text___, ___UPSHARE_VIDEO___SRC:url___ and ___UPSHARE_EMBED___RAW:code___. You MUST preserve these markers exactly word-for-word. Do not alter, translate, or remove them.\n6. Return ONLY valid HTML.\n\nHere is the raw HTML:\n\n{raw_html[:35000]}"
     bt = "`" * 3
 
     if GEMINI_API_KEY:
@@ -1487,14 +1487,20 @@ def generate_api_key(user: dict = Depends(verify_auth)):
     return {"api_key": new_key}
 
 @app.post("/api/download_form")
-async def download_form(background_tasks: BackgroundTasks, request: Request, url: str = Form(...), expire_days: int = Form(0), confirm_override: bool = Form(False), user: dict = Depends(verify_auth)):
+async def download_form(background_tasks: BackgroundTasks, request: Request, url: str = Form(...), expire_days: int = Form(0), confirm_override: bool = Form(False), direct: str = Query(None), user: dict = Depends(verify_auth)):
     task_id = generate_secure_id()
     active_downloads[task_id] = "Queued..."
     background_tasks.add_task(process_yt_dlp, url, user["username"], task_id, expire_days)
     
     scheme = request.headers.get("x-forwarded-proto", "https")
     base_url = f"{scheme}://{request.headers.get('host')}"
-    return {"status": "processing", "task_id": task_id, "url": f"{base_url}/view/{task_id}"}
+    
+    if direct == 'true':
+        final_url = f"{base_url}/videos/{task_id}.mp4"
+    else:
+        final_url = f"{base_url}/view/{task_id}"
+        
+    return {"status": "processing", "task_id": task_id, "url": final_url}
 
 @app.post("/api/upload")
 async def upload_file_endpoint(background_tasks: BackgroundTasks, request: Request, file: list[UploadFile] = File(...), expire_days: int = Form(0), direct: str = Query(None), user: dict = Depends(verify_auth)):

@@ -1,7 +1,7 @@
 import os, secrets, json, hashlib, subprocess, threading, logging, time, asyncio, shutil, re, html
 from typing import List
 from urllib.parse import urlparse, urljoin, quote, unquote
-from fastapi import FastAPI, BackgroundTasks, UploadFile, File, Form, Depends, Request, Response
+from fastapi import FastAPI, BackgroundTasks, UploadFile, File, Form, Depends, Request, Response, Query
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, FileResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -476,6 +476,22 @@ def clean_html_with_ai(raw_html: str) -> tuple:
                 if len(clean_result) > 100: return clean_result, engine_str
         except Exception: pass
 
+    # DOM Purify fallback if AI fails
+    try:
+        soup = BeautifulSoup(raw_html, 'html.parser')
+        junk_selectors = [
+            'script', 'style', 'nav', 'footer', 'header', 'form', 'aside', 'iframe', 'noscript',
+            '[class*="social-share"]', '[class*="share-bar"]', '[class*="newsletter"]',
+            '.ad-container', '.advertisement', '.mrf-article-body-ad', '.related-articles',
+            '.recommended-posts', '[id*="taboola"]', '[class*="outbrain"]'
+        ]
+        for sel in junk_selectors:
+            for el in soup.select(sel):
+                try: el.decompose()
+                except: pass
+        raw_html = str(soup)
+    except: pass
+    
     return raw_html, "📄 Readability"
 
 def process_embed_post(url: str, user_id: str, task_id: str, expire_days: int) -> bool:
@@ -648,6 +664,7 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
             if not src.startswith('http') and src.startswith('//'): src = f"https:{src}"
             if 'youtube' in src or 'youtu.be' in src or 'vimeo' in src:
                 marker = orig_soup.new_tag('p')
+                marker.string = f"___UPSHARE_VIDEO___SRC:{src}___"
                 marker.string = f"___UPSHARE_VIDEO___SRC:{src}___"
                 iframe.replace_with(marker)
             else:
@@ -834,7 +851,7 @@ def extract_article(url: str, user_id: str, task_id: str, expire_days: int):
                             new_cap = ai_soup.new_tag('figcaption', attrs={'style': 'font-size: 0.85rem; color: #aaa; text-align: center; margin-top: 8px; font-style: italic; max-width: 90%; display: block; margin-left: auto; margin-right: auto;'})
                             new_cap.string = f"— {clean_credit}"
                             prev_fig.append(new_cap)
-                        p.decompose()
+                    p.decompose()
 
         bq_list = ai_soup.find_all('blockquote')
         for i in range(len(bq_list) - 1, 0, -1):
@@ -1480,7 +1497,7 @@ async def download_form(background_tasks: BackgroundTasks, request: Request, url
     return {"status": "processing", "task_id": task_id, "url": f"{base_url}/view/{task_id}"}
 
 @app.post("/api/upload")
-async def upload_file_endpoint(background_tasks: BackgroundTasks, request: Request, file: list[UploadFile] = File(...), expire_days: int = Form(0), user: dict = Depends(verify_auth)):
+async def upload_file_endpoint(background_tasks: BackgroundTasks, request: Request, file: list[UploadFile] = File(...), expire_days: int = Form(0), direct: str = Query(None), user: dict = Depends(verify_auth)):
     task_id = generate_secure_id()
     
     scheme = request.headers.get("x-forwarded-proto", "https")
@@ -1507,13 +1524,20 @@ async def upload_file_endpoint(background_tasks: BackgroundTasks, request: Reque
             
         if ext in [".mp4", ".mov", ".avi", ".mkv", ".webm"]:
             background_tasks.add_task(convert_local_file, temp_path, final_path, task_id, user["username"], file[0].filename, expire_days)
-            final_url = f"{base_url}/videos/{task_id}.mp4"
+            if direct == 'true':
+                 final_url = f"{base_url}/videos/{task_id}.mp4"
+            else:
+                 final_url = f"{base_url}/view/{task_id}"
         else:
             target_path = os.path.join(DOWNLOAD_DIR, f"{task_id}{ext}")
             shutil.move(temp_path, target_path)
             extract_true_duration(task_id, user["username"], custom_title=file[0].filename, ext=ext, expire_days=expire_days)
             actual_ext = '.jpg' if ext == '.jpeg' else ext
-            final_url = f"{base_url}/videos/{task_id}{actual_ext}"
+            
+            if direct == 'true':
+                 final_url = f"{base_url}/videos/{task_id}{actual_ext}"
+            else:
+                 final_url = f"{base_url}/view/{task_id}"
 
     return {"status": "processing", "task_id": task_id, "url": final_url}
 

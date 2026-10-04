@@ -169,9 +169,28 @@ def increment_view_counter(video_id: str, file_path: str, filename: str, client_
 
 @app.middleware("http")
 async def track_video_views(request: Request, call_next):
+    path = request.url.path
+    
+    # 1. Smart Redirect: Corrects extensions if the iOS shortcut guessed wrong
+    if path.startswith("/videos/"):
+        filename = os.path.basename(path)
+        file_path = os.path.join(DOWNLOAD_DIR, filename)
+        if not os.path.exists(file_path) and '.' in filename:
+            base_name = filename.rsplit('.', 1)[0]
+            real_ext = None
+            with db_lock:
+                db = load_db()
+                vid = db.get("videos", {}).get(base_name)
+                if vid and vid.get("ext"):
+                    real_ext = vid["ext"]
+            if real_ext and not filename.endswith(real_ext):
+                return RedirectResponse(f"/videos/{base_name}{real_ext}")
+
+    # 2. Serve the actual file via StaticFiles
     response = await call_next(request)
+    
+    # 3. Track media views if successful
     if request.method == "GET" and response.status_code in (200, 206):
-        path = request.url.path
         range_header = request.headers.get("range", "")
         if path.startswith("/videos/") and (path.endswith(('.mp4', '.html', '.jpg', '.png', '.webp'))) and (not range_header or "bytes=0-" in range_header):
             filename = os.path.basename(path)
@@ -179,6 +198,7 @@ async def track_video_views(request: Request, call_next):
             file_path = os.path.join(DOWNLOAD_DIR, filename)
             client_ip = request.headers.get("cf-connecting-ip") or request.headers.get("x-forwarded-for", request.client.host if request.client else "unknown").split(",")[0].strip()
             asyncio.create_task(asyncio.to_thread(increment_view_counter, video_id, file_path, filename, client_ip))
+            
     return response
 
 app.mount("/videos", StaticFiles(directory=DOWNLOAD_DIR), name="videos")
@@ -1487,7 +1507,7 @@ def generate_api_key(user: dict = Depends(verify_auth)):
     return {"api_key": new_key}
 
 @app.post("/api/download_form")
-async def download_form(background_tasks: BackgroundTasks, request: Request, url: str = Form(...), expire_days: int = Form(0), confirm_override: bool = Form(False), direct: str = Query(None), user: dict = Depends(verify_auth)):
+async def download_form(background_tasks: BackgroundTasks, request: Request, url: str = Form(...), expire_days: int = Form(0), confirm_override: bool = Form(False), user: dict = Depends(verify_auth)):
     task_id = generate_secure_id()
     active_downloads[task_id] = "Queued..."
     background_tasks.add_task(process_yt_dlp, url, user["username"], task_id, expire_days)
@@ -1495,15 +1515,25 @@ async def download_form(background_tasks: BackgroundTasks, request: Request, url
     scheme = request.headers.get("x-forwarded-proto", "https")
     base_url = f"{scheme}://{request.headers.get('host')}"
     
-    if direct == 'true':
-        final_url = f"{base_url}/videos/{task_id}.mp4"
+    # Intelligently decide what to return based on the URL type
+    domain = urlparse(url).netloc.lower()
+    is_embed_target = False
+    if "twitter.com" in domain or "x.com" in domain:
+        if "/status/" in url: is_embed_target = True
+    elif "bsky.app" in domain:
+        if "/post/" in url: is_embed_target = True
+    elif "reddit.com" in domain or "redd.it" in domain:
+        if "/comments/" in url or "/s/" in url or "redd.it" in domain: is_embed_target = True
+
+    if is_embed_target or not is_social_media_url(url):
+        final_url = f"{base_url}/videos/{task_id}.html"
     else:
-        final_url = f"{base_url}/view/{task_id}"
+        final_url = f"{base_url}/videos/{task_id}.mp4"
         
     return {"status": "processing", "task_id": task_id, "url": final_url}
 
 @app.post("/api/upload")
-async def upload_file_endpoint(background_tasks: BackgroundTasks, request: Request, file: list[UploadFile] = File(...), expire_days: int = Form(0), direct: str = Query(None), user: dict = Depends(verify_auth)):
+async def upload_file_endpoint(background_tasks: BackgroundTasks, request: Request, file: list[UploadFile] = File(...), expire_days: int = Form(0), user: dict = Depends(verify_auth)):
     task_id = generate_secure_id()
     
     scheme = request.headers.get("x-forwarded-proto", "https")
@@ -1530,20 +1560,13 @@ async def upload_file_endpoint(background_tasks: BackgroundTasks, request: Reque
             
         if ext in [".mp4", ".mov", ".avi", ".mkv", ".webm"]:
             background_tasks.add_task(convert_local_file, temp_path, final_path, task_id, user["username"], file[0].filename, expire_days)
-            if direct == 'true':
-                 final_url = f"{base_url}/videos/{task_id}.mp4"
-            else:
-                 final_url = f"{base_url}/view/{task_id}"
+            final_url = f"{base_url}/videos/{task_id}.mp4"
         else:
             target_path = os.path.join(DOWNLOAD_DIR, f"{task_id}{ext}")
             shutil.move(temp_path, target_path)
             extract_true_duration(task_id, user["username"], custom_title=file[0].filename, ext=ext, expire_days=expire_days)
             actual_ext = '.jpg' if ext == '.jpeg' else ext
-            
-            if direct == 'true':
-                 final_url = f"{base_url}/videos/{task_id}{actual_ext}"
-            else:
-                 final_url = f"{base_url}/view/{task_id}"
+            final_url = f"{base_url}/videos/{task_id}{actual_ext}"
 
     return {"status": "processing", "task_id": task_id, "url": final_url}
 
